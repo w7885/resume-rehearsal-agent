@@ -15,11 +15,11 @@ __pycache__/
 node_modules/
 dist/
 
-# 仅本地保留的团队分工与项目计划（包括目录内导出副本）
-/docs/learning/
-/docs/superpowers/plans/
+# 仅本地保留的文档、说明与项目计划
+/docs/
 /project-status.md
 /README.md
+/tests/fixtures/README.md
 
 # 本机 Agent 工具与飞书授权二维码
 /.agents/
