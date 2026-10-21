@@ -1,8 +1,8 @@
-# 本机业务 API（A-T06）
+# 本机业务 API（A-T06／A-T07）
 
 基础地址 `http://127.0.0.1:3001`，前端开发时经 `http://127.0.0.1:5173/api` 代理访问。
 FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的两种正文格式以本文为准。
-当前没有 Agent／预算路由、接受建议、手改或整体替换接口。
+已提供建议确认、手改与明确整体替换接口；没有 Agent／预算路由，页面接入仍待 A-T08。
 
 ## 接口清单
 
@@ -20,6 +20,9 @@ FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的�
 | GET `/api/sessions/{id}/materials/{materialId}` | 材料元信息及提取来源（可供用户核对，包含待澄清／历史来源） |
 | GET `/api/sessions/{id}/materials/{materialId}/file` | 下载原附件，原始二进制，不用 JSON 包装 |
 | GET `/api/sessions/{id}/draft` | 当前稿版本与有序正文块 |
+| PUT `/api/sessions/{id}/draft` | markdown、requestId、expectedStateRevision → 手改后的当前稿 |
+| POST `/api/sessions/{id}/suggestions/{suggestionId}/decision` | decision、expectedBlockRevision、feedback、requestId、expectedStateRevision → 用户决定及当前稿 |
+| POST `/api/sessions/{id}/draft/replacement` | 完整新版材料及明确用户授权，见下文 |
 | GET `/api/sessions/{id}/sources/{sourceId}/revisions/{revision}` | 用户回看确切来源版本，含 historical 标记 |
 | GET `/api/sessions/{id}/suggestions/{suggestionId}` | 查看对应历史建议及引用 |
 
@@ -96,6 +99,56 @@ Content-Type: application/pdf
 
 成功结果含 material、sources、draftCreated、needsClarification、stateRevision、draftRevision。来源 pending 时不会进入 A-T05 个人依据查询；用户材料查看入口与模型事实检索入口分别使用，不得互换。
 
+## 建议确认与正文编辑（A-T07）
+
+建议由 B 通过受限 Python 工具保存为 pending；下列接口只能由用户操作路径调用，模型工具白名单未开放这些写入。
+
+```json
+{
+  "requestId": "decision-001",
+  "expectedStateRevision": 4,
+  "expectedBlockRevision": 1,
+  "decision": "accept",
+  "feedback": ""
+}
+```
+
+- decision 为 accept／reject／revise；revise 必须附非空 feedback，其他决定可附反馈。
+- 接受前重新校验当前会话版本、pending 状态、简历代次、段落版本和目标旧文，以及引用的确切来源版本及有效范围。替换／插入／删除只作用于该目标；同目标的其他旧 pending 建议失效。
+- 正文、来源关联、建议状态、用户决定、版本、旧运行失效和请求去重结果在同一事务提交，任一步失败全部回滚。24 小时窗口内同请求重放返回原结果；换 requestId 再接受已处理建议返回 stale_state，不重复插入。
+- 拒绝只记录 rejected；要求调整记录反馈并将原建议标为 invalidated，二者不改变 draftRevision／blockRevision，但会推进 stateRevision 并中断旧运行。
+- 用户恢复和单条建议读取会返回已保存的 decision（decision、feedback、createdAt）。Host 的 get_session_context 增加 decisionFeedback，包含当前代次被拒绝或要求调整的建议及反馈；这类历史建议不能当作当前个人事实来源。B 后续生成新的 pending 建议时可附 supersedesSuggestionId，须指向同会话当前代次、用户曾要求调整的旧建议；A 不代替 B 生成改写。
+
+PUT draft 输入：`{requestId, expectedStateRevision, markdown}`。允许清空正文；单次最多 50000 字符。输出含 session、draft、stateRevision、draftRevision。draft 增加完整 markdown 字段；保留分块已有换行，独立且相邻的无换行块之间补空行，防止插入内容粘连。前端编辑／导出应使用此字段。
+
+编辑采用保守、可还原原文的分块：按顶层标题及空行边界识别，围栏代码和缩进列表不在内部拆开。完整文本唯一且未变的块保留编号、版本和依据；改变、重复、合并、拆分或无法确定对应的块分配新编号且不继承依据，相应旧 pending 建议失效。完全相同的整稿保存不推进版本。已有初始导入采用粗块，因此首轮整稿编辑可能扩大旧建议失效范围；不使用相似度猜测对应。
+
+用户补充 correction 不静默改动已接受正文；B 仍需主动发现冲突、记录问题、提出纠正，用户再次接受才改正文。A 的事务检查不等于已完成 B 的语义判断或前端冲突提示。
+
+## 明确整体替换（A-T07）
+
+先保存用户明确的替换要求消息，并展示影响：新版取代当前稿，旧优化／手改不自动迁入，旧 pending 失效。上传本身不表示授权。请求体示例：
+
+```json
+{
+  "requestId": "replacement-001",
+  "expectedStateRevision": 7,
+  "expectedDraftRevision": 3,
+  "materialId": "material-xxx",
+  "authorizationMessageId": "message-xxx",
+  "confirmed": true,
+  "completeConfirmed": true
+}
+```
+
+confirmed 表示用户操作路径已获得明确替换授权；completeConfirmed 表示已确认同人同岗位且提供完整新版。它们是用户路径的结构化确认，不要求额外点击按钮，也不能由模型自行代填。后端校验授权引用确属本会话当前有效用户消息，并保存确切消息编号／原文；不会通过关键词推断自然语言是否真有授权。无登录的本机接口不能提供身份认证。
+
+当前仅支持角色明确为 resume、parse_status=parsed、当前代次且非历史的粘贴／Markdown 材料，须有一个来源块与原始 UTF-8 全文一致；partial、unknown、历史／跨会话材料，以及尚未解析的 Word／PDF／图片均拒绝。全文一致只能验证提取完整性，不能自动证明用户未遗漏经历或页面，内容完整性仍需用户核对。不要把此检查称为通用格式完整性识别。
+
+一次事务更换当前稿、增加简历代次与稿件／会话版本、归档旧个人材料与问答、失效全部旧 pending 和旧运行、归档旧问题当前状态，保存替换前后正文、有效来源范围和授权引用；只激活新版个人来源，保留 JD 与岗位。历史已决建议及确切来源快照继续可回看。失败全部回滚；同 requestId 重试不再次换代。结构版本为 3，新增 suggestion_decisions，启动时从旧版本无损迁移。
+
+输出含 session、draft、stateRevision、draftRevision、replacementId。替换记录用于追溯，没有历史稿切换或恢复接口；旧补充重新沿用需后续用户明确指定路径，A-T07 不自动恢复历史事实。真实模型网络取消仍由 B 接入，本项仅保证数据库运行失效及迟到结果写入被拒绝。
+
 ## 删除与本地访问范围
 
 DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失效、级联删除会话业务数据；A-T06 只实现持久化逻辑失效，实际模型网络请求的取消由 B 后续接入。用户原文件和独立费用账本不改动。
@@ -112,4 +165,4 @@ DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-接口检查通过实际 FastAPI／ASGI 应用和隔离 SQLite 文件执行，无真实模型或外部网络；包含保存、重启重试、并发重试、回滚、材料回看、跨会话拒绝与删除清理。前端业务交互在 A-T08 接入，当前页面按钮仍禁用。
+接口检查通过实际 FastAPI／ASGI 应用和隔离 SQLite 文件执行，无真实模型或外部网络；包含保存、重启重试、并发重试、回滚、材料回看、跨会话拒绝与删除清理。A-T07 增加目标替换／插入／删除、拒绝／调整反馈、重复段落／代码围栏／嵌套列表、手改失效、整稿替换范围、迁移保留及注入失败回滚检查。前端业务交互在 A-T08 接入，当前页面按钮仍禁用。

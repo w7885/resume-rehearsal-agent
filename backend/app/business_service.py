@@ -1,4 +1,4 @@
-"""Atomic, idempotent user operations. No model invocation or acceptance path."""
+"""Atomic, idempotent user operations. Never invokes the model."""
 
 import hashlib
 import json
@@ -104,3 +104,16 @@ class BusinessService:
     def delete_session(self, session_id, payload):
         return self._mutate(f"session:{session_id}", "delete_session", payload, payload["requestId"],
                             lambda repo: repo.delete_session(RequestContext(session_id, payload["expectedStateRevision"])), session_id)
+
+    def apply_suggestion_decision(self, session_id, suggestion_id, payload):
+        fingerprint_payload = {**payload, "suggestionId": suggestion_id}
+        return self._mutate(f"session:{session_id}", "suggestion_decision", fingerprint_payload, payload["requestId"],
+                            lambda repo: repo.apply_suggestion_decision(RequestContext(session_id, payload["expectedStateRevision"]), suggestion_id, payload), session_id)
+
+    def update_draft(self, session_id, payload):
+        return self._mutate(f"session:{session_id}", "update_draft", payload, payload["requestId"],
+                            lambda repo: repo.update_draft(RequestContext(session_id, payload["expectedStateRevision"]), payload["markdown"]), session_id)
+
+    def replace_draft(self, session_id, payload):
+        return self._mutate(f"session:{session_id}", "replace_draft", payload, payload["requestId"],
+                            lambda repo: repo.replace_draft(RequestContext(session_id, payload["expectedStateRevision"]), payload), session_id)

@@ -7,7 +7,7 @@ from urllib.parse import quote
 import zipfile
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, Response
 
@@ -126,6 +126,36 @@ class DeleteSession(Mutation):
         return value
 
 
+class SuggestionDecision(Mutation):
+    decision: Literal["accept", "reject", "revise"]
+    expectedBlockRevision: int = Field(ge=1, le=2**63 - 1)
+    feedback: str = Field(default="", max_length=MAX_TEXT_CHARACTERS)
+
+    @model_validator(mode="after")
+    def require_revision_feedback(self):
+        if self.decision == "revise" and not self.feedback.strip():
+            raise ValueError("Revision requires feedback")
+        return self
+
+
+class DraftEdit(Mutation):
+    markdown: str = Field(max_length=MAX_TEXT_CHARACTERS)
+
+
+class DraftReplacement(DeleteSession):
+    expectedDraftRevision: int = Field(ge=1, le=2**63 - 1)
+    materialId: str = Field(min_length=1, max_length=128)
+    authorizationMessageId: str = Field(min_length=1, max_length=128)
+    completeConfirmed: StrictBool
+
+    @field_validator("completeConfirmed")
+    @classmethod
+    def require_complete_candidate(cls, value):
+        if value is not True:
+            raise ValueError("Complete candidate confirmation is required")
+        return value
+
+
 class UploadMetadata(Mutation):
     name: str = Field(min_length=1, max_length=240)
     role: Literal["unknown", "resume", "jd", "supplement"] = "unknown"
@@ -227,6 +257,21 @@ def send_message(session_id: str, payload: SendMessage, request: Request):
 @router.get("/sessions/{session_id}/draft")
 def get_draft(session_id: str, request: Request):
     return _ok(_service(request).repository.get_draft(RequestContext(session_id)))
+
+
+@router.put("/sessions/{session_id}/draft")
+def update_draft(session_id: str, payload: DraftEdit, request: Request):
+    return _service(request).update_draft(session_id, payload.model_dump())
+
+
+@router.post("/sessions/{session_id}/suggestions/{suggestion_id}/decision")
+def decide_suggestion(session_id: str, suggestion_id: str, payload: SuggestionDecision, request: Request):
+    return _service(request).apply_suggestion_decision(session_id, suggestion_id, payload.model_dump())
+
+
+@router.post("/sessions/{session_id}/draft/replacement")
+def replace_draft(session_id: str, payload: DraftReplacement, request: Request):
+    return _service(request).replace_draft(session_id, payload.model_dump())
 
 
 @router.get("/sessions/{session_id}/materials")
