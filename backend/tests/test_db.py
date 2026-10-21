@@ -124,7 +124,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(self.connection.execute("SELECT status FROM suggestions").fetchone()[0], "pending")
         self.assertEqual(self.connection.execute("SELECT text FROM source_blocks WHERE source_id = ?",
                          ("source-supplement-001",)).fetchone()[0], FIXTURE["sources"][2]["text"])
-        self.assertEqual(len(db.check_database(self.connection)["tables"]), 16)
+        self.assertEqual(len(db.check_database(self.connection)["tables"]), 17)
 
     def test_repeated_initialization_preserves_existing_rows(self):
         seed_fixture(self.connection)
@@ -304,16 +304,31 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(list(self.connection.iterdump()), before)
         self.assertEqual(db.check_database(self.connection)["schemaVersion"], version)
 
-    def test_real_v1_migration_to_v2_preserves_existing_data(self):
+    def test_real_v1_migration_to_current_preserves_existing_data(self):
         with db.database(":memory:") as old:
             initial = (db.MIGRATIONS[0],)
             with patch.object(db, "MIGRATIONS", initial), patch.object(db, "SCHEMA_VERSION", 1):
                 db.initialize_database(old)
                 seed_fixture(old)
             report = db.initialize_database(old)
-            self.assertEqual(report["schemaVersion"], 2)
+            self.assertEqual(report["schemaVersion"], db.SCHEMA_VERSION)
             self.assertEqual(old.execute("SELECT count(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(old.execute("SELECT content FROM messages").fetchone()[0], FIXTURE["messages"][0]["content"])
+
+    def test_real_v2_migration_preserves_pending_draft_and_idempotency_cache(self):
+        with db.database(":memory:") as old:
+            migrations = db.MIGRATIONS[:2]
+            with patch.object(db, "MIGRATIONS", migrations), patch.object(db, "SCHEMA_VERSION", 2):
+                db.initialize_database(old)
+                session_id = seed_fixture(old)
+                old.execute("INSERT INTO request_log(scope_key, request_id, operation, request_hash, session_id, response_json, expires_at) VALUES ('scope', 'request', 'test', 'hash', ?, '{}', 9999999999)", (session_id,))
+            before = [tuple(row) for row in old.execute("SELECT * FROM draft_blocks")]
+            report = db.initialize_database(old)
+            self.assertEqual(report["schemaVersion"], db.SCHEMA_VERSION)
+            self.assertEqual([tuple(row) for row in old.execute("SELECT * FROM draft_blocks")], before)
+            self.assertEqual(old.execute("SELECT count(*) FROM request_log").fetchone()[0], 1)
+            self.assertEqual(old.execute("SELECT status FROM suggestions").fetchone()[0], "pending")
+            self.assertEqual(old.execute("SELECT count(*) FROM suggestion_decisions").fetchone()[0], 0)
 
     def test_application_startup_initializes_database_without_model(self):
         from app.main import app, get_health

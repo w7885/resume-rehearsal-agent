@@ -335,10 +335,11 @@ class ApiTests(unittest.TestCase):
         self.assert_error(self.request("GET", f"/api/sessions/{other['sessionId']}/materials/{mid}/file"), 404, "source_not_found")
         self.assert_error(self.request("GET", f"/api/sessions/{other['sessionId']}/sources/{source['sourceId']}/revisions/1"), 403, "scope_violation")
 
-    def test_unknown_routes_and_unimplemented_mutations_do_not_fake_success(self):
+    def test_unknown_routes_and_empty_mutations_do_not_fake_success(self):
         session = self.new_session()
-        self.assert_error(self.request("PUT", f"/api/sessions/{session['sessionId']}/draft", data={}), 405, "http_error")
-        self.assert_error(self.request("POST", f"/api/sessions/{session['sessionId']}/suggestions/x/decision", data={}), 404, "http_error")
+        self.assert_error(self.request("PUT", f"/api/sessions/{session['sessionId']}/draft", data={}), 422, "invalid_input")
+        self.assert_error(self.request("POST", f"/api/sessions/{session['sessionId']}/suggestions/x/decision", data={}), 422, "invalid_input")
+        self.assert_error(self.request("GET", "/api/unknown"), 404, "http_error")
         self.assertEqual(self.count("draft_blocks"), 0)
 
     def test_cross_site_and_rebinding_host_requests_rejected(self):

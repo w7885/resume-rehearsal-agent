@@ -378,20 +378,33 @@ class Repository:
 
     @staticmethod
     def _draft(connection, session):
+        from app.draft_actions import join_markdown
         blocks = []
         for row in connection.execute("SELECT * FROM draft_blocks WHERE session_id = ? AND is_current = 1 AND resume_generation = ? ORDER BY position",
                                       (session["session_id"], session["current_resume_generation"])):
             refs = [{"sourceId": ref["source_id"], "sourceRevision": ref["source_revision"], "quote": ref["quote"]}
                     for ref in connection.execute("SELECT * FROM draft_sources WHERE session_id = ? AND block_id = ? AND block_revision = ? ORDER BY source_id", (session["session_id"], row["block_id"], row["block_revision"]))]
             blocks.append({"blockId": row["block_id"], "blockRevision": row["block_revision"], "markdown": row["markdown"], "sourceRefs": refs})
-        return {"sessionId": session["session_id"], "draftRevision": session["draft_revision"], "blocks": blocks}
+        return {"sessionId": session["session_id"], "draftRevision": session["draft_revision"], "blocks": blocks, "markdown": join_markdown(blocks)}
 
     def get_draft(self, context: RequestContext):
         with self._operation(context) as (connection, session):
             return self._draft(connection, session)
 
+    def apply_suggestion_decision(self, context: RequestContext, suggestion_id: str, payload: dict):
+        from app.draft_actions import apply_decision
+        return apply_decision(self, context, suggestion_id, payload)
+
+    def update_draft(self, context: RequestContext, markdown: str):
+        from app.draft_actions import update_draft
+        return update_draft(self, context, markdown)
+
+    def replace_draft(self, context: RequestContext, payload: dict):
+        from app.draft_actions import replace_draft
+        return replace_draft(self, context, payload)
+
     def create_initial_draft(self, context: RequestContext, blocks: list[dict]):
-        """Trusted initial import only. Acceptance/edit/replacement belong to A-T07."""
+        """Trusted initial import only; cannot overwrite an existing draft."""
         self._user_path(context)
         if not isinstance(blocks, list) or not blocks:
             raise RepositoryError("invalid_input", "初始稿必须包含正文片段。")
@@ -428,13 +441,20 @@ class Repository:
     def _suggestion(connection, row):
         refs = [{"sourceId": ref["source_id"], "sourceRevision": ref["source_revision"], "quote": ref["quote"]}
                 for ref in connection.execute("SELECT * FROM suggestion_sources WHERE session_id = ? AND suggestion_id = ? ORDER BY source_id", (row["session_id"], row["suggestion_id"]))]
-        return {"suggestionId": row["suggestion_id"], "sessionId": row["session_id"], "operation": row["operation"],
+        result = {"suggestionId": row["suggestion_id"], "sessionId": row["session_id"], "operation": row["operation"],
                 "target": {"blockId": row["target_block_id"], "expectedBlockRevision": row["expected_block_revision"]},
                 "before": row["before_text"], "after": row["after_text"], "reason": row["reason"],
                 "sourceRefs": refs, "gaps": json.loads(row["gaps_json"]), "status": row["status"]}
+        decision = connection.execute("SELECT decision, feedback, created_at FROM suggestion_decisions WHERE session_id = ? AND suggestion_id = ?",
+                                      (row["session_id"], row["suggestion_id"])).fetchone()
+        if decision is not None:
+            result["decision"] = {"decision": decision["decision"], "feedback": decision["feedback"], "createdAt": decision["created_at"]}
+        if row["supersedes_suggestion_id"] is not None:
+            result["supersedesSuggestionId"] = row["supersedes_suggestion_id"]
+        return result
 
     def save_suggestion(self, context: RequestContext, proposal: dict):
-        _keys(proposal, {"operation", "target", "before", "after", "reason", "sourceRefs", "gaps"})
+        _keys(proposal, {"operation", "target", "before", "after", "reason", "sourceRefs", "gaps"}, {"supersedesSuggestionId"})
         _keys(proposal["target"], {"blockId", "expectedBlockRevision"})
         _integer(proposal["target"]["expectedBlockRevision"], "目标段落版本")
         operation = _choice(proposal["operation"], {"replace", "insert_after", "delete"}, "建议操作")
@@ -447,6 +467,13 @@ class Repository:
             raise RepositoryError("invalid_input", "信息缺口必须是文字列表。")
         with self._operation(context, write=True) as (connection, session):
             block = self._current_block(connection, session, proposal["target"]["blockId"], proposal["target"]["expectedBlockRevision"])
+            supersedes = proposal.get("supersedesSuggestionId")
+            if supersedes is not None:
+                _text(supersedes, "原建议编号")
+                original = connection.execute("SELECT 1 FROM suggestions s JOIN suggestion_decisions d ON d.suggestion_id = s.suggestion_id AND d.session_id = s.session_id WHERE s.session_id = ? AND s.suggestion_id = ? AND s.resume_generation = ? AND s.status = 'invalidated' AND d.decision = 'revise'",
+                                              (context.session_id, supersedes, session["current_resume_generation"])).fetchone()
+                if original is None:
+                    raise RepositoryError("stale_state", "只能关联当前简历中用户要求调整的建议。")
             if proposal["before"] != block["markdown"]:
                 raise RepositoryError("stale_state", "建议原文与当前段落不一致。")
             refs = self._refs(connection, context.session_id, proposal["sourceRefs"], required=True)
@@ -455,6 +482,8 @@ class Repository:
             suggestion_id = _id("suggestion")
             connection.execute("INSERT INTO suggestions(suggestion_id, session_id, operation, target_block_id, expected_block_revision, expected_state_revision, before_text, after_text, reason, gaps_json, resume_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                (suggestion_id, context.session_id, operation, block["block_id"], block["block_revision"], session["state_revision"], proposal["before"], proposal["after"], proposal["reason"], json.dumps(proposal["gaps"], ensure_ascii=False), session["current_resume_generation"]))
+            if supersedes is not None:
+                connection.execute("UPDATE suggestions SET supersedes_suggestion_id = ? WHERE suggestion_id = ? AND session_id = ?", (supersedes, suggestion_id, context.session_id))
             for ref in refs:
                 connection.execute("INSERT INTO suggestion_sources VALUES (?, ?, ?, ?, ?)", (context.session_id, suggestion_id, ref["sourceId"], ref["sourceRevision"], ref["quote"]))
             return self._suggestion(connection, connection.execute("SELECT * FROM suggestions WHERE suggestion_id = ? AND session_id = ?", (suggestion_id, context.session_id)).fetchone())
@@ -530,8 +559,11 @@ class Repository:
                 except RepositoryError:
                     continue
                 issues.append(issue)
+            feedback = [self._suggestion(connection, row) for row in connection.execute(
+                "SELECT s.* FROM suggestions s JOIN suggestion_decisions d ON d.session_id = s.session_id AND d.suggestion_id = s.suggestion_id WHERE s.session_id = ? AND s.resume_generation = ? AND d.decision IN ('reject', 'revise') ORDER BY d.created_at, s.rowid",
+                (context.session_id, session["current_resume_generation"]))]
             return {"session": self._session(session), "messages": messages, "materials": materials, "sources": sources,
-                    "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues}
+                    "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues, "decisionFeedback": feedback}
 
     def get_session_detail(self, context: RequestContext):
         """User restoration includes history; never use as Agent factual memory."""
