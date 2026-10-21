@@ -1,6 +1,6 @@
 # 历历在练
 
-当前已完成 A-T03 基础工程和 A-T04 数据库结构：React／TypeScript 三栏工作台，Python／FastAPI 状态接口，以及 SQLite 初始化、只读检查和结构测试。页面业务保存、材料查询工具与 Agent 尚未接入。
+当前已完成 A-T03 基础工程、A-T04 数据库结构及 A-T05 数据方法／受限材料工具：React／TypeScript 三栏工作台，Python／FastAPI 状态接口，SQLite 初始化与检查，以及本地 Python 查询／待确认建议保存。业务 HTTP 路由、页面保存和真实 Agent 尚未接入。
 
 ## 本机启动
 
@@ -97,6 +97,22 @@ sessions
 - 已有来源文本和正文快照不原地覆盖；修正创建新版本，旧引用仍能回看。当前标记与有效范围仍可按用户操作更新。
 - 每个连接开启外键；同会话最多一个 running 运行。未知版本、缺表、缺索引或损坏文件明确失败，不清库、不自动重建。
 - 版本迁移 SQL 放在 `backend/app/migrations/`；已发布的迁移不应随意改写，后续变更追加新迁移。DDL 与版本记录在同一短事务内提交。
-- 数据库约束仅保证结构、类型和关联。引用原文是否包含 quote、来源是否当前有效、是否支持改写、用户是否授权等仍需 A-T05／A-T07 的业务层检查；数据库不认证经历真实性。
+- 数据库约束仅保证结构、类型和关联。A-T05 已在业务层检查原文包含 quote、来源／父材料当前有效、会话及版本匹配；语义是否忠实仍由 Agent／用户判断，采用授权与正式稿事务在 A-T07。数据库不认证经历真实性。
 
 测试使用内存库及 `backend/.local/schema-tests/` 下的独立临时文件；关闭重开、重复初始化、升级回滚及跨会话错误均不在正式业务文件中试验。临时升级文件只属于测试，不是实际发布的版本 2。
+
+## A-T05：本地数据方法与材料工具
+
+- `backend/app/repository.py`：会话、消息、原附件、来源版本、初始稿、pending 建议及问题的数据方法；只接受固定方法与参数化 SQL。来源纠正创建新快照，旧待处理建议失效；不替用户接受建议或修改已采用内容。
+- `backend/app/material_tools.py`：Host 绑定 RequestContext 后，仅开放 read_material、search_evidence、propose_change、record_issues，统一返回 `{ok, data}` 或 `{ok, error}`。模型不能指定会话、路径、SQL 或接受状态；B 的实际运行需已保存的 run_id／generation／输入版本。
+- `backend/tests/test_repository.py`：真实 SQLite／Python 工具的隔离构造检查，含五组已有接口样例；不是模型效果或 MCP 测试。
+
+在 backend 目录运行一个完整本地示例：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.demo_tools
+```
+
+示例在独立临时库创建构造材料，实际调用 search_evidence 和 propose_change，返回 pending 及 draftUnchanged=true，然后清理临时库；不写入正式业务文件，不调用模型。它演示可调用工具，不能作为自治 Agent 的证据。
+
+方法签名及 Host 接入见 `docs/superpowers/contracts/2026-10-19-a-b-contract.md` 第 3.2 节。当前工具是 Python 直接调用，没有业务 HTTP 接口；前端按钮继续禁用。请求幂等入口、任意手改、整体替换与接受建议事务仍在后续任务。查询命中只能说明找到了用户提供的原文，不能证明原文足以支持任何改写。

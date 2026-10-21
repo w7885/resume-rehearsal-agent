@@ -1,6 +1,8 @@
 # A-T02:A/B接口与最小样例契约
 
-版本：v0.4 · 更新：2026-10-20
+版本：v0.5 · 更新：2026-10-21
+
+A-T05 实现状态：已提供 Repository 与 MaterialTools 本地 Python 调用，以及隔离构造数据检查。尚未提供业务 HTTP 路由、接受建议功能或真实模型／MCP 集成；B/C 尚未回执，不能据此称为团队联调通过。
 
 语言变更：用户决定整个后端与 Agent 统一使用 Python，前端仍为 TypeScript。A 的 Repository／业务路由与 B 的 Agent 路由在同一个 Python 后端内直接协作；接口 JSON 字段、错误结构、版本、权限及最小样例含义不因语言改变。FastAPI 为修订技术方案的建议框架，尚无产品实现或 B/C 回执。
 
@@ -50,7 +52,7 @@ A/B 在共享类型实现前需对齐当前简历代次、来源／用户补充�
 
 ## 3. A 提供给 B 的服务与工具
 
-以下是将来要实现的 Python 服务方法约定，当前不是可调用 API。文中的 readMaterial／searchEvidence 等旧驼峰名称保留作契约逻辑名称，Python 函数建议使用 read_material／search_evidence／save_suggestion／get_session_context；明确映射后调用，不据命名推断权限。JSON 仍保留 sessionId／sourceId 等既有字段，Python 内部命名不同须显式序列化映射；共享类型实现时同步构造样例与 C 的基准。
+以下约定现已由 backend/app/repository.py 与 backend/app/material_tools.py 实现为本地 Python 服务，不是现有 HTTP API。文中的 readMaterial／searchEvidence 等驼峰名保留作逻辑名称；实际 Python 方法为 read_material／search_evidence／save_suggestion／get_session_context。JSON 保留既有 camelCase 字段，RequestContext 使用 Python snake_case 字段；两者显式映射，不靠模型猜测。
 
 所有内部方法接收由 Host 构建的 context，至少包含 sessionId；Agent 运行中另绑定 runId、generation、预期 stateRevision。模型可见工具参数不包含自由切换的 sessionId，不包含 SQL、路径、权限身份或来源快照。
 
@@ -68,15 +70,46 @@ searchEvidence 的初版目的只是找回用户已经给出的文字，不判�
 
 ### 3.1 名称映射与返回结构
 
+当前调用入口：`MaterialTools(repository, context).dispatch(tool_name, arguments)`，返回下述统一成功／错误信封。Repository 内部方法返回业务对象或抛出 RepositoryError，封装层再转换信封；不要直接把 Repository 异常当成功数据。
+
 | 模型可见工具名 | B 负责调度到的 A 方法 | 说明 |
 | --- | --- | --- |
-| read_material | readMaterial | 下划线工具名与程序驼峰方法名是两层命名，明确映射，不要求模型猜 |
-| search_evidence | searchEvidence | 绑定运行 context 后调用；模型只提供 query／limit，不自由指定会话 |
-| propose_change | saveSuggestion | B 检查模型提议后交 A 保存 pending，不等于模型接受或更新正文 |
+| read_material | Repository.read_material | dispatch 将 sourceIds 映射为 Python 的 source_ids，context 由 Host 绑定 |
+| search_evidence | Repository.search_evidence | 模型只提供 query／limit，不自由指定会话 |
+| propose_change | Repository.save_suggestion | 校验后保存 pending，不等于模型接受或更新正文 |
+| record_issues | Repository.save_issues | 记录诊断／冲突，不直接改变当前稿 |
 
 B 汇总映射，A 维护对应服务方法，二者变更要同步。单一名称不一致与这类显式映射不同；不能一方改名后让另一方自行猜测。
 
 readMaterial／searchEvidence 成功返回 `data: SourceBlock[]`，getSessionContext 返回上下文对象，saveSuggestion 返回保存后的 Suggestion 对象，saveIssues 返回 Issue 列表。查询结果次序初版按 sourceId 升序截取 limit，以构造样例可重复检查；不是模型相关度评分。query 只作字符串数据，不解释为 SQL 或命令。错误只表示请求未按规则完成，不编造 data，也不把失败伪装为空列表。
+
+### 3.2 A-T05 实际接入方式与范围
+
+```python
+from app.repository import Repository, RequestContext
+from app.material_tools import MaterialTools
+
+# 变量由 B 的 Host 从已保存会话／运行记录取得，不来自模型参数。
+context = RequestContext(
+    session_id=session_id,
+    expected_state_revision=state_revision,
+    run_id=run_id,
+    generation=generation,
+)
+tools = MaterialTools(Repository(), context)
+state = tools.get_session_context()  # Host 装配上下文，不是模型工具
+result = tools.dispatch("search_evidence", {"query": "需求整理", "limit": 5})
+```
+
+- 模型白名单：read_material → Repository.read_material；search_evidence → search_evidence；propose_change → save_suggestion；record_issues → save_issues（输入为 `{issues: [...]}`）。其他名称拒绝，参数不能夹带 sessionId／SQL／path／status=accepted。
+- 上述 Host 示例要求已存在并处于 running 的 run，校验 generation、输入版本、当前简历代次及是否被替代；B 的运行登记／取消编排仍由 B 负责，A-T05 不代替它。只绑定 session_id 的上下文可用于受信本地业务／构造演示，不应冒充真实 Agent 运行控制。
+- 用户输入／材料写入递增 stateRevision 并使旧 running 失效；同一运行保存 pending 建议或问题不因此递增。初始化稿件仅可在当前无稿时导入；任意手改、替换及接受事务仍在 A-T07。
+- 检索使用原文子串、确定顺序、当前有效且最新版来源；parent 材料／消息也需有效，助手自己写的消息不能成为个人事实来源。JD 可供 read_material 理解岗位，但不进入个人经历 search_evidence，亦不能单独支撑个人改写。替换后当前 JD 保留，旧经历问答及来源不自动迁入。
+- save_suggestion 检查当前目标／旧文／版本、非空引用、原文包含 quote 以及有效范围；只存 pending，不更新正文。同一来源版本的相同 quote 去重，若多次引用不同 quote 则 invalid_input，调用方应给出一个完整引用片段，避免数据库关系丢失引用。
+- 用户回顾旧引用走 Repository.read_source_snapshot，可返回 historical 标记；此方法和原件 BLOB 读取不开放为模型工具。查询结果与 get_session_context 不包含原附件字节。
+- 各读操作在一致性快照中完成；写操作的上下文校验、正文目标校验和关联保存处于同一短事务。存储错误返回 storage_failed，不返回 SQL、路径或错误堆栈。
+
+在 backend 目录运行 `python -m app.demo_tools` 可执行完整构造演示：创建临时库／材料／初始稿 → 实际查询 → 保存 pending → 核对正文未变。使用项目虚拟环境解释器；不调用模型、不更改正式业务库，不是自治 Agent 或 MCP 演示。
 
 ## 4. 仅用户操作可触发的写入
 
@@ -133,7 +166,7 @@ mode=mock 只供不付费联调；mode=live 只在实际模型运行时使用，
 | A | 原文／来源／稿件／建议的区别；用户接受路径与模型工具的区别 | 已有字段与依据定位等学习证据，用户已授权本轮核对；助手完成本地检查，结果可供用户审阅，非接口实现 |
 | B | 对象字段、工具输入输出、事件与版本规则能否供 Agent 使用 | 尚未收到 B 的确认；未自动联系 B |
 | C | 允许事实、禁止编造、版本预期及样例是否可作人工基准 | 尚未收到 C 的确认；由助手先备构造材料 |
-| 程序 | JSON、编号、引用、角色和模拟事件是否相互一致 | 本轮 Node 静态检查通过：5 组预期往返、3 个来源、5 条 mock 事件及 pending／拒绝预期一致；未执行产品、数据库或模型测试 |
+| 程序 | JSON、编号、引用、角色和模拟事件是否相互一致 | 早期 Node 静态检查保留；A-T05 现有 44 项数据库／Repository／工具检查通过，五组往返与实际 Python 调用一致，本地构造演示返回 pending／draftUnchanged=true；未测试模型效果或 MCP |
 
 草案和样例的本地基础核对可独立完成；团队回执与真实调用另记，不提前标为全组联调通过。
 
