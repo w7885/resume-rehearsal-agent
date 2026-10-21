@@ -124,7 +124,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(self.connection.execute("SELECT status FROM suggestions").fetchone()[0], "pending")
         self.assertEqual(self.connection.execute("SELECT text FROM source_blocks WHERE source_id = ?",
                          ("source-supplement-001",)).fetchone()[0], FIXTURE["sources"][2]["text"])
-        self.assertEqual(len(db.check_database(self.connection)["tables"]), 15)
+        self.assertEqual(len(db.check_database(self.connection)["tables"]), 16)
 
     def test_repeated_initialization_preserves_existing_rows(self):
         seed_fixture(self.connection)
@@ -236,10 +236,10 @@ class SchemaTests(unittest.TestCase):
         self.assertIsNone(self.connection.execute("SELECT 1 FROM sqlite_master WHERE name='run_events'").fetchone())
 
     def test_newer_version_not_downgraded(self):
-        self.connection.execute("INSERT INTO schema_version(version) VALUES (2)")
+        self.connection.execute("INSERT INTO schema_version(version) VALUES (?)", (db.SCHEMA_VERSION + 1,))
         with self.assertRaisesRegex(db.SchemaError, "newer"):
             db.initialize_database(self.connection)
-        self.assertEqual(self.connection.execute("SELECT max(version) FROM schema_version").fetchone()[0], 2)
+        self.assertEqual(self.connection.execute("SELECT max(version) FROM schema_version").fetchone()[0], db.SCHEMA_VERSION + 1)
 
     def test_only_one_running_agent_run_per_session(self):
         session = seed_fixture(self.connection)
@@ -278,12 +278,13 @@ class SchemaTests(unittest.TestCase):
 
     def test_ordered_upgrade_preserves_rows_and_is_idempotent(self):
         seed_fixture(self.connection)
+        next_version = db.SCHEMA_VERSION + 1
         with temporary_directory() as directory:
-            upgrade = directory / "002_probe.sql"
+            upgrade = directory / "future_probe.sql"
             upgrade.write_text("CREATE TABLE upgrade_probe(value TEXT) STRICT;\n", encoding="utf-8")
-            with patch.object(db, "MIGRATIONS", (*db.MIGRATIONS, (2, upgrade))), patch.object(db, "SCHEMA_VERSION", 2):
+            with patch.object(db, "MIGRATIONS", (*db.MIGRATIONS, (next_version, upgrade))), patch.object(db, "SCHEMA_VERSION", next_version):
                 report = db.initialize_database(self.connection)
-                self.assertEqual(report["schemaVersion"], 2)
+                self.assertEqual(report["schemaVersion"], next_version)
                 self.assertIn("upgrade_probe", report["tables"])
                 self.assertEqual(self.connection.execute("SELECT count(*) FROM sessions").fetchone()[0], 1)
                 before = list(self.connection.iterdump())
@@ -293,14 +294,26 @@ class SchemaTests(unittest.TestCase):
     def test_failed_upgrade_preserves_previous_schema_version_and_rows(self):
         seed_fixture(self.connection)
         before = list(self.connection.iterdump())
+        version = db.SCHEMA_VERSION
         with temporary_directory() as directory:
-            upgrade = directory / "002_broken.sql"
+            upgrade = directory / "future_broken.sql"
             upgrade.write_text("CREATE TABLE partial_upgrade(value TEXT);\nINVALID SQL;\n", encoding="utf-8")
-            with patch.object(db, "MIGRATIONS", (*db.MIGRATIONS, (2, upgrade))), patch.object(db, "SCHEMA_VERSION", 2):
+            with patch.object(db, "MIGRATIONS", (*db.MIGRATIONS, (version + 1, upgrade))), patch.object(db, "SCHEMA_VERSION", version + 1):
                 with self.assertRaises(sqlite3.OperationalError):
                     db.initialize_database(self.connection)
         self.assertEqual(list(self.connection.iterdump()), before)
-        self.assertEqual(db.check_database(self.connection)["schemaVersion"], 1)
+        self.assertEqual(db.check_database(self.connection)["schemaVersion"], version)
+
+    def test_real_v1_migration_to_v2_preserves_existing_data(self):
+        with db.database(":memory:") as old:
+            initial = (db.MIGRATIONS[0],)
+            with patch.object(db, "MIGRATIONS", initial), patch.object(db, "SCHEMA_VERSION", 1):
+                db.initialize_database(old)
+                seed_fixture(old)
+            report = db.initialize_database(old)
+            self.assertEqual(report["schemaVersion"], 2)
+            self.assertEqual(old.execute("SELECT count(*) FROM sessions").fetchone()[0], 1)
+            self.assertEqual(old.execute("SELECT content FROM messages").fetchone()[0], FIXTURE["messages"][0]["content"])
 
     def test_application_startup_initializes_database_without_model(self):
         from app.main import app, get_health
