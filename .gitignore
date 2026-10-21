@@ -1,0 +1,27 @@
+# Python 本地环境与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 本地配置；保留无密钥示例
+.env
+.env.*
+!.env.example
+
+# 本地数据库与成本账本目录
+.local/
+
+# 前端依赖与构建产物
+node_modules/
+dist/
+
+# 仅本地保留的团队分工与项目计划（包括目录内导出副本）
+/docs/learning/
+/docs/superpowers/plans/
+/project-status.md
+
+# 本机 Agent 工具与飞书授权二维码
+/.agents/
+/skills-lock.json
+/feishu-cli-setup.png
+/feishu-doc-read-auth.png
