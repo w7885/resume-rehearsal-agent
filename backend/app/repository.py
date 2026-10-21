@@ -161,7 +161,7 @@ class Repository:
     def _session(row):
         return {"sessionId": row["session_id"], "direction": row["direction"],
                 "stateRevision": row["state_revision"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-                "draftRevision": row["draft_revision"], "currentResumeGeneration": row["current_resume_generation"], "status": row["status"]}
+                "draftRevision": row["draft_revision"], "currentResumeGeneration": row["current_resume_generation"], "status": row["status"], "mode": row["mode"]}
 
     def create_session(self, direction: str):
         direction = _text(direction, "求职方向").strip()
@@ -391,6 +391,11 @@ class Repository:
         with self._operation(context) as (connection, session):
             return self._draft(connection, session)
 
+    def has_draft_history(self, context: RequestContext):
+        """Clearing current text must not turn the next upload into first import."""
+        with self._operation(context) as (connection, _):
+            return connection.execute("SELECT 1 FROM draft_blocks WHERE session_id = ? LIMIT 1", (context.session_id,)).fetchone() is not None
+
     def apply_suggestion_decision(self, context: RequestContext, suggestion_id: str, payload: dict):
         from app.draft_actions import apply_decision
         return apply_decision(self, context, suggestion_id, payload)
@@ -409,7 +414,7 @@ class Repository:
         if not isinstance(blocks, list) or not blocks:
             raise RepositoryError("invalid_input", "初始稿必须包含正文片段。")
         with self._operation(context, write=True) as (connection, session):
-            if connection.execute("SELECT 1 FROM draft_blocks WHERE session_id = ? AND is_current = 1 LIMIT 1", (context.session_id,)).fetchone():
+            if connection.execute("SELECT 1 FROM draft_blocks WHERE session_id = ? LIMIT 1", (context.session_id,)).fetchone():
                 raise RepositoryError("stale_state", "当前稿已经存在，不能重复导入覆盖。")
             prepared = []
             for block in blocks:
@@ -575,10 +580,13 @@ class Repository:
                 "SELECT * FROM attachments WHERE session_id = ? ORDER BY original_order", (context.session_id,))]
             suggestions = [self._suggestion(connection, row) for row in connection.execute(
                 "SELECT * FROM suggestions WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
-            issues = [self._issue(connection, row) for row in connection.execute(
+            issues = [{**self._issue(connection, row), "isCurrent": bool(row["is_current"])} for row in connection.execute(
                 "SELECT * FROM issues WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
+            events = [{"runId": row["run_id"], "sequence": row["sequence"], "type": row["type"], "mode": row["mode"], "payload": json.loads(row["payload_json"])}
+                      for row in connection.execute("SELECT e.* FROM run_events e JOIN runs r ON r.session_id = e.session_id AND r.run_id = e.run_id WHERE e.session_id = ? AND r.resume_generation = ? ORDER BY r.generation, e.sequence",
+                                                    (context.session_id, session["current_resume_generation"]))]
             return {"session": self._session(session), "messages": messages, "materials": materials,
-                    "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues}
+                    "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues, "events": events}
 
     def get_material_detail(self, context: RequestContext, material_id: str):
         self._user_path(context)

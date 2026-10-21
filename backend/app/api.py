@@ -234,6 +234,16 @@ def create_session(payload: CreateSession, request: Request):
     return _service(request).create_session(payload.model_dump())
 
 
+@router.post("/demo/sessions", status_code=201)
+def create_demo_session(payload: RequestId, request: Request):
+    return _service(request).create_mock_session(payload.model_dump())
+
+
+@router.post("/sessions/{session_id}/mock-analysis")
+def analyze_mock_session(session_id: str, payload: Mutation, request: Request):
+    return _service(request).analyze_mock_session(session_id, payload.model_dump())
+
+
 @router.get("/sessions/{session_id}")
 def get_session(session_id: str, request: Request):
     return _ok(_service(request).repository.get_session_detail(RequestContext(session_id)))

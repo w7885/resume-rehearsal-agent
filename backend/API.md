@@ -1,8 +1,8 @@
-# 本机业务 API（A-T06／A-T07）
+# 本机业务 API（A-T06／A-T07／A-T08）
 
 基础地址 `http://127.0.0.1:3001`，前端开发时经 `http://127.0.0.1:5173/api` 代理访问。
 FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的两种正文格式以本文为准。
-已提供建议确认、手改与明确整体替换接口；没有 Agent／预算路由，页面接入仍待 A-T08。
+已提供建议确认、手改与明确整体替换接口，并接入本机页面闭环；没有真实 Agent／预算路由。模拟示例与个人材料会话分开，页面不会对个人履历套用预设建议。
 
 ## 接口清单
 
@@ -11,6 +11,8 @@ FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的�
 | GET `/api/health` | 保留 `{status, model_configured}` 状态格式，不请求模型 |
 | GET `/api/sessions` | 会话列表 |
 | POST `/api/sessions` | direction、requestId → 会话 |
+| POST `/api/demo/sessions` | requestId → 独立构造材料会话及初始稿，mode=mock |
+| POST `/api/sessions/{id}/mock-analysis` | requestId、expectedStateRevision → 固定构造流程的建议、问题及模拟事件；仅限未改变的模拟示例 |
 | GET `/api/sessions/{id}` | 恢复会话、全部消息、材料清单、当前稿、历史建议及问题 |
 | DELETE `/api/sessions/{id}` | requestId、expectedStateRevision、confirmed=true → 关联删除结果 |
 | GET `/api/sessions/{id}/messages` | 消息列表，含 message／supplement／correction／skip 的 kind |
@@ -80,7 +82,7 @@ POST `/api/sessions/{id}/materials`，`Content-Type: application/json`：
 
 name 默认“粘贴材料.md”；role 默认 unknown，可为 resume／jd／supplement。role 仅是材料用途或用户明确纠正，不是系统身份；前端不需要增加用户必经分类步骤。
 
-UTF-8 文本保存为原附件及来源块。明确 resume 且当前无稿时，按原文形成初始 Markdown，不做模型改写；明确补充或 JD 不自动改当前稿。再次提交整份 resume 时保存为待澄清，不覆盖旧稿、不自动混入依据；unknown 保持待澄清，等待后续 Agent 材料理解能力。
+UTF-8 文本保存为原附件及来源块。明确 resume 且从未导入过稿件时，按原文形成初始 Markdown，不做模型改写；明确补充或 JD 不自动改当前稿。再次提交整份 resume 时保存为待澄清，不覆盖旧稿、不自动混入依据；即使用户已清空当前正文，只要仍有历史稿件，也必须走明确整体替换，不重新当作首份导入。unknown 保持待澄清，等待后续 Agent 材料理解能力。
 
 ### 原始文件二进制
 
@@ -149,6 +151,28 @@ confirmed 表示用户操作路径已获得明确替换授权；completeConfirme
 
 输出含 session、draft、stateRevision、draftRevision、replacementId。替换记录用于追溯，没有历史稿切换或恢复接口；旧补充重新沿用需后续用户明确指定路径，A-T07 不自动恢复历史事实。真实模型网络取消仍由 B 接入，本项仅保证数据库运行失效及迟到结果写入被拒绝。
 
+## 本机页面闭环与模拟示例（A-T08）
+
+会话结构增加 mode=local／mock，旧会话迁移后默认为 local，普通创建接口不接受调用方指定 mode。结构版本现为 4／17 表；新增 004_session_mode.sql 仅追加字段，保留既有会话、正文、历史及去重记录。
+
+创建模拟示例使用已标注 synthetic 的 tests/fixtures/minimal-resume-case.json，以真实 Repository 保存独立构造材料、补充与初始稿；不会复制用户会话或读取个人材料。示例岗位为 FDE 仅用于固定验收，不代表已验证其他岗位质量。创建操作与请求去重原子提交；同编号重放不生成第二份示例。
+
+模拟分析只允许 mode=mock、未运行且初始正文和构造来源未改变的会话。行动顺序与建议文字为预设；实际执行受限 search_evidence、propose_change、record_issues 并保存结果。生成的建议仍是 pending，当前稿保持原文，用户接受时走同一真实确认事务。创建运行、工具保存、事件及去重结果一起提交，失败整体回滚。不调用模型，不产生费用，也不是模型自主选择工具或 MCP 联调证据。示例发生变动或已运行时，新请求拒绝继续套用固定建议，可新建模拟示例；不能自动忽略用户调整反馈再重提原建议。
+
+用户恢复会话结果增加 events（当前简历代次的运行事件；含 runId、sequence、type、mode、payload）；本项持久保存 progress／diagnosis／tool_progress／question／suggestion／done，普通读取恢复而非 SSE。历史 issues 在恢复结果中增加 isCurrent；页面仅对 isCurrent 且 open 的问题显示未解决提示。模拟诊断是当次预设场景的记录，不会根据后续补充自动更新。页面另有独立标注的冲突／错误交互说明，不能把它们当作当前诊断或实际故障测试记录。
+
+页面从 127.0.0.1:5173 访问现有代理：
+
+- 新建时提供方向和完整简历，可在统一材料入口选择 Markdown 用作简历；可选 JD 单独保存。其他附件保留为 unknown／pending，不用未经实现的自动分类冒充识别。
+- 已有会话可添加材料、保存补充／事实纠正／跳过、查看原文及确切引用、接受／拒绝／要求调整建议、编辑／预览当前稿。上传明确完整的 Markdown 新版候选不会自动替换，用户核对原文和完整性并明确授权后才调用替换事务；自然语言意图自动识别仍待 B。
+- 编辑停顿 500ms 后保存。前端串行发送，保存途中继续输入不会被旧响应覆盖；失败保留原 requestId、正文与预期版本，先确认原操作，再保存后续编辑。网络断开或存储失败显示未保存，可重试／复制／下载。
+- 切换会话前等待稿件保存；失败则留在原会话保留文字。版本冲突保留本地文字并展示服务器稿，用户可明确保留本地后按最新版本重试，或放弃本地采用服务器稿。
+- 下载仅取编辑区的当前稿，不包含未接受建议、聊天或诊断；有未保存修改时允许导出可见文字，文件名标记“未保存”。未解决问题在预览／导出按钮所在区域提示，不伪称全部确认。
+- 预览用 React 文本节点实现基础 Markdown，不执行原始 HTML／脚本／危险 URL，也不加载远程图片。完整 Markdown 保存在编辑器与下载文件中，预览不保证支持全部 Markdown 扩展。
+- 未提交表单、消息、调整反馈及待上传文件在当前页面内存保留，离开时有 beforeunload 提示；不是浏览器持久化副本，关闭、强制刷新或开发热更新后不保证恢复未提交输入。已确认保存的正文／材料从 SQLite 恢复；URL 只记录会话编号。
+
+前端验证命令（frontend 目录）：npm run typecheck、npm test、npm run build。前端测试使用 Node.js 自带 test runner，不需要新测试依赖或模型服务。实际浏览器烟测使用独立 SQLite，不把构造验收记录放入正式业务库。
+
 ## 删除与本地访问范围
 
 DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失效、级联删除会话业务数据；A-T06 只实现持久化逻辑失效，实际模型网络请求的取消由 B 后续接入。用户原文件和独立费用账本不改动。
@@ -165,4 +189,4 @@ DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-接口检查通过实际 FastAPI／ASGI 应用和隔离 SQLite 文件执行，无真实模型或外部网络；包含保存、重启重试、并发重试、回滚、材料回看、跨会话拒绝与删除清理。A-T07 增加目标替换／插入／删除、拒绝／调整反馈、重复段落／代码围栏／嵌套列表、手改失效、整稿替换范围、迁移保留及注入失败回滚检查。前端业务交互在 A-T08 接入，当前页面按钮仍禁用。
+接口检查通过实际 FastAPI／ASGI 应用和隔离 SQLite 文件执行，无真实模型或外部网络；包含保存、重启重试、并发重试、回滚、材料回看、跨会话拒绝与删除清理。A-T07 增加目标替换／插入／删除、拒绝／调整反馈、重复段落／代码围栏／嵌套列表、手改失效、整稿替换范围、迁移保留及注入失败回滚检查。A-T08 增加模式迁移、模拟创建／运行的原子性及重放、真实材料拒绝、已修改示例拒绝、模拟事件恢复和实际确认事务；模拟功能测试不等于真实 Agent 评估。

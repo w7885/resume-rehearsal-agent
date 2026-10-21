@@ -36,7 +36,7 @@ class BusinessService:
             bound = Repository(self.repository.path, _connection=connection)
             data = callback(bound)
             response = {"ok": True, "data": data}
-            link = data["sessionId"] if operation == "create_session" else session_id
+            link = data["sessionId"] if operation in {"create_session", "create_mock_session"} else session_id
             if operation == "delete_session":
                 link = None
             connection.execute(
@@ -48,6 +48,15 @@ class BusinessService:
     def create_session(self, payload):
         return self._mutate("sessions", "create_session", payload, payload["requestId"],
                             lambda repo: repo.create_session(payload["direction"]))
+
+    def create_mock_session(self, payload):
+        from app.mock_demo import create_demo
+        return self._mutate("sessions", "create_mock_session", payload, payload["requestId"], create_demo)
+
+    def analyze_mock_session(self, session_id, payload):
+        from app.mock_demo import analyze_demo
+        return self._mutate(f"session:{session_id}", "analyze_mock_session", payload, payload["requestId"],
+                            lambda repo: analyze_demo(repo, RequestContext(session_id, payload["expectedStateRevision"])), session_id)
 
     def save_message(self, session_id, payload):
         def apply(repo):
@@ -69,9 +78,9 @@ class BusinessService:
         payload = {**metadata, "mediaType": media_type, "contentHash": hashlib.sha256(raw).hexdigest()}
         def apply(repo):
             context = RequestContext(session_id, metadata["expectedStateRevision"])
-            existing_draft = repo.get_draft(context)
+            has_draft_history = repo.has_draft_history(context)
             role = metadata["role"]
-            ambiguous_resume = role == "resume" and bool(existing_draft["blocks"])
+            ambiguous_resume = role == "resume" and has_draft_history
             usable = extracted_text is not None and role != "unknown" and not ambiguous_resume
             material = repo.save_material(
                 context, name=metadata["name"], media_type=media_type, original_data=raw, role=role,
@@ -88,7 +97,7 @@ class BusinessService:
                 )
                 sources.append(source)
             draft_created = False
-            if usable and role == "resume" and not existing_draft["blocks"]:
+            if usable and role == "resume" and not has_draft_history:
                 current = repo.get_session(RequestContext(session_id))
                 repo.create_initial_draft(RequestContext(session_id, current["stateRevision"]), [{
                     "markdown": extracted_text,

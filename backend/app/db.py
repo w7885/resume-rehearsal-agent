@@ -17,6 +17,7 @@ MIGRATIONS = (
     (1, Path(__file__).with_name("migrations") / "001_initial.sql"),
     (2, Path(__file__).with_name("migrations") / "002_request_log.sql"),
     (3, Path(__file__).with_name("migrations") / "003_suggestion_decisions.sql"),
+    (4, Path(__file__).with_name("migrations") / "004_session_mode.sql"),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

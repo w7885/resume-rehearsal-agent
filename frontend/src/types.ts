@@ -1,0 +1,9 @@
+export type Session = { sessionId: string; direction: string; stateRevision: number; draftRevision: number; currentResumeGeneration: number; status: string; mode: 'local' | 'mock'; updatedAt: string };
+export type SourceRef = { sourceId: string; sourceRevision: number; quote: string };
+export type Draft = { sessionId: string; draftRevision: number; markdown: string; blocks: { blockId: string; blockRevision: number; markdown: string; sourceRefs: SourceRef[] }[] };
+export type Suggestion = { suggestionId: string; operation: 'replace' | 'insert_after' | 'delete'; target: { blockId: string; expectedBlockRevision: number }; before: string; after: string; reason: string; gaps: string[]; sourceRefs: SourceRef[]; status: 'pending' | 'accepted' | 'rejected' | 'invalidated'; decision?: { decision: string; feedback: string } };
+export type Material = { materialId: string; name: string; role: string; parseStatus: string; useStatus: string; mediaType: string };
+export type Source = { sourceId: string; sourceRevision: number; text: string; role: string; origin: { kind: string; materialId?: string; messageId?: string; page?: number; lineStart?: number; lineEnd?: number } };
+export type Issue = { issueId: string; kind: string; summary: string; status: string; isCurrent: boolean; sourceRefs: SourceRef[] };
+export type Detail = { session: Session; draft: Draft; messages: { messageId: string; role: string; content: string; kind: string }[]; materials: Material[]; suggestions: Suggestion[]; issues: Issue[]; events: { runId: string; sequence: number; type: string; mode: string; payload: { message?: string; suggestionId?: string } }[] };
+export type DraftResult = { session: Session; draft: Draft; stateRevision: number; draftRevision: number };
