@@ -50,7 +50,7 @@ export default function App() {
     <div className="app-shell">
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <header className="topbar">
-        <div className="brand"><span className="brand-icon"><DocumentIcon /></span><span>简历工作台</span></div>
+        <div className="brand"><span className="brand-icon"><DocumentIcon /></span><span>历历在练</span></div>
         <div className="topbar-right"><span className="version-tag">基础预览版</span><span className="local-tag"><span className="local-dot" />本机工作区</span></div>
       </header>
 

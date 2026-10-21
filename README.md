@@ -1,4 +1,4 @@
-# 简历修改 Agent
+# 历历在练
 
 当前已完成 A-T03 基础工程和 A-T04 数据库结构：React／TypeScript 三栏工作台，Python／FastAPI 状态接口，以及 SQLite 初始化、只读检查和结构测试。页面业务保存、材料查询工具与 Agent 尚未接入。
 
