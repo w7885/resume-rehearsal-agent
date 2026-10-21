@@ -13,7 +13,10 @@ from typing import Iterator
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_PATH = BACKEND_ROOT / ".local" / "resume-agent.sqlite"
-MIGRATIONS = ((1, Path(__file__).with_name("migrations") / "001_initial.sql"),)
+MIGRATIONS = (
+    (1, Path(__file__).with_name("migrations") / "001_initial.sql"),
+    (2, Path(__file__).with_name("migrations") / "002_request_log.sql"),
+)
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 

@@ -92,24 +92,38 @@ _ACTIVE_SOURCE = """
 
 
 class Repository:
-    def __init__(self, path: str | Path = DEFAULT_DATABASE_PATH):
+    def __init__(self, path: str | Path = DEFAULT_DATABASE_PATH, *, _connection=None):
         # Path is a trusted application setting, not a model-visible parameter.
         self.path = Path(path).resolve()
+        # Used only by the trusted HTTP service for one short request transaction.
+        # Never reuse a bound Repository across transactions or threads.
+        self._connection = _connection
+        self._touched_sessions = set()
+
+    @contextmanager
+    def _connection_scope(self, *, write=False):
+        if self._connection is not None:
+            if not self._connection.in_transaction:
+                raise RepositoryError("storage_failed", "业务事务已经结束。")
+            yield self._connection
+            return
+        with database(self.path, read_only=not write) as connection:
+            if write:
+                with transaction(connection):
+                    yield connection
+            else:
+                connection.execute("BEGIN")
+                try:
+                    yield connection
+                finally:
+                    connection.rollback()
 
     @contextmanager
     def _operation(self, context: RequestContext, *, write=False):
         if not isinstance(context, RequestContext):
             raise RepositoryError("invalid_input", "缺少程序绑定的会话上下文。")
-        with database(self.path, read_only=not write) as connection:
-            if write:
-                with transaction(connection):
-                    yield connection, self._check_context(connection, context)
-            else:
-                connection.execute("BEGIN")
-                try:
-                    yield connection, self._check_context(connection, context)
-                finally:
-                    connection.rollback()
+        with self._connection_scope(write=write) as connection:
+            yield connection, self._check_context(connection, context)
 
     def _check_context(self, connection, context):
         session = connection.execute("SELECT * FROM sessions WHERE session_id = ?", (context.session_id,)).fetchone()
@@ -134,11 +148,14 @@ class Repository:
         if context.run_id is not None:
             raise RepositoryError("scope_violation", "模型运行不能修改原始材料或正式稿。", False)
 
-    @staticmethod
-    def _touch(connection, session_id):
+    def _touch(self, connection, session_id):
+        if self._connection is connection and session_id in self._touched_sessions:
+            return
         connection.execute("UPDATE sessions SET state_revision = state_revision + 1, updated_at = ?, status = 'idle' WHERE session_id = ?",
                            (_now(), session_id))
         connection.execute("UPDATE runs SET status = 'interrupted' WHERE session_id = ? AND status = 'running'", (session_id,))
+        if self._connection is connection:
+            self._touched_sessions.add(session_id)
 
     @staticmethod
     def _session(row):
@@ -149,12 +166,12 @@ class Repository:
     def create_session(self, direction: str):
         direction = _text(direction, "求职方向").strip()
         session_id = _id("session")
-        with database(self.path) as connection, transaction(connection):
+        with self._connection_scope(write=True) as connection:
             connection.execute("INSERT INTO sessions(session_id, direction) VALUES (?, ?)", (session_id, direction))
             return self._session(connection.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone())
 
     def list_sessions(self):
-        with database(self.path, read_only=True) as connection:
+        with self._connection_scope() as connection:
             return [self._session(row) for row in connection.execute("SELECT * FROM sessions ORDER BY updated_at DESC, session_id")]
 
     def get_session(self, context: RequestContext):
@@ -164,7 +181,7 @@ class Repository:
     @staticmethod
     def _message(row):
         return {"messageId": row["message_id"], "sessionId": row["session_id"], "role": row["role"],
-                "content": row["content"], "createdAt": row["created_at"]}
+                "content": row["content"], "createdAt": row["created_at"], "kind": row["kind"]}
 
     def save_message(self, context: RequestContext, content: str, *, role="user", kind="message"):
         _text(content, "消息正文")
@@ -515,3 +532,38 @@ class Repository:
                 issues.append(issue)
             return {"session": self._session(session), "messages": messages, "materials": materials, "sources": sources,
                     "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues}
+
+    def get_session_detail(self, context: RequestContext):
+        """User restoration includes history; never use as Agent factual memory."""
+        self._user_path(context)
+        with self._operation(context) as (connection, session):
+            messages = [self._message(row) for row in connection.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
+            materials = [self._material(row) for row in connection.execute(
+                "SELECT * FROM attachments WHERE session_id = ? ORDER BY original_order", (context.session_id,))]
+            suggestions = [self._suggestion(connection, row) for row in connection.execute(
+                "SELECT * FROM suggestions WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
+            issues = [self._issue(connection, row) for row in connection.execute(
+                "SELECT * FROM issues WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
+            return {"session": self._session(session), "messages": messages, "materials": materials,
+                    "draft": self._draft(connection, session), "suggestions": suggestions, "issues": issues}
+
+    def get_material_detail(self, context: RequestContext, material_id: str):
+        self._user_path(context)
+        _text(material_id, "材料编号")
+        with self._operation(context) as (connection, _):
+            row = connection.execute("SELECT * FROM attachments WHERE session_id = ? AND attachment_id = ?",
+                                     (context.session_id, material_id)).fetchone()
+            if row is None:
+                raise RepositoryError("source_not_found", "没有找到请求的材料。")
+            sources = [self._source(source) for source in connection.execute(
+                "SELECT * FROM source_blocks WHERE session_id = ? AND attachment_id = ? "
+                "ORDER BY source_id, source_revision", (context.session_id, material_id))]
+            return {"material": self._material(row), "sources": sources}
+
+    def delete_session(self, context: RequestContext):
+        self._user_path(context)
+        with self._operation(context, write=True) as (connection, _):
+            self._touch(connection, context.session_id)
+            connection.execute("DELETE FROM sessions WHERE session_id = ?", (context.session_id,))
+            return {"sessionId": context.session_id, "deleted": True}
