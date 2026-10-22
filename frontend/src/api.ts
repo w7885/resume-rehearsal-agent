@@ -12,7 +12,7 @@ export async function readHealth(signal: AbortSignal): Promise<Health> {
   return { status: body.status, model_configured: body.model_configured };
 }
 
-import type { Detail, DraftResult, Session, Source } from './types';
+import type { ChatMaterial, ChatMessageResult, ChatSession, Conversation, Detail, DraftResult, Session, Source } from './types';
 
 export class ApiError extends Error {
   code: string;
@@ -26,9 +26,11 @@ function isSession(value: unknown): value is Session {
     integer(value.stateRevision) && integer(value.draftRevision) && integer(value.currentResumeGeneration) &&
     (value.mode === 'local' || value.mode === 'mock') && typeof value.updatedAt === 'string';
 }
+const isReference = (value: unknown) => object(value) && typeof value.sourceId === 'string' && integer(value.sourceRevision) && typeof value.quote === 'string';
+const isSource = (value: unknown) => object(value) && typeof value.sourceId === 'string' && integer(value.sourceRevision) && typeof value.text === 'string' && typeof value.role === 'string' && object(value.origin) && typeof value.origin.kind === 'string';
 function hasDraft(value: unknown): value is DraftResult {
   return object(value) && isSession(value.session) && object(value.draft) && typeof value.draft.markdown === 'string' &&
-    Array.isArray(value.draft.blocks) && value.draft.blocks.every(b => object(b) && typeof b.blockId === 'string' && integer(b.blockRevision) && typeof b.markdown === 'string' && Array.isArray(b.sourceRefs));
+    Array.isArray(value.draft.blocks) && value.draft.blocks.every(b => object(b) && typeof b.blockId === 'string' && integer(b.blockRevision) && typeof b.markdown === 'string' && Array.isArray(b.sourceRefs) && b.sourceRefs.every(isReference));
 }
 function isDetail(value: unknown): value is Detail {
   if (!object(value)) return false;
@@ -87,7 +89,66 @@ export function uploadMaterial(sid: string, payload: { requestId: string; expect
 export const deleteSession = (sid: string, payload: { requestId: string; expectedStateRevision: number; confirmed: true }) => http(path(sid), 'DELETE', payload);
 export const replaceDraft = (sid: string, payload: { requestId: string; expectedStateRevision: number; expectedDraftRevision: number; materialId: string; authorizationMessageId: string; confirmed: true; completeConfirmed: true }) => http<DraftResult>(`${path(sid)}/draft/replacement`, 'POST', payload, hasDraft);
 export const readSource = (sid: string, ref: { sourceId: string; sourceRevision: number }) => http<{ source: Source; historical: boolean }>(`${path(sid)}/sources/${encodeURIComponent(ref.sourceId)}/revisions/${ref.sourceRevision}`, 'GET', undefined,
-  v => object(v) && object(v.source) && typeof v.source.text === 'string' && object(v.source.origin) && typeof v.historical === 'boolean');
+  v => object(v) && isSource(v.source) && object(v.source) && v.source.sourceId === ref.sourceId && v.source.sourceRevision === ref.sourceRevision && typeof v.historical === 'boolean');
+const isParseReport = (v: unknown) => v === null || v === undefined || object(v) && typeof v.message === 'string' && typeof v.status === 'string' && Array.isArray(v.warnings) && v.warnings.every(w => object(w) && typeof w.message === 'string' && typeof w.code === 'string');
+const isRecognitionReport = (v: unknown) => v === null || v === undefined || object(v) && typeof v.message === 'string' && typeof v.status === 'string' && ['host','synthetic'].includes(String(v.mode)) && (v.pageCount === null || integer(v.pageCount)) && Number.isSafeInteger(v.completed) && Number(v.completed)>=0 && Number.isSafeInteger(v.failed) && Number(v.failed)>=0 && Number(v.failed)<=Number(v.completed);
 export const readMaterial = (sid: string, id: string) => http<{ material: import('./types').Material; sources: Source[] }>(`${path(sid)}/materials/${encodeURIComponent(id)}`, 'GET', undefined,
-  v => object(v) && object(v.material) && typeof v.material.materialId === 'string' && Array.isArray(v.sources) && v.sources.every(s => object(s) && typeof s.text === 'string'));
+  v => object(v) && object(v.material) && v.material.materialId === id && isParseReport(v.material.parseReport) && isRecognitionReport(v.material.recognitionReport) && Array.isArray(v.sources) && v.sources.every(isSource));
+export type SourceCorrectionWrite = { requestId: string; expectedStateRevision: number; expectedSourceRevision: number; text: string };
+export const correctMaterialSource = (sid: string, mid: string, sourceId: string, payload: SourceCorrectionWrite) => http<{ source: Source; stateRevision: number; draftRevision: number }>(`${path(sid)}/materials/${encodeURIComponent(mid)}/sources/${encodeURIComponent(sourceId)}/revisions`, 'POST', payload,
+  v => object(v) && isSource(v.source) && object(v.source) && v.source.sourceId === sourceId && v.source.sourceRevision === payload.expectedSourceRevision + 1 && integer(v.stateRevision) && integer(v.draftRevision));
 export const fileUrl = (sid: string, id: string) => `${path(sid)}/materials/${encodeURIComponent(id)}/file`;
+
+function isPages(v: unknown) {
+  if (!object(v) || typeof v.materialId !== 'string' || typeof v.renderVersion !== 'string' || !(v.pageCount === null || integer(v.pageCount)) || !integer(v.limit) || typeof v.historical !== 'boolean' || typeof v.recognitionAvailable !== 'boolean' || !Array.isArray(v.pages)) return false;
+  return v.pages.length === Math.min(Number(v.pageCount ?? 1), Number(v.limit)) && v.pages.every((p, index) => object(p) && p.page === index + 1 && ['pending', 'ready', 'failed'].includes(String(p.status)) && (p.width === null || integer(p.width)) && (p.height === null || integer(p.height)) && (p.status !== 'ready' || integer(p.width) && integer(p.height)) && (p.errorMessage === null || typeof p.errorMessage === 'string') && (p.errorCode === null || typeof p.errorCode === 'string'));
+}
+export const readMaterialPages = (sid: string, mid: string) => http<import('./types').MaterialPages>(`${path(sid)}/materials/${encodeURIComponent(mid)}/pages`, 'GET', undefined, v => isPages(v) && object(v) && v.materialId === mid);
+export type PagePreparationWrite = { requestId: string; expectedStateRevision: number; pageNumber: number };
+export const prepareMaterialPage = (sid: string, mid: string, payload: PagePreparationWrite) => http<import('./types').MaterialPages>(`${path(sid)}/materials/${encodeURIComponent(mid)}/pages/prepare`, 'POST', payload, v => isPages(v) && object(v) && v.materialId === mid);
+export const materialPageUrl = (sid: string, mid: string, page: number) => `${path(sid)}/materials/${encodeURIComponent(mid)}/pages/${page}/image`;
+export type ImageOrderWrite = { requestId: string; expectedStateRevision: number; materialIds: string[] };
+export const reorderImages = (sid: string, payload: ImageOrderWrite) => http<Conversation>(`${path(sid)}/materials/image-order`,'POST',payload,isConversation);
+export const requestRecognitionRetry = (sid: string, mid: string, payload: {requestId: string; expectedStateRevision: number}) => http<{retryId: string; status: 'pending'; stateRevision: number}>(`${path(sid)}/materials/${encodeURIComponent(mid)}/recognition-retry`,'POST',payload,
+  v=>object(v)&&typeof v.retryId==='string'&&v.status==='pending'&&integer(v.stateRevision));
+
+function isChatSession(value: unknown): value is ChatSession {
+  if (!object(value)) return false;
+  const record: Record<string, unknown> = value;
+  return isSession(value) && typeof record.title === 'string' &&
+    (record.directionStatus === 'pending' ? record.targetDirection === null : record.directionStatus === 'provided' && typeof record.targetDirection === 'string');
+}
+function isChatMaterial(value: unknown): value is ChatMaterial {
+  return object(value) && ['materialId', 'sessionId', 'name', 'mediaType', 'role', 'parseStatus', 'useStatus'].every(k => typeof value[k] === 'string') &&
+    Number.isSafeInteger(value.byteSize) && Number(value.byteSize) >= 0 && typeof value.current === 'boolean';
+}
+function isChatMessage(value: unknown) {
+  return object(value) && typeof value.messageId === 'string' && typeof value.sessionId === 'string' && ['user', 'assistant'].includes(String(value.role)) &&
+    typeof value.content === 'string' && typeof value.kind === 'string' && typeof value.createdAt === 'string' && integer(value.sequence) &&
+    ['legacy', 'chat'].includes(String(value.inputChannel)) && typeof value.historical === 'boolean' && Array.isArray(value.attachments) && value.attachments.every(isChatMaterial) &&
+    (value.replyToMessageId===undefined||value.replyToMessageId===null||typeof value.replyToMessageId==='string') &&
+    (value.assistant===undefined||value.assistant===null||object(value.assistant)&&['reply','question','change_question'].includes(String(value.assistant.kind))&&['host','synthetic'].includes(String(value.assistant.mode))&&typeof value.assistant.replyToUserMessageId==='string'&&(value.assistant.questionState===null||['awaiting_reply','reply_saved','outdated','history'].includes(String(value.assistant.questionState)))&&Array.isArray(value.assistant.sourceRefs)&&value.assistant.sourceRefs.every(isReference));
+}
+function isConversation(value: unknown): value is Conversation {
+  if (!object(value)) return false;
+  const record: Record<string, unknown> = value;
+  return hasDraft(value) && isChatSession(record.session) && Array.isArray(record.messages) && record.messages.every(isChatMessage) &&
+    (record.draftReviewRequired === undefined || typeof record.draftReviewRequired === 'boolean') &&
+    Array.isArray(record.materials) && record.materials.every(isChatMaterial) && object(record.capabilities) &&
+    typeof record.capabilities.agentAvailable === 'boolean' && typeof record.capabilities.decisionExecutionAvailable === 'boolean';
+}
+export const listChatSessions = () => http<ChatSession[]>('/api/sessions', 'GET', undefined, v => Array.isArray(v) && v.every(isChatSession));
+export const createChatSession = (payload: { requestId: string }) => http<ChatSession>('/api/chat/sessions', 'POST', payload, isChatSession);
+export const readConversation = (sid: string) => http<Conversation>(`${path(sid)}/conversation`, 'GET', undefined, isConversation);
+export type ChatMessageWrite = { requestId: string; expectedStateRevision: number; content: string; attachmentIds: string[];replyToMessageId?:string };
+export const saveChatMessage = (sid: string, payload: ChatMessageWrite) => http<ChatMessageResult>(`${path(sid)}/chat/messages`, 'POST', payload,
+  v => object(v) && isChatSession(v.session) && isChatMessage(v.message) && integer(v.stateRevision) && integer(v.draftRevision));
+export async function uploadChatMaterial(sid: string, payload: { requestId: string; expectedStateRevision: number; name: string }, file: File): Promise<ChatMaterial> {
+  const result = await uploadMaterial(sid, { ...payload, role: 'unknown' }, file);
+  if (!object(result) || !object(result.material) || result.material.sessionId !== sid || result.material.role !== 'unknown' || !integer(result.stateRevision)) {
+    throw new ApiError('附件保存结果无法确认，请按原发送重试。', 'invalid_response');
+  }
+  const material = { ...result.material, byteSize: file.size, current: true };
+  if (!isChatMaterial(material)) throw new ApiError('附件元信息不完整，请按原发送重试。', 'invalid_response');
+  return material;
+}

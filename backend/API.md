@@ -11,6 +11,9 @@ FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的�
 | GET `/api/health` | 保留 `{status, model_configured}` 状态格式，不请求模型 |
 | GET `/api/sessions` | 会话列表 |
 | POST `/api/sessions` | direction、requestId → 会话 |
+| POST `/api/chat/sessions` | requestId → 允许先保存材料的个人对话，求职方向待补齐 |
+| GET `/api/sessions/{id}/conversation` | 恢复原始消息顺序、消息附件、全部原件元信息及当前稿；不返回内部问题清单 |
+| POST `/api/sessions/{id}/chat/messages` | content、attachmentIds、requestId、expectedStateRevision → 保存用户原话及附件关联，不建个人事实来源、不执行建议决定 |
 | POST `/api/demo/sessions` | requestId → 独立构造材料会话及初始稿，mode=mock |
 | POST `/api/sessions/{id}/mock-analysis` | requestId、expectedStateRevision → 固定构造流程的建议、问题及模拟事件；仅限未改变的模拟示例 |
 | GET `/api/sessions/{id}` | 恢复会话、全部消息、材料清单、当前稿、历史建议及问题 |
@@ -95,7 +98,7 @@ Content-Type: application/pdf
 [文件原始字节]
 ```
 
-文件名不得含路径分隔符或控制字符，原附件以 BLOB 入库，不按传入名称写磁盘。支持 .md、.docx、PDF、PNG/JPEG；旧 .doc 提示转换。校验声明 MIME／扩展名与文件头或 DOCX 容器。**文件头通过不表示完整格式解析通过**：仅 MD 当前可提取文本；Word／PDF／图片保存后为 pending，不生成假识别结果。
+文件名不得含路径分隔符或控制字符，原附件以 BLOB 入库，不按传入名称写磁盘。支持 .md、.docx、PDF、PNG/JPEG；旧 .doc 提示转换。校验声明 MIME／扩展名与文件头或 DOCX 容器。**文件头通过不表示完整格式解析通过**：MD 保留原文及行号，DOCX／文字型 PDF 接本地解析器；图片仍为 pending。具体结果看 parseStatus 与 parseReport，失败仍保留已识别格式的原件，不生成假识别文本。
 
 当前初始边界：JSON 请求最多 1 MiB，原文件最多 10 MiB，文本最多 50000 字符。属于待多格式样例校准的实现上限，不宣称适合所有实际简历；后续限制调整需同步文档。流式接收也检查累计大小，不能只相信 Content-Length。
 
@@ -145,7 +148,7 @@ PUT draft 输入：`{requestId, expectedStateRevision, markdown}`。允许清空
 
 confirmed 表示用户操作路径已获得明确替换授权；completeConfirmed 表示已确认同人同岗位且提供完整新版。它们是用户路径的结构化确认，不要求额外点击按钮，也不能由模型自行代填。后端校验授权引用确属本会话当前有效用户消息，并保存确切消息编号／原文；不会通过关键词推断自然语言是否真有授权。无登录的本机接口不能提供身份认证。
 
-当前仅支持角色明确为 resume、parse_status=parsed、当前代次且非历史的粘贴／Markdown 材料，须有一个来源块与原始 UTF-8 全文一致；partial、unknown、历史／跨会话材料，以及尚未解析的 Word／PDF／图片均拒绝。全文一致只能验证提取完整性，不能自动证明用户未遗漏经历或页面，内容完整性仍需用户核对。不要把此检查称为通用格式完整性识别。
+当前仅支持角色明确为 resume、parse_status=parsed、当前代次且非历史的粘贴／Markdown 材料，须有一个来源块与原始 UTF-8 全文一致；partial、unknown、历史／跨会话材料，以及 Word／PDF／图片均拒绝；此整体替换入口仍限粘贴／Markdown，不因 A-T09 能提取文本而扩大。全文一致只能验证提取完整性，不能自动证明用户未遗漏经历或页面，内容完整性仍需用户核对。不要把此检查称为通用格式完整性识别。
 
 一次事务更换当前稿、增加简历代次与稿件／会话版本、归档旧个人材料与问答、失效全部旧 pending 和旧运行、归档旧问题当前状态，保存替换前后正文、有效来源范围和授权引用；只激活新版个人来源，保留 JD 与岗位。历史已决建议及确切来源快照继续可回看。失败全部回滚；同 requestId 重试不再次换代。结构版本为 3，新增 suggestion_decisions，启动时从旧版本无损迁移。
 
@@ -153,7 +156,7 @@ confirmed 表示用户操作路径已获得明确替换授权；completeConfirme
 
 ## 本机页面闭环与模拟示例（A-T08）
 
-会话结构增加 mode=local／mock，旧会话迁移后默认为 local，普通创建接口不接受调用方指定 mode。结构版本现为 4／17 表；新增 004_session_mode.sql 仅追加字段，保留既有会话、正文、历史及去重记录。
+A-T08.1 的会话结构增加 mode=local／mock，旧会话迁移后默认为 local，普通创建接口不接受调用方指定 mode。该阶段结构版本为 4／17 表；004_session_mode.sql 仅追加字段。后续 A-T08.3 的结构版本 5 见下文，两次迁移均保留既有数据。
 
 创建模拟示例使用已标注 synthetic 的 tests/fixtures/minimal-resume-case.json，以真实 Repository 保存独立构造材料、补充与初始稿；不会复制用户会话或读取个人材料。示例岗位为 FDE 仅用于固定验收，不代表已验证其他岗位质量。创建操作与请求去重原子提交；同编号重放不生成第二份示例。
 
@@ -173,6 +176,37 @@ confirmed 表示用户操作路径已获得明确替换授权；completeConfirme
 
 前端验证命令（frontend 目录）：npm run typecheck、npm test、npm run build。前端测试使用 Node.js 自带 test runner，不需要新测试依赖或模型服务。实际浏览器烟测使用独立 SQLite，不把构造验收记录放入正式业务库。
 
+## 连续聊天保存与恢复（A-T08.3，本次已实现范围）
+
+真实聊天页为 `/chat`；`/chat-preview` 继续作为纯内存视觉示例，原 `/` 工作台保留。此次不接自然语言决定、不调用真实或模拟 Agent、不把旧模拟事件编成真实助手发言。A-T08.3 实现消息与原件保存；A-T08.4 现已复用既有 draft 接口接入聊天内当前稿编辑、保存、预览、复制、导出，以及附件原文／确切版本依据的按需查看。
+
+新增结构版本 5／18 表：sessions 增加 direction_status、chat_title，messages 增加 input_channel，新增 chat_message_attachments。旧会话方向默认为 provided，旧消息默认 legacy；不重写原文或原件。迁移仍按序事务执行，不改旧迁移。
+
+POST `/api/chat/sessions` 输入 `{requestId}`，以同一创建范围做 24 小时成功请求去重；返回真实 Session。初始 direction="新对话" 仅为兼容显示值，directionStatus=pending、targetDirection=null 才表示业务目标尚未记录。title 在首次消息成功后取原话首行或附件名，不能把标题当成岗位。已明确方向的旧会话为 provided，targetDirection 为原方向。此阶段不从用户文字猜方向，实际语义接入仍由 B 负责。
+
+POST chat/messages 请求示例：
+
+```json
+{
+  "requestId": "chat-message-001",
+  "expectedStateRevision": 3,
+  "content": "如果我做过 API 集成，是不是更有优势？",
+  "attachmentIds": ["material-xxx"]
+}
+```
+
+- 原文最多 50000 字符，最多 10 个不重复附件编号；有附件时允许正文为空，不补造“我上传了简历”等原话。无原文且无附件拒绝。role、kind、inputChannel、decision、SQL 等额外字段均拒绝；服务端固定保存 role=user、kind=message、inputChannel=chat。
+- 附件必须为本会话、当前简历代次且非历史的已保存原件。附件顺序按请求保存；跨会话／缺失附件拒绝，不回显外部记录。关联、原话、标题、会话版本／旧运行失效与去重结果在同一事务保存，失败一起回滚。
+- 新聊天入口不调用 save_source，不把“可以”“不要改”或假设变成个人事实，也不调用 accept／reject／revise。复用上传接口的 Markdown 可已有 unknown／pending 原文块，但这不表示个人事实已激活。旧 messages API 的来源建立行为保持兼容，不能混用为新聊天入口。
+- 返回 `{session, message, stateRevision, draftRevision}`，message 带附件元信息，避免为每条写入缓存整段聊天历史。新消息不改变 draftRevision／当前稿。成功重放先于旧版本检查；同编号换内容报 request_conflict，独立操作相同文字是另一条消息。
+- 新聊天写入仅允许 local 会话；旧 mock 会话可读取，但该页只供回顾，不能混入个人消息。模型运行上下文不能调用聊天用户写入或历史读取。
+
+GET conversation 返回 `{session, messages, materials, draft, draftReviewRequired, capabilities}`：messages 按服务端插入顺序恢复并带 1 起始 sequence、inputChannel、historical、attachments；附件元信息含 byteSize 与 current，不读取原件 BLOB 进普通消息列表。materials 含已保存但还未绑定消息的原件，用户可按需查看并加入下一条消息；下载复用原件用户入口。capabilities 当前明确为 `{agentAvailable:false, decisionExecutionAvailable:false}`，不从是否配置密钥推断 Agent 可用。
+
+前端一次发送分为“幂等建会话 → 各原件分别上传 → 原话与附件关联提交”。这些 HTTP 步骤不是一个跨请求数据库事务：原件成功、后续消息失败时，原件仍保留且可恢复。客户端保留每步编号、原内容和已成功结果；失败不清空输入，结果未知时只允许重试原发送。已明确拒绝的步骤可以返回编辑，复用已存原件，修正后再发送，不重复上传成功项。消息已确认、后续读取失败时只重试读回，不重发消息。
+
+待发送输入和 File 对象仅在当前页面内存按会话保留，离开时提示；不是浏览器持久备份。刷新可恢复已入库原话与原件，未提交的文字不保证恢复。新页没有自然语言解析、自动分类／方向识别、自动成稿或建议确认能力；这类消息只保存原话，分析服务未接入时显示真实系统状态，不伪装 Agent 回复。
+
 ## 删除与本地访问范围
 
 DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失效、级联删除会话业务数据；A-T06 只实现持久化逻辑失效，实际模型网络请求的取消由 B 后续接入。用户原文件和独立费用账本不改动。
@@ -190,3 +224,136 @@ DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失
 ```
 
 接口检查通过实际 FastAPI／ASGI 应用和隔离 SQLite 文件执行，无真实模型或外部网络；包含保存、重启重试、并发重试、回滚、材料回看、跨会话拒绝与删除清理。A-T07 增加目标替换／插入／删除、拒绝／调整反馈、重复段落／代码围栏／嵌套列表、手改失效、整稿替换范围、迁移保留及注入失败回滚检查。A-T08 增加模式迁移、模拟创建／运行的原子性及重放、真实材料拒绝、已修改示例拒绝、模拟事件恢复和实际确认事务；模拟功能测试不等于真实 Agent 评估。
+
+### 当前稿整合（A-T08.4）
+
+`draftReviewRequired` 为简短交付提示：当前代次未解决的 `kind=conflict` 记录，或当前稿仍引用非当前有效来源时为 true。不返回内部问题清单、摘要或工具日志；读取、复制和下载均不修改 Issue 状态。识别新的语义冲突仍由 B 负责，不用该字段宣称事实已全部核验。
+
+聊天页右侧复用 PUT draft 的版本与幂等语义及原 DraftBuffer。停止输入 500ms 自动保存；切换、重新读取或发送新消息前等待同一保存缓冲，失败保持当前会话及本地文字。版本冲突由用户明确选择保留本地文字或采用服务器稿；未知结果重试原编号与原正文。隐藏面板不销毁缓冲。未入库编辑只在当前页面内存，关闭／刷新前提示，不能当作持久备份。
+
+预览使用已有安全 Markdown 组件。复制与 Markdown 下载仅取可见当前稿正文，不混入消息、材料、内部问题或未接受建议；未保存文件名带“未保存”，模拟历史文件带“模拟示例”。聊天页模拟会话仍只读。附件与依据弹窗按需请求既有 material detail／source revision 入口，依据校验确切 sourceId 与 sourceRevision，不能用最新版本替代旧引用；旧建议决定仅作历史记录展示，不提供独立确认面板。
+
+
+## 文档解析与原文修正（A-T09）
+
+结构版本 6 追加 attachments.parse_report_json（可空 JSON），不新增表、不改变原件字节或既有来源。旧材料报告为 null，不追溯伪造已解析结果；既有 DOCX／PDF 需要重新上传才使用新解析器。新增本地依赖 pypdf==6.21.2、defusedxml==0.7.1，不调用模型或云端 OCR。
+
+新上传仍使用原 materials 入口。解析在短时独立进程中执行，工作在 SQLite 写事务之前；最多等待 6 秒。DOCX 按结构顺序提取段落、表格单元格文字，origin 保留 paragraph／part／table／row／column。分栏、自动编号、图片、浮动文本框、修订、合并单元格和脚注等未完整处理的内容会提示核对，不宣称视觉还原。页眉页脚单独提取；DOCX 段落编号不是 Word 页码。原件不解压写入工作目录，XML 禁用 DTD／实体。
+
+PDF 按原页序保存非空文字页，每页一个来源块，origin.page 为原 PDF 页码，lineStart／lineEnd 指提取文本的行号，并非原页面坐标。保留布局间距；发现疑似分栏、无文本页、图片／图形、字符错误或单页失败时标记风险。最多前 40 页、总计 50000 字符／1000 块，超限提示部分结果，不静默截断为成功。扫描／图片 OCR 仍属于后续 A-T10，不在本项完成；字体、布局等造成的所有遗漏不能自动保证识别。
+
+material.parseReport 为 `{parser,status,pageCount,message,warnings:[{code,message}]}`：parsed 表示本次提取未发现已检测风险，不证明内容完整或事实真实；partial 表示有可用文字但存在遗漏／顺序等风险；failed 表示没有可用提取结果或损坏、加密、超时；pending 留待图片识别。来源、原件、报告及请求去重一起落库，存储失败整体回滚；解析失败属于“原件已保存”的业务结果，返回 201 和明确 failed 状态。
+
+unknown 角色始终 pending。partial／failed 不自动建立初始稿，也不直接进入有效个人事实；用途明确且本次 parsed 的旧版 resume 上传可建立初始稿，已有稿件则仍作候选。聊天页不预先分类材料，不因提取成功自动改稿。材料 detail 按页／段位置及版本顺序返回原文快照，附件列表只显示短状态，报告在详情按需展开。
+
+```
+POST /api/sessions/{sid}/materials/{mid}/sources/{sourceId}/revisions
+{"requestId":"correction-001","expectedStateRevision":8,"expectedSourceRevision":1,"text":"按原件修正后的文字"}
+```
+
+这是用户路径，仅接非空文字与版本，不接角色、来源位置或任意路径。拒绝模拟／跨会话／跨材料／历史代次与过期来源。成功返回 `{source,stateRevision,draftRevision}`；来源新增一版，继承原位置及当前用途，不因修正就把 unknown 激活。旧引用／原件／当前稿不改写，旧 pending 建议失效，旧运行由上下文版本推进失效，Host 后续可据此重评估；B 的真实重评估尚未联调。同一请求重放只返回原版本，数据库故障不留下半个快照。
+
+聊天附件详情提供“修正提取文字”。编辑未保存时阻止关闭详情／提示离开；结果未知时保留原文字、原编号和版本，只能重试原修正。已确认保存而读回失败时只重读，不再新增版本。用户明确取消才能丢弃未提交编辑；纠正来源与手改当前稿是两个不同操作。
+
+
+## 本地图页准备（A-T10.1，已实现；识别结果接入未实现）
+
+结构版本 7：attachments 追加 page_report_json，新增 material_pages（共 19 表），图页与原件组合外键绑定、删除会话时级联清理。原件 bytes、解析报告、来源和当前稿不被图像副本覆盖。依赖 pypdfium2==5.14.0、Pillow==12.2.0，仅本机渲染／解码，不调用模型、OCR 或云端接口。
+
+- GET `/api/sessions/{sid}/materials/{mid}/pages`：只读页状态，返回 `{materialId,renderVersion,pageCount,limit,historical,pages,recognitionAvailable:false}`。初次 pageCount=null、第一页 pending，读取状态不会触发渲染；已知页数后按原 PDF 页码返回前 40 页，未准备页为 pending。图像文件只有第 1 页。
+- POST `/api/sessions/{sid}/materials/{mid}/pages/prepare`：`{requestId,expectedStateRevision,pageNumber}`，页码为 1～40，不接文件路径、模型参数、密码或外部 URL。每次只准备一页，返回同样页状态结构。图页准备失败属于明确 failed 结果并保留原件，可发起新的重试；网络结果未知则重试同编号／正文。缓存成功结果跳过再次渲染；同请求成功重放不重复落库。
+- GET `/api/sessions/{sid}/materials/{mid}/pages/{page}/image`：只返回已准备成功的 `image/png`，附 no-store／nosniff；未准备／失败返回 source_not_found。没有公共图床链接或任意路径访问。以上均经过既有本机 Host／Origin 守卫与会话归属检查。
+
+渲染在 SQLite 事务外的独立进程中执行，最长 6 秒；PDF 原页序不重排，按最大边 1600 像素、最高 120dpi 准备预览。PNG／JPEG 验证实际可解码与静态单帧，应用 EXIF 方向后生成独立预览；原文件保留原尺寸与字节。最大原图 2500 万像素、单页输出 6MiB；加密、坏文件、超时和页码错误有可定位反馈。缓存键含本会话附件、原件摘要、原页码和 renderVersion，版本或摘要不符不读取旧图。
+
+这是派生视图缓存，成功准备不推进 stateRevision／draftRevision，不创建 SourceBlock、不将 parseStatus 改成 parsed，也不取消正常运行。图像、尺寸／失败记录、页数报告及请求去重原子提交，失败整体回滚。原页数超过 40 会提示拆分，其余页面不假装已经准备。图像已准备不代表识别文字已完成。
+
+受信 Host 可直接调用 `Repository.read_material_page(RequestContext(sid,stateRevision,runId,generation), materialId, pageNumber)`，返回 `{imageData,mediaType,sessionId,materialId,contentHash,page,width,height,renderVersion}`。Host 持有真实运行上下文；拒绝取消／过期运行、跨会话、旧简历代次、历史或模拟材料。当前 unknown 材料允许由受信 Host 读图作后续分类，不自动成为事实。该读取方法不是模型可任意选择的文件工具，原 MaterialTools 白名单保持不变。
+
+按用户反馈，聊天附件打开后直接显示内容：PDF／图片自动准备并连续预览，不展示原页码、准备按钮、解析状态或版本卡片；Word／MD 默认显示最新提取正文，不重复拼入旧来源版本。仅保留文件名、下载和关闭，无法完整显示时给出简短重试／下载提示。图像自动准备仍按原页码顺序和既有范围／缓存规则执行；请求未知保留原请求，读到成功缓存即可显示，不重复准备。关闭后停止继续准备后续图页，重开复用已落库缓存；后台页码、报告和确切引用不删除。原文修正入口移至“修改依据与记录”中的可选材料修正区域。截图顺序纠正、B 识别回执保存／修正、识别版本缓存及真实模型联调尚未接入，留 A-T10 后续小项，不能把本阶段标为完整图片识别。
+
+
+## 助手回复与询问关联（A-T11.1，A 侧已实现）
+
+结构版本 9（23 表）：messages 追加回复关联、保存前后版本与候选询问；assistant_messages 保存受信 Host 回执，assistant_suggestion_links 保存建议快照。旧消息关联为空，不推断历史授权。真实 B Router 尚未接入，capabilities.agentAvailable／decisionExecutionAvailable 仍为 false。
+
+```python
+context = RequestContext(session_id, state_revision, run_id, generation)
+turn = service.get_chat_turn_context(context, user_message_id)
+service.save_assistant_message(context, {
+    "requestId": "reply-001", "userMessageId": user_message_id,
+    "content": "是否采用这个表述？", "kind": "change_question",
+    "suggestionIds": [saved_suggestion_id]
+})
+```
+
+两个方法仅供绑定当前已保存 running 运行的 Host 调用，没有浏览器注入助手消息的 HTTP 端点，不新增模型可任意选择的写入工具。触发回合必须是真实已保存、同会话、当前简历代次、版本与最新用户消息；拒绝旧运行、迟到回执与跨会话编号。kind 为 reply／question／change_question，只有 change_question 必须绑定 1～10 个真实 pending 建议。服务器核对目标块版本、before 与有效来源，保存建议及确切来源版本快照，不接收客户端自造目标。可选 sourceRefs 最多 50 条，正文最多 50000 字符。
+
+回执、关联与去重结果原子保存；同一请求同一上下文可重放，换正文／运行拒绝。保存回复不推进会话状态，不新增事实来源、不修改当前稿、不执行建议。测试必须显式 synthetic=True，消息标记“构造示例 · 非真实 Agent 回复”，构造演示不进入个人会话。
+
+`POST /api/sessions/{sessionId}/chat/messages` 增加可选 replyToMessageId。它只关联同会话、同简历代次的已保存询问；正文原样保存，不按“可以”等关键词执行决定，不默认选择最后一条建议。缺省／null 不改变旧请求的去重指纹。用户消息记录 savedBeforeRevision／savedAfterRevision 及保存前候选询问。明确关联已过期询问可保留追溯关系，但不能恢复有效性。
+
+会话读取的 assistant 元数据返回 kind、mode、replyToUserMessageId、sourceRefs、questionState。状态为 awaiting_reply／reply_saved／outdated／history，普通回复为空；不表示接受或执行成功。界面仅对 awaiting_reply 显示可选“回复这条询问”，查看依据按这条回复当时引用的原文版本读取；编辑当前稿成功后重新读取询问状态。
+
+Host get_chat_turn_context 返回真实用户原话、明确 replyToMessageId 与候选询问快照。普通答复造成的 S→S+1 可标记 reply_saved；中间附件上传、手改、来源变化、整体替换或后续新询问不能借此跳过版本检查。关联本身不是授权；确认事务适配见 A-T11.2，运行循环／费用与真实 B 联调属于尚未完成的 A-T11.3，自然语言理解仍由 B 提供。
+
+## 对话决定执行适配（A-T11.2，A 侧已实现）
+
+结构版本 10（24 表），新增 chat_decision_resolutions，持久记录每条用户答复的处理结果。仅受信 Host 调用，不开放 HTTP 注入接口，不进入 MaterialTools 模型工具白名单。
+
+```python
+service.apply_resolved_user_decision(context, {
+    "requestId": "decision-001", "userMessageId": saved_user_id,
+    "userContent": exact_saved_user_content, "status": "resolved",
+    "decisions": [{"promptMessageId": saved_prompt_id, "suggestionId": saved_suggestion_id,
+                   "decision": "accept", "feedback": ""}]
+})
+```
+
+context 须绑定当前真实 running 运行、最新输入版本及代次。userContent 必须逐字等于数据库中的完整用户原话，不能用助手摘要代替。status 只取 none／clarify／resolved；前两者 decisions 须为空，不改稿、不改建议状态，也不推进会话版本。resolved 须有 1～10 个互不重复的建议选择；decision 为 accept／reject／revise。feedback 为空或是这条原话的连续片段；revise 须非空。A 不分析自然语言，结构化解析由 B 提供，出处核对不能证明 B 对否定／条件／引用等语义理解正确。
+
+目标必须在答复保存时捕获的候选询问内，明确 replyToMessageId 时不能换另一条询问。核对原询问的建议快照、pending、正文、来源、稿件版本与代次，以及仅由该答复造成的 S→S+1；不得用当前版本替代缺失的旧上下文。过期关联保留追溯意义，但不能直接执行。只处理 B 明确选择的建议，不默认最后一条，不自动扩展到全部。整批预检后再执行，选择过期／同一段落多个相互竞争的接受决定时整批拒绝，保留原稿供澄清；执行中任何失败也整批回滚，不跳过失败项后谎报全成功。
+
+在同一业务事务内复用 A-T07，决定、稿件／依据、建议状态、消费记录及请求缓存一起提交；多处选择只推进一次会话版本，各接受操作沿用原稿件版本规则。拒绝／要求调整只记录决定及原话反馈，调整后的新改写仍由 B 生成。接受仍须有个人材料依据。修改会中断旧运行；已拒绝、失效或采用的建议不能复活。
+
+请求缓存仍为 24 小时；消息消费记录随会话长期保留。响应丢失后相同请求可读原回执，即使缓存过期也不会重做。同一用户消息换目标、动作、原话或运行上下文拒绝；none／clarify 也是该回合的已保存结果，后续澄清应产生新的真实用户消息。会话删除级联清理消费及回执，旧请求不能恢复会话。重复结果仅代表当时已提交事实，Host 必须重新读取当前稿，不能用旧回执覆盖后来的界面状态。
+
+返回 userMessageId、status、mode、decisions、stateRevision、draftRevision，不返回旧稿正文。事务成功后旧运行失效；Host 新建合法运行，可通过 get_chat_turn_context 的 decisionReceipt 读取该回合结果并保存对用户的结果回复。只允许该回合自身提交后的精确版本，其他手改／新输入之后仍拒绝旧回合回存。
+
+构造检查显式 synthetic=True，所选询问也必须为 synthetic；默认 host 模式不能消费构造询问。capabilities 继续为 false：实际 B 的意图解析、运行循环／费用和端到端自动更新未接入；个人会话不自动执行，隔离演示仅验证预设结构化结果。前端仍使用连续对话和现有当前稿，不增接受／拒绝工作流面板。
+
+## 识别回执、图片阅读顺序与重试意图（A-T10.2，A 侧已实现）
+
+结构版本 8（21 表）：attachments 追加 reading_order／recognition_report_json，新增 recognition_results、recognition_retry_requests。原件 original_order 继续表示上传顺序；读取材料数组按 coalesce(reading_order,original_order) 排列，不应再自行按 original_order 覆盖用户采用的顺序。PDF 内部页码与消息原始附件顺序不变。
+
+### 受信 Host 回存及缓存
+
+识别结果没有普通浏览器注入端点，也不新增模型可直接选的写入工具。由 B 的 Host 在真实已保存的最新 running 运行上下文中调用：
+
+```python
+context = RequestContext(session_id, state_revision, run_id, generation)
+cached = service.get_cached_recognition(context, material_id, page_number, recognition_version)
+# B 决定是否按显式重试请求及预算调用识别；A 不调用任何模型。
+service.save_recognition_result(context, {
+    "requestId": "recognition-job-001", "materialId": material_id, "pageNumber": 1,
+    "contentHash": original_hash, "renderVersion": render_version,
+    "recognitionVersion": recognition_version, "expectedSourceRevision": 0,
+    "status": "success", "text": "识别文字", "role": "unknown", "errorMessage": ""
+})
+```
+
+可选 retryId 关联当前材料待处理重试请求。status 为 success／partial／failed；partial 须有非空文字及问题说明，failed 须文字为空、说明非空。每页文字最多 50000 字符，说明最多 1000 字符。不接会话覆盖、路径、SQL、来源编号或任意页位置。校验 Host 运行、当前简历代次、同会话附件、原件摘要、图页版本／缓存以及预期来源版本；拒绝取消／旧运行、历史／模拟材料、错误页或迟到回执。识别失败可关联失败图页，但成功文字必须对应准备成功的图。
+
+role 仅保存为 proposedRole，来源继承附件当前角色且保持 pending；不会因回执自称 resume 就激活个人事实。回存通常新建来源版本并保留旧快照，旧 pending 建议失效；所有状态、来源、重试进度、材料报告与去重在同一事务提交，失败一起回滚。当前稿、已接受内容和原件不改写。待核对结果写入不推进会话版本，避免同一运行批量回存把自己取消；用户修正、调整顺序或申请重识别仍推进版本并使旧运行失效。
+
+缓存以附件摘要、原页码、渲染版本、识别版本及当前代次核对，返回 cacheHit、result、currentSource、expectedSourceRevision、retryRequests。失败回执不作为成功缓存；已有成功页／旧可用文字不会因其他页失败而删除。原始回执 text 与人工当前文字分开保存：如果已有人工作出的来源修正，即使主动重识别也保留 currentSource，标记 preservedCorrection／userCorrected，不让新回执覆盖人工版本。Host 应优先使用 currentSource，不能将 raw result.text 冒充人工修正版；引用仍以确切 SourceBlock 文本校验。
+
+同一请求、同一运行可重放且不重复新增快照；同编号换内容／运行拒绝。运行已结束时旧回存拒绝，可在新的合法运行中通过缓存读取已保存结果，不复活旧运行。测试注入需显式 synthetic=True，回执及报告标记 synthetic，仅用于隔离构造验证；不能据此声称真实 B 识别通过。
+
+### 用户图片顺序与重新识别意图
+
+POST `/api/sessions/{sid}/materials/image-order` 接 `{requestId,expectedStateRevision,materialIds}`。materialIds 须包含当前范围全部 PNG／JPEG，完整、无重复、最多 200 个；只置换图片已有阅读位置，其他材料位置、PDF 内部页序及原始上传顺序不动。成功返回 conversation。实际变动推进一次上下文版本，正文／来源内容不变；同请求重放不重复移动，存储失败整次回滚。
+
+POST `/api/sessions/{sid}/materials/{mid}/recognition-retry` 接 `{requestId,expectedStateRevision}`，返回 `{retryId,status:'pending',stateRevision}`。它只记录材料的全部已知页范围，不调用模型；同材料当前范围已有 pending 请求时返回原请求，不重复排队或推进版本。未知页数、加密或超过 40 页时需先查看／转换／拆分。Host 在缓存中读到请求，自行核对预算后处理；逐页回执携带 retryId 更新进度，全部返回后为 completed 或 failed，失败页不清除其他页文字。
+
+附件列表按需“调整图片顺序”，上下移动仅作用图片；有识别记录的附件可“申请重新识别”，只提示已记录、等待服务。界面操作未知时保留原请求；已确认写入而刷新失败只重读。附件点击打开仍仅显示原内容，不铺开识别页码、状态／版本卡片；原文校对保留在可选依据区域。实际 B 接口、模型预算与真实识别效果尚未联调。

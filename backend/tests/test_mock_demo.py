@@ -110,7 +110,7 @@ class MockDemoTests(unittest.TestCase):
                 db.initialize_database(connection)
                 connection.execute("INSERT INTO sessions(session_id, direction) VALUES ('old-session', '原来的方向')")
             report = db.initialize_database(connection)
-            self.assertEqual(report["schemaVersion"], 4)
+            self.assertEqual(report["schemaVersion"], db.SCHEMA_VERSION)
             row = connection.execute("SELECT * FROM sessions").fetchone()
             self.assertEqual(row["direction"], "原来的方向")
             self.assertEqual(row["mode"], "local")

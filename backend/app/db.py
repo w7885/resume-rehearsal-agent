@@ -18,6 +18,12 @@ MIGRATIONS = (
     (2, Path(__file__).with_name("migrations") / "002_request_log.sql"),
     (3, Path(__file__).with_name("migrations") / "003_suggestion_decisions.sql"),
     (4, Path(__file__).with_name("migrations") / "004_session_mode.sql"),
+    (5, Path(__file__).with_name("migrations") / "005_chat_messages.sql"),
+    (6, Path(__file__).with_name("migrations") / "006_material_parse_report.sql"),
+    (7, Path(__file__).with_name("migrations") / "007_material_pages.sql"),
+    (8, Path(__file__).with_name("migrations") / "008_recognition_results.sql"),
+    (9, Path(__file__).with_name("migrations") / "009_assistant_replies.sql"),
+    (10, Path(__file__).with_name("migrations") / "010_chat_decisions.sql"),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

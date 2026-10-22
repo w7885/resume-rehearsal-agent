@@ -161,7 +161,9 @@ class Repository:
     def _session(row):
         return {"sessionId": row["session_id"], "direction": row["direction"],
                 "stateRevision": row["state_revision"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-                "draftRevision": row["draft_revision"], "currentResumeGeneration": row["current_resume_generation"], "status": row["status"], "mode": row["mode"]}
+                "draftRevision": row["draft_revision"], "currentResumeGeneration": row["current_resume_generation"], "status": row["status"], "mode": row["mode"],
+                "title": row["chat_title"] or row["direction"], "directionStatus": row["direction_status"],
+                "targetDirection": row["direction"] if row["direction_status"] == "provided" else None}
 
     def create_session(self, direction: str):
         direction = _text(direction, "求职方向").strip()
@@ -181,20 +183,26 @@ class Repository:
     @staticmethod
     def _message(row):
         return {"messageId": row["message_id"], "sessionId": row["session_id"], "role": row["role"],
-                "content": row["content"], "createdAt": row["created_at"], "kind": row["kind"]}
+                "content": row["content"], "createdAt": row["created_at"], "kind": row["kind"],
+                "replyToMessageId":row['reply_to_message_id'] if 'reply_to_message_id' in row.keys() else None,
+                "savedBeforeRevision":row['saved_before_revision'] if 'saved_before_revision' in row.keys() else None,
+                "savedAfterRevision":row['saved_after_revision'] if 'saved_after_revision' in row.keys() else None}
 
-    def save_message(self, context: RequestContext, content: str, *, role="user", kind="message"):
-        _text(content, "消息正文")
+    def save_message(self, context: RequestContext, content: str, *, role="user", kind="message", input_channel="legacy"):
+        _choice(input_channel, {"legacy", "chat"}, "消息入口")
+        _text(content, "消息正文", empty=input_channel == "chat")
         _choice(role, {"user", "assistant"}, "消息角色")
         _choice(kind, {"message", "supplement", "correction", "skip"}, "消息类型")
         if role == "user":
             self._user_path(context)
         elif kind != "message":
             raise RepositoryError("invalid_input", "Agent 消息不能充当用户补充或纠正。")
+        if input_channel == "chat" and role != "user":
+            raise RepositoryError("scope_violation", "聊天用户入口不能伪造助手发言。", False)
         with self._operation(context, write=True) as (connection, session):
             message_id = _id("message")
-            connection.execute("INSERT INTO messages(message_id, session_id, role, content, kind, resume_generation) VALUES (?, ?, ?, ?, ?, ?)",
-                               (message_id, context.session_id, role, content, kind, session["current_resume_generation"]))
+            connection.execute("INSERT INTO messages(message_id, session_id, role, content, kind, resume_generation, input_channel) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (message_id, context.session_id, role, content, kind, session["current_resume_generation"], input_channel))
             if role == "user":
                 self._touch(connection, context.session_id)
             return self._message(connection.execute("SELECT * FROM messages WHERE message_id = ? AND session_id = ?", (message_id, context.session_id)).fetchone())
@@ -205,11 +213,21 @@ class Repository:
             return [self._message(row) for row in connection.execute(
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
 
+    def get_conversation(self, context: RequestContext):
+        from app.chat_service import read_conversation
+        return read_conversation(self, context)
+
+    def read_material_page(self, context: RequestContext, material_id: str, page_number: int):
+        from app.page_service import read_page_image
+        return read_page_image(self, context, material_id, page_number)
+
     @staticmethod
     def _material(row):
         return {"materialId": row["attachment_id"], "sessionId": row["session_id"], "name": row["name"],
                 "role": row["role"], "parseStatus": row["parse_status"], "useStatus": row["use_status"],
-                "mediaType": row["media_type"], "originalOrder": row["original_order"]}
+                "mediaType": row["media_type"], "originalOrder": row["original_order"],
+                "parseReport": json.loads(row["parse_report_json"]) if "parse_report_json" in row.keys() and row["parse_report_json"] else None,
+                "recognitionReport": json.loads(row["recognition_report_json"]) if "recognition_report_json" in row.keys() and row["recognition_report_json"] else None}
 
     def save_material(self, context: RequestContext, *, name: str, media_type: str, original_data: bytes,
                       role="unknown", parse_status="pending", use_status="pending"):
@@ -278,13 +296,18 @@ class Repository:
         _text(text, "来源原文")
         _choice(role, {"resume", "jd", "supplement", "unknown"}, "来源角色")
         _choice(use_status, {"pending", "active", "history"}, "来源用途")
-        _keys(origin, {"kind"}, {"materialId", "messageId", "page", "paragraph", "lineStart", "lineEnd"})
+        _keys(origin, {"kind"}, {"materialId", "messageId", "page", "paragraph", "lineStart", "lineEnd", "part", "table", "row", "column", "recognitionVersion", "renderVersion"})
         kind = _choice(origin["kind"], {"material", "message"}, "来源类型")
         origin_key = "materialId" if kind == "material" else "messageId"
         _text(origin.get(origin_key), "原始材料编号")
         if (kind == "material" and "messageId" in origin) or (kind == "message" and "materialId" in origin):
             raise RepositoryError("invalid_input", "来源只能指向一份材料或一条消息。")
-        for key in ("page", "paragraph", "lineStart", "lineEnd"):
+        if "part" in origin:
+            _text(origin["part"], "文档部分")
+        for key in ('recognitionVersion','renderVersion'):
+            if key in origin:
+                _text(origin[key], key)
+        for key in ("page", "paragraph", "lineStart", "lineEnd", "table", "row", "column"):
             if key in origin:
                 _integer(origin[key], key)
         if ("lineStart" in origin) != ("lineEnd" in origin) or origin.get("lineEnd", 1) < origin.get("lineStart", 1):
@@ -542,7 +565,7 @@ class Repository:
             messages = [self._message(row) for row in connection.execute("SELECT * FROM messages WHERE session_id = ? AND use_status = 'active' AND resume_generation = ? ORDER BY created_at, rowid", (context.session_id, session["current_resume_generation"]))]
             # Pending material metadata can be classified later; no raw bytes or
             # unresolved text is included in Agent factual memory.
-            materials = [self._material(row) for row in connection.execute("SELECT * FROM attachments WHERE session_id = ? AND (resume_generation = ? OR (role = 'jd' AND use_status = 'active')) ORDER BY original_order", (context.session_id, session["current_resume_generation"]))]
+            materials = [self._material(row) for row in connection.execute("SELECT * FROM attachments WHERE session_id = ? AND (resume_generation = ? OR (role = 'jd' AND use_status = 'active')) ORDER BY coalesce(reading_order,original_order),original_order", (context.session_id, session["current_resume_generation"]))]
             suggestions = []
             for row in connection.execute("SELECT * FROM suggestions WHERE session_id = ? AND status = 'pending' AND resume_generation = ? ORDER BY created_at, suggestion_id", (context.session_id, session["current_resume_generation"])):
                 proposal = self._suggestion(connection, row)
@@ -577,7 +600,7 @@ class Repository:
             messages = [self._message(row) for row in connection.execute(
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
             materials = [self._material(row) for row in connection.execute(
-                "SELECT * FROM attachments WHERE session_id = ? ORDER BY original_order", (context.session_id,))]
+                "SELECT * FROM attachments WHERE session_id = ? ORDER BY coalesce(reading_order,original_order),original_order", (context.session_id,))]
             suggestions = [self._suggestion(connection, row) for row in connection.execute(
                 "SELECT * FROM suggestions WHERE session_id = ? ORDER BY created_at, rowid", (context.session_id,))]
             issues = [{**self._issue(connection, row), "isCurrent": bool(row["is_current"])} for row in connection.execute(
@@ -598,7 +621,7 @@ class Repository:
                 raise RepositoryError("source_not_found", "没有找到请求的材料。")
             sources = [self._source(source) for source in connection.execute(
                 "SELECT * FROM source_blocks WHERE session_id = ? AND attachment_id = ? "
-                "ORDER BY source_id, source_revision", (context.session_id, material_id))]
+                "ORDER BY coalesce(page_number, json_extract(origin_json, '$.paragraph'), line_start, 0), source_id, source_revision", (context.session_id, material_id))]
             return {"material": self._material(row), "sources": sources}
 
     def delete_session(self, context: RequestContext):

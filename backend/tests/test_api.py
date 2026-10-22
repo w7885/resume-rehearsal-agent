@@ -246,7 +246,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.count("draft_blocks"), 1)
         self.assertEqual(self.version(session["sessionId"]), 2)
 
-    def test_raw_binary_formats_are_saved_pending_and_download_exactly(self):
+    def test_originals_survive_even_when_documents_fail_parsing_and_images_remain_pending(self):
         session = self.new_session()
         docx = BytesIO()
         with zipfile.ZipFile(docx, "w") as archive:
@@ -261,7 +261,7 @@ class ApiTests(unittest.TestCase):
             result = self.request("POST", f"/api/sessions/{session['sessionId']}/materials?{params}", body=raw, headers={"content-type": media_type})
             self.assertEqual(result["status"], 201, result)
             material = result["json"]["data"]["material"]
-            self.assertEqual(material["parseStatus"], "pending")
+            self.assertEqual(material["parseStatus"], "failed" if name.endswith((".docx", ".pdf")) else "pending")
             self.assertEqual(result["json"]["data"]["sources"], [])
             download = self.request("GET", f"/api/sessions/{session['sessionId']}/materials/{material['materialId']}/file")
             self.assertEqual(download["body"], raw)
