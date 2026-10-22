@@ -27,7 +27,7 @@ async def request_asgi(app, method, url, *, data=None, body=None, headers=None, 
     body = b"" if body is None else body
     values["content-length"] = str(len(body))
     values.update(headers or {})
-    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "scheme": "http",
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "scheme": "http",
              "method": method, "path": parsed.path, "raw_path": parsed.path.encode(), "query_string": parsed.query.encode(),
              "root_path": "", "server": ("127.0.0.1", 3001), "client": ("127.0.0.1", 12345),
              "headers": [(key.lower().encode(), value.encode("latin-1")) for key, value in values.items()]}

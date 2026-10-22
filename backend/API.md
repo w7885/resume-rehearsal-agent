@@ -1,8 +1,33 @@
-# 本机业务 API（A-T06／A-T07／A-T08）
+# 本机业务 API（持久聊天与 A/B Agent 整合）
 
 基础地址 `http://127.0.0.1:3001`，前端开发时经 `http://127.0.0.1:5173/api` 代理访问。
 FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的两种正文格式以本文为准。
-已提供建议确认、手改与明确整体替换接口，并接入本机页面闭环；没有真实 Agent／预算路由。模拟示例与个人材料会话分开，页面不会对个人履历套用预设建议。
+已提供建议确认、手改、明确整体替换，以及已保存聊天到 B Agent 的受信 Host 连接。模拟示例与个人材料会话分开；真实调用默认关闭，未满足密钥与预算条件时只保存内容，不调用模型。
+
+## 整合入口、迁移与运行边界
+
+应用启动时装配 AgentHost、运行／停止／预算路由。B 的推理循环、路由、工具、记忆与模型客户端保留，HTTP 接口改为受信 Host 管理；不再接收客户端传来的独立 message 文本或“已同意”证明。
+
+| 方法与路径 | 输入／结果 |
+|---|---|
+| POST `/api/sessions/{id}/runs` | requestId、userMessageId、expectedStateRevision → 持久 SSE；原话只从当前已保存用户消息读取 |
+| GET `/api/sessions/{id}/agent-requests/{requestId}` | 请求状态、结果及已保存事件，用于恢复；不触发新模型调用 |
+| POST `/api/runs/{runId}/cancel` | 停止对应请求链，拒绝迟到写入；已结束的请求返回原状态 |
+| GET `/api/sessions/{id}/budget` | 统一账本的 limitCents、spentCents、reservedCents、remainingCents |
+
+`conversation.capabilities` 动态反映当前是否可用。环境须同时具备 DEEPSEEK_API_KEY、AGENT_ENABLED=1、AGENT_BUDGET_CONFIRMED=1，才会启用真实客户端；缺条件时仍保留消息、附件、预览和当前稿。配置读取进程环境，不自动载入 .env，样例不含密钥。开发测试可显式注入构造客户端，回复标记 synthetic；普通 HTTP 不能选择构造模式或注入解析结果。
+
+前端先保存用户消息，再按消息编号启动一次分析；分析失败不重复发送原话。请求编号不可更换内容；同一保存回合换分析编号也只返回原处理记录，不再次收费调用。已有已完成／失败／中断记录只重放，不自动重新执行；用户新的输入是新回合。SSE 只输出短状态与已保存消息编号，成功展示依据已提交事务；主对话不展开内部工具日志。连接丢失／停止会清理任务，旧运行与旧版本不能继续写入。服务重启将未完成运行记为 interrupted，未知费用预留保守计入支出。请求链允许自身材料确认／决定事务之后创建合法续接运行，不复活旧 runId；事件序号在整个请求链内递增。流处理上限 180 秒，停止前端等待不代表提供商未收费。
+
+附件初始保持 unknown／pending。Host 在聊天中询问用途，B 对真实答复返回结构化选择；A 核对询问、附件摘要、来源版本和代次后，新建来源版本并激活对应角色，初次 resume 可建立当前稿。不会原地修改来源快照，不把全部附件自动当作本人经历。已有稿件历史的另一份 resume 仍要求明确替换；图片／扫描页可预览，自动 OCR 调用未接入，不能假称识别完成。原话不自动转为个人事实。
+
+修改决定先由 B 解析为 none／clarify／resolved，再通过 A-T11.2 的原话／范围／版本校验与持久消费；旧“最后一条建议直接接受”路径关闭。普通 B 回复和建议在 Host 统一保存，结束运行发生在回复与事件持久化之后。B 记忆按简历代次、稿件版本和有效来源版本隔离；旧数据保留但不用于新稿。
+
+数据库统一至 schema 12／31 表：保留两份已发布的第 4 号迁移文件；仅对完整匹配已知 B4 结构的库补齐 A4，再执行追加迁移。A4～A10、B4 和新建库均可升级；未知结构拒绝，不直接改版本号、覆盖旧迁移或清库，失败全部回滚。B 的 agent_state 及预算记录保留。新增请求、流事件、回合效果、附件询问与项目预算表；消费及普通状态随会话删除，项目账本及费用预留独立保留。
+
+ProjectBudget 约束统一账本控制的所有会话／日期，最大 3000 分。遗留 B 账本的已花金额和未知预留保守导入，不因会话删除、跨日或重启重置。每次调用先原子预留，响应按 usage 结算；取消、坏 JSON 或缺失 usage 不算免费。已有预留在重启后保守计入；无法理解的历史金额拒绝启用。该上限不覆盖其他机器／外部脚本绕过统一入口的调用；启用前须核对真实历史费用、费率并统一账本，不能将新建本地库当作重新获得 30 元。金额来自 B 的定价估算及提供商 usage，构造测试不证明真实账单准确。
+
+整合验证使用隔离构造客户端与 MockTransport，没有调用真实提供商；语义准确性、实际 OCR、真实费用与团队端到端验收仍需独立证据。PR 合并表示工程整合通过，不表示这些外部效果已验证。
 
 ## 接口清单
 
@@ -201,7 +226,7 @@ POST chat/messages 请求示例：
 - 返回 `{session, message, stateRevision, draftRevision}`，message 带附件元信息，避免为每条写入缓存整段聊天历史。新消息不改变 draftRevision／当前稿。成功重放先于旧版本检查；同编号换内容报 request_conflict，独立操作相同文字是另一条消息。
 - 新聊天写入仅允许 local 会话；旧 mock 会话可读取，但该页只供回顾，不能混入个人消息。模型运行上下文不能调用聊天用户写入或历史读取。
 
-GET conversation 返回 `{session, messages, materials, draft, draftReviewRequired, capabilities}`：messages 按服务端插入顺序恢复并带 1 起始 sequence、inputChannel、historical、attachments；附件元信息含 byteSize 与 current，不读取原件 BLOB 进普通消息列表。materials 含已保存但还未绑定消息的原件，用户可按需查看并加入下一条消息；下载复用原件用户入口。capabilities 当前明确为 `{agentAvailable:false, decisionExecutionAvailable:false}`，不从是否配置密钥推断 Agent 可用。
+GET conversation 返回 `{session, messages, materials, draft, draftReviewRequired, capabilities}`：messages 按服务端插入顺序恢复并带 1 起始 sequence、inputChannel、historical、attachments；附件元信息含 byteSize 与 current，不读取原件 BLOB 进普通消息列表。materials 含已保存但还未绑定消息的原件，用户可按需查看并加入下一条消息；下载复用原件用户入口。capabilities 由 Host 的启用、密钥及预算条件共同决定；默认两个字段均为 false，具体条件见顶部整合说明，不能只根据是否配置密钥推断可用。
 
 前端一次发送分为“幂等建会话 → 各原件分别上传 → 原话与附件关联提交”。这些 HTTP 步骤不是一个跨请求数据库事务：原件成功、后续消息失败时，原件仍保留且可恢复。客户端保留每步编号、原内容和已成功结果；失败不清空输入，结果未知时只允许重试原发送。已明确拒绝的步骤可以返回编辑，复用已存原件，修正后再发送，不重复上传成功项。消息已确认、后续读取失败时只重试读回，不重发消息。
 
@@ -213,7 +238,7 @@ DELETE 请求需 confirmed=true 和当前版本。数据库同时使旧运行失
 
 删除触发器清除该会话已有请求缓存的正文及指纹，仅保留窗口内的操作编号／范围等最小拒绝重放标记；已成功删除的同一请求可取回删除结果，旧创建／消息重试不会恢复已删会话。完整复盘内容不留在去重缓存中。
 
-只接受本机 Host 与工作台 Origin（localhost／127.0.0.1 的 5173、3001）；显式跨站请求拒绝。命令行无 Origin 的本机请求可用。这不是账号鉴权，同一本机后端仍无多人身份隔离。Agent 工具不能调用这些用户 HTTP 入口；未来付费 Agent 入口仍需 B 配合接入既定本地请求令牌及预算控制。
+只接受本机 Host 与工作台 Origin（localhost／127.0.0.1 的 5173、3001）；显式跨站请求拒绝。命令行无 Origin 的本机请求可用。这不是账号鉴权，同一本机后端仍无多人身份隔离。Agent 工具不能调用这些用户 HTTP 入口；整合后的 Agent 入口复用同一本机 Origin 检查，并由受信 Host 核对已保存输入、运行和项目预算；不将它视为多用户鉴权。
 
 ## 验证
 
@@ -270,12 +295,12 @@ POST /api/sessions/{sid}/materials/{mid}/sources/{sourceId}/revisions
 
 受信 Host 可直接调用 `Repository.read_material_page(RequestContext(sid,stateRevision,runId,generation), materialId, pageNumber)`，返回 `{imageData,mediaType,sessionId,materialId,contentHash,page,width,height,renderVersion}`。Host 持有真实运行上下文；拒绝取消／过期运行、跨会话、旧简历代次、历史或模拟材料。当前 unknown 材料允许由受信 Host 读图作后续分类，不自动成为事实。该读取方法不是模型可任意选择的文件工具，原 MaterialTools 白名单保持不变。
 
-按用户反馈，聊天附件打开后直接显示内容：PDF／图片自动准备并连续预览，不展示原页码、准备按钮、解析状态或版本卡片；Word／MD 默认显示最新提取正文，不重复拼入旧来源版本。仅保留文件名、下载和关闭，无法完整显示时给出简短重试／下载提示。图像自动准备仍按原页码顺序和既有范围／缓存规则执行；请求未知保留原请求，读到成功缓存即可显示，不重复准备。关闭后停止继续准备后续图页，重开复用已落库缓存；后台页码、报告和确切引用不删除。原文修正入口移至“修改依据与记录”中的可选材料修正区域。截图顺序纠正、B 识别回执保存／修正、识别版本缓存及真实模型联调尚未接入，留 A-T10 后续小项，不能把本阶段标为完整图片识别。
+按用户反馈，聊天附件打开后直接显示内容：PDF／图片自动准备并连续预览，不展示原页码、准备按钮、解析状态或版本卡片；Word／MD 默认显示最新提取正文，不重复拼入旧来源版本。仅保留文件名、下载和关闭，无法完整显示时给出简短重试／下载提示。图像自动准备仍按原页码顺序和既有范围／缓存规则执行；请求未知保留原请求，读到成功缓存即可显示，不重复准备。关闭后停止继续准备后续图页，重开复用已落库缓存；后台页码、报告和确切引用不删除。原文修正入口移至“修改依据与记录”中的可选材料修正区域。截图顺序纠正、B 识别回执保存／修正和版本缓存已在后续 A-T10.2 实现，见后文；真实 OCR 调用仍未接入，不能把本阶段标为完整图片识别。
 
 
 ## 助手回复与询问关联（A-T11.1，A 侧已实现）
 
-结构版本 9（23 表）：messages 追加回复关联、保存前后版本与候选询问；assistant_messages 保存受信 Host 回执，assistant_suggestion_links 保存建议快照。旧消息关联为空，不推断历史授权。真实 B Router 尚未接入，capabilities.agentAvailable／decisionExecutionAvailable 仍为 false。
+结构版本 9（23 表）：messages 追加回复关联、保存前后版本与候选询问；assistant_messages 保存受信 Host 回执，assistant_suggestion_links 保存建议快照。旧消息关联为空，不推断历史授权。整合后的 B 路由和动态 capabilities 见顶部说明；本节仅描述回复存储与关联约束。
 
 ```python
 context = RequestContext(session_id, state_revision, run_id, generation)
@@ -320,7 +345,7 @@ context 须绑定当前真实 running 运行、最新输入版本及代次。use
 
 返回 userMessageId、status、mode、decisions、stateRevision、draftRevision，不返回旧稿正文。事务成功后旧运行失效；Host 新建合法运行，可通过 get_chat_turn_context 的 decisionReceipt 读取该回合结果并保存对用户的结果回复。只允许该回合自身提交后的精确版本，其他手改／新输入之后仍拒绝旧回合回存。
 
-构造检查显式 synthetic=True，所选询问也必须为 synthetic；默认 host 模式不能消费构造询问。capabilities 继续为 false：实际 B 的意图解析、运行循环／费用和端到端自动更新未接入；个人会话不自动执行，隔离演示仅验证预设结构化结果。前端仍使用连续对话和现有当前稿，不增接受／拒绝工作流面板。
+构造检查显式 synthetic=True，所选询问也必须为 synthetic；默认 host 模式不能消费构造询问。本节的构造检查只验证预设结构化结果；整合后的真实入口和默认关闭条件见顶部说明，实际模型语义与费用尚未经真实调用验证。前端仍使用连续对话和现有当前稿，不增接受／拒绝工作流面板。
 
 ## 识别回执、图片阅读顺序与重试意图（A-T10.2，A 侧已实现）
 

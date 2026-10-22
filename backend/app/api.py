@@ -273,7 +273,9 @@ def create_chat_session(payload: RequestId, request: Request):
 
 @router.get("/sessions/{session_id}/conversation")
 def read_conversation(session_id: str, request: Request):
-    return _ok(_service(request).repository.get_conversation(RequestContext(session_id)))
+    value = _service(request).repository.get_conversation(RequestContext(session_id))
+    value['capabilities'] = request.app.state.agent_host.capabilities()
+    return _ok(value)
 
 
 @router.post("/sessions/{session_id}/chat/messages", status_code=201)

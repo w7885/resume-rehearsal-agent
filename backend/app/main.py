@@ -18,20 +18,39 @@ async def lifespan(app: FastAPI):
     with database(path) as connection:
         initialize_database(connection)
     app.state.business_service = BusinessService(Repository(path))
-    yield
+    from app.agent_host import AgentHost
+    app.state.agent_host = AgentHost(app.state.business_service, app.state.agent_client_factory)
+    app.state.agent_host.recover()
+    try:
+        yield
+    finally:
+        tasks = [runtime.task for runtime in app.state.agent_host.active.values() if runtime.task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            import asyncio
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def create_app(database_path=None):
+def create_app(database_path=None, *, agent_client_factory=None):
     application = FastAPI(lifespan=lifespan)
     application.state.database_path = database_path
+    application.state.agent_client_factory = agent_client_factory
     application.add_middleware(LocalRequestGuard)
     application.include_router(router)
+    from app.agent_host import create_agent_router
+    # Resolve the lifespan-owned Host per request, not at module import.
+    class HostProxy:
+        def __getattr__(self, name):
+            return getattr(application.state.agent_host, name)
+    application.include_router(create_agent_router(HostProxy()))
 
     @application.exception_handler(RepositoryError)
     async def business_error(request: Request, error: RepositoryError):
         status = {"session_not_found": 404, "source_not_found": 404, "scope_violation": 403,
                   "stale_state": 409, "request_conflict": 409, "unsupported_format": 415,
-                  "storage_failed": 503, "cancelled": 409}.get(error.code, 422)
+                  "storage_failed": 503, "cancelled": 409, "agent_unavailable": 503,
+                  "run_busy": 409}.get(error.code, 422)
         return error_response(error.code, error.message, status, recoverable=error.recoverable)
 
     @application.exception_handler(RequestValidationError)

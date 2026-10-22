@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Icon } from './ChatIcons';
 import * as api from './api';
 import { ChatSendOperation } from './chatSend';
+import { ChatAgentOperation } from './chatAgent';
 import ChatDraftPanel from './ChatDraftPanel';
 import ChatInspector from './ChatInspector';
 import type { Inspection } from './ChatInspector';
@@ -26,6 +27,7 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false), [loading, setLoading] = useState(true);
   const locked = useRef(false);
   const [error, setError] = useState('');
+  const [agentTask, setAgentTask] = useState<ChatAgentOperation | null>(null);
   const [, setProgress] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [draftOpen, setDraftOpen] = useState(() => window.innerWidth >= 1000);
@@ -89,6 +91,7 @@ export default function ChatPage() {
 
   const navigate = async (sid: string | null) => {
     if (locked.current || pendingRef.current) return;
+    setAgentTask(null);
     locked.current = true; setLoading(true); setError('');
     try {
       await editor.flush();
@@ -111,17 +114,40 @@ export default function ChatPage() {
         }, draft.replyToMessageId);
         task = { key, operation }; pendingRef.current = task; setPending(task);
       }
-      await task.operation.run();
+      const result = await task.operation.run();
       const value = await api.readConversation(task.operation.session!.sessionId);
       install(value);
       const sentKey = task.key;
       setDrafts(previous => { const next = { ...previous }; delete next[sentKey]; delete next[value.session.sessionId]; return next; });
       pendingRef.current = null; setPending(null);
       await refreshList().catch(() => {}); scrollToEnd();
+      setAgentTask(null);
+      if (value.capabilities.agentAvailable) {
+        const analysis = new ChatAgentOperation(value.session.sessionId, result.message.messageId, value.session.stateRevision);
+        setAgentTask(analysis);
+        try {
+          await analysis.run();
+          setAgentTask(null);
+        } catch (failure) {
+          if (analysis.isStopped) { setAgentTask(null); setError(analysis.stopMessage); }
+          else setError(`消息已保存。${errorText(failure)}`);
+        }
+        try { install(await api.readConversation(value.session.sessionId)); scrollToEnd(); }
+        catch { setError('消息已保存，分析后的会话暂未读回。可重新读取会话。'); }
+      }
     } catch (failure) {
       setError(task?.operation.isMessageSaved() ? '消息已保存，但会话暂未读回。请重试读取，原发送不会重复写入。' : errorText(failure));
       await refreshList().catch(() => {});
     } finally { locked.current = false; setSending(false); }
+  };
+  const retryAgent = async () => {
+    if (!agentTask || locked.current) return;
+    locked.current = true; setSending(true); setError('');
+    try {
+      await agentTask.run();
+      install(await api.readConversation(agentTask.sessionId)); setAgentTask(null); scrollToEnd();
+    } catch (failure) { setError(errorText(failure)); }
+    finally { locked.current = false; setSending(false); }
   };
   const returnToEditing = async () => {
     const task = pendingRef.current;
@@ -203,17 +229,18 @@ export default function ChatPage() {
       <header className="cp-chat-header"><div className="cp-header-title"><button className="cp-icon cp-menu" aria-label="展开会话列表" onClick={() => setHistoryOpen(true)}><Icon name="menu" /></button><h1>{conversation?.session.title ?? '新对话'}</h1><span className="cp-preview-badge">{readOnly ? '模拟历史' : '本机保存'}</span></div><div className="cp-live-header-tools"><button className="cp-icon" aria-label="重新读取会话" title="重新读取会话" disabled={loading || sending || !!pending} onClick={() => { void navigate(conversation?.session.sessionId ?? null); }}><Icon name="chat" size={17} /></button><button className={`cp-draft-toggle ${draftOpen ? 'cp-selected' : ''}`} aria-label="切换当前稿" title="当前稿" aria-pressed={draftOpen} onClick={() => setDraftOpen(!draftOpen)}><Icon name="panel" size={18} /><span>当前稿</span></button></div></header>
       <div className="cp-thread" ref={thread}>
         {loading && !conversation && <p className="cp-live-system" role="status">正在读取本机历史…</p>}
-        {conversation?.messages.length ? <div className="cp-message-list"><div className="cp-chat-date">已保存的原始对话</div>{conversation.messages.map(message => <article key={message.messageId} className={`cp-message cp-${message.role}`} aria-label={message.role === 'user' ? '已保存用户消息' : '已保存助手消息'}>{message.role === 'assistant' && <div className="cp-agent-avatar" aria-hidden="true">历</div>}<div className="cp-message-content">{message.historical && <span className="cp-live-historical">历史内容 · 不自动作为当前事实</span>}{message.assistant?.mode === 'synthetic' && <span className="cp-live-historical">构造示例 · 非真实 Agent 回复</span>}{message.role === 'user' && message.replyToMessageId && <span className="cp-replied-to">回复：{conversation.messages.find(item => item.messageId === message.replyToMessageId)?.content.slice(0, 70) ?? '已保存的询问'}</span>}<div className="cp-message-text">{message.content && message.content.split('\n\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>{message.attachments.map(material => <button className="cp-attachment" key={material.materialId} onClick={() => setInspecting(material)}><span className="cp-file-symbol"><Icon name="attach" size={18} /></span><span>{material.name}<small>{sizeLabel(material.byteSize)}{material.current ? '' : ' · 历史附件'}</small></span><Icon name="chevron" size={15} /></button>)}{message.assistant && <div className="cp-reply-tools">{!!message.assistant.sourceRefs.length && <button onClick={() => setInspecting({replyMessage:message})}>查看依据</button>}{message.assistant.questionState === 'awaiting_reply' && <button disabled={unavailable} aria-pressed={draft.replyToMessageId === message.messageId} onClick={() => selectReply(message)}>回复这条询问</button>}</div>}</div></article>)}<p className="cp-live-system">{readOnly ? '这是旧版模拟会话，仅恢复原始记录；请新建对话保存个人材料。' : '消息与原件已保存。分析服务尚未接入，不会生成回复或自动改稿。'}</p></div>
-          : <div className="cp-welcome"><span className="cp-welcome-mark">历</span><h2>从你的经历开始</h2><p>说说你的求职方向，或先上传简历。<br />文字和原件会保存在本机，刷新后可以继续。</p><p className="cp-live-capability">分析服务尚未接入，本页先保存原话与附件。</p></div>}
+        {conversation?.messages.length ? <div className="cp-message-list"><div className="cp-chat-date">已保存的原始对话</div>{conversation.messages.map(message => <article key={message.messageId} className={`cp-message cp-${message.role}`} aria-label={message.role === 'user' ? '已保存用户消息' : '已保存助手消息'}>{message.role === 'assistant' && <div className="cp-agent-avatar" aria-hidden="true">历</div>}<div className="cp-message-content">{message.historical && <span className="cp-live-historical">历史内容 · 不自动作为当前事实</span>}{message.assistant?.mode === 'synthetic' && <span className="cp-live-historical">构造示例 · 非真实 Agent 回复</span>}{message.role === 'user' && message.replyToMessageId && <span className="cp-replied-to">回复：{conversation.messages.find(item => item.messageId === message.replyToMessageId)?.content.slice(0, 70) ?? '已保存的询问'}</span>}<div className="cp-message-text">{message.content && message.content.split('\n\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>{message.attachments.map(material => <button className="cp-attachment" key={material.materialId} onClick={() => setInspecting(material)}><span className="cp-file-symbol"><Icon name="attach" size={18} /></span><span>{material.name}<small>{sizeLabel(material.byteSize)}{material.current ? '' : ' · 历史附件'}</small></span><Icon name="chevron" size={15} /></button>)}{message.assistant && <div className="cp-reply-tools">{!!message.assistant.sourceRefs.length && <button onClick={() => setInspecting({replyMessage:message})}>查看依据</button>}{message.assistant.questionState === 'awaiting_reply' && <button disabled={unavailable} aria-pressed={draft.replyToMessageId === message.messageId} onClick={() => selectReply(message)}>回复这条询问</button>}</div>}</div></article>)}<p className="cp-live-system">{readOnly ? '这是旧版模拟会话，仅恢复原始记录；请新建对话保存个人材料。' : conversation.capabilities.agentAvailable ? '消息与原件已保存，可以继续补充或说明需要调整的地方。' : '消息与原件已保存。分析服务当前未启用，可以继续保存材料和编辑当前稿。'}</p></div>
+          : <div className="cp-welcome"><span className="cp-welcome-mark">历</span><h2>从你的经历开始</h2><p>说说你的求职方向，或先上传简历。<br />文字和原件会保存在本机，刷新后可以继续。</p><p className="cp-live-capability">分析服务当前未启用，本页先保存原话与附件。</p></div>}
       </div>
       <div className="cp-composer-area">
         {error && <div className="cp-live-error" role="alert"><p>{error}</p>{pending && <div><button disabled={sending || loading} onClick={() => { void send(); }}>{pending.operation.isMessageSaved() ? '重试读取已保存会话' : '重试原发送'}</button>{pending.operation.canReturnToEditing() && <button disabled={sending || loading} onClick={() => { void returnToEditing(); }}>返回编辑</button>}</div>}</div>}
         {!!conversation?.materials.length && <button className="cp-live-library" disabled={sending} onClick={() => setInspecting('library')}><Icon name="attach" size={14} />查看本会话已保存附件（{conversation.materials.length}）</button>}
+        {agentTask && <div className="cp-reply-tools">{sending ? <button onClick={() => { void agentTask.stop().catch(failure => setError(errorText(failure))); }}>停止处理</button> : <button onClick={() => { void retryAgent(); }}>重试分析</button>}<span>原消息已保存</span></div>}
         <div className="cp-composer">
           {replyTarget && <div className="cp-reply-selection"><span>回复：{replyTarget.content.slice(0, 80)}</span><button disabled={unavailable} aria-label="取消回复关联" onClick={() => editDraft({ replyToMessageId: undefined })}><Icon name="close" size={14} /></button></div>}
           {!!selections.length && <div className="cp-selected-files">{selections.map(item => <span key={item.localId}><Icon name="attach" size={14} />{item.material?.name ?? item.file?.name}{item.material ? ' · 原件已保存' : ''}<button disabled={unavailable} aria-label={`移除附件 ${item.material?.name ?? item.file?.name}`} onClick={() => editDraft({ attachments: draft.attachments.filter(value => value.localId !== item.localId) })}><Icon name="close" size={13} /></button></span>)}</div>}
           <label className="cp-sr-only" htmlFor="live-composer">聊天消息</label><textarea id="live-composer" ref={composer} value={draft.text} onChange={event => editDraft({ text: event.target.value })} maxLength={50000} placeholder={readOnly ? '模拟会话只供回顾，请新建对话…' : '输入消息，或添加附件…'} rows={1} readOnly={!!pending || !!readOnly} disabled={loading || sending} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void send(); } }} />
-          <div className="cp-composer-tools"><button className="cp-attach-button" aria-label="添加附件" disabled={unavailable} onClick={() => fileInput.current?.click()}><Icon name="attach" size={19} /><span>添加附件</span></button><span className="cp-composer-hint" role="status">{sending ? '正在保存，请稍候…' : pending ? '本次发送未完成，输入仍保留' : 'Enter 发送，Shift + Enter 换行'}</span><button className="cp-send" aria-label="发送消息" disabled={unavailable || (!draft.text.trim() && !draft.attachments.length)} onClick={() => { void send(); }}><Icon name="send" size={21} /></button></div>
+          <div className="cp-composer-tools"><button className="cp-attach-button" aria-label="添加附件" disabled={unavailable} onClick={() => fileInput.current?.click()}><Icon name="attach" size={19} /><span>添加附件</span></button><span className="cp-composer-hint" role="status">{sending ? agentTask ? 'Agent 正在处理…' : '正在保存，请稍候…' : pending ? '本次发送未完成，输入仍保留' : 'Enter 发送，Shift + Enter 换行'}</span><button className="cp-send" aria-label="发送消息" disabled={unavailable || (!draft.text.trim() && !draft.attachments.length)} onClick={() => { void send(); }}><Icon name="send" size={21} /></button></div>
           <input ref={fileInput} className="cp-sr-only" tabIndex={-1} type="file" multiple accept=".md,.docx,.pdf,.png,.jpg,.jpeg" disabled={unavailable} onChange={event => { chooseFiles(event.target.files); event.target.value = ''; }} />
         </div><p className="cp-preview-note">发送成功后才表示已保存；上传原件不等于已识别为简历或事实依据。</p>
       </div>

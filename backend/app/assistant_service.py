@@ -17,6 +17,11 @@ def user_turn(connection,context,session,user_id):
         raise RepositoryError('source_not_found','没有找到当前会话已保存的用户回合。')
     same_state = row['saved_after_revision'] == session['state_revision']
     if not same_state:
+        effect = connection.execute('SELECT * FROM agent_turn_effects WHERE session_id=? AND user_message_id=?', (context.session_id,user_id)).fetchone()
+        same_state = bool(effect and effect['state_revision']==session['state_revision']
+                          and effect['draft_revision']==session['draft_revision']
+                          and effect['resume_generation']==session['current_resume_generation'])
+    if not same_state:
         # After this exact turn's decision transaction, a fresh Host run may
         # report the saved outcome. Any unrelated subsequent edit still fails.
         resolution = connection.execute('SELECT * FROM chat_decision_resolutions WHERE session_id = ? AND user_message_id = ?',
