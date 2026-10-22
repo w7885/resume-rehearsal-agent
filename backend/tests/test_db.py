@@ -124,8 +124,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(self.connection.execute("SELECT status FROM suggestions").fetchone()[0], "pending")
         self.assertEqual(self.connection.execute("SELECT text FROM source_blocks WHERE source_id = ?",
                          ("source-supplement-001",)).fetchone()[0], FIXTURE["sources"][2]["text"])
-        self.assertEqual(len(db.check_database(self.connection)["tables"]), 18)
-
+        self.assertEqual(len(db.check_database(self.connection)["tables"]), 31)
     def test_repeated_initialization_preserves_existing_rows(self):
         seed_fixture(self.connection)
         before = list(self.connection.iterdump())

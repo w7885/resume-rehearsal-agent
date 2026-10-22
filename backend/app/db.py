@@ -17,7 +17,15 @@ MIGRATIONS = (
     (1, Path(__file__).with_name("migrations") / "001_initial.sql"),
     (2, Path(__file__).with_name("migrations") / "002_request_log.sql"),
     (3, Path(__file__).with_name("migrations") / "003_suggestion_decisions.sql"),
-    (4, Path(__file__).with_name("migrations") / "004_agent_state.sql"),
+    (4, Path(__file__).with_name("migrations") / "004_session_mode.sql"),
+    (5, Path(__file__).with_name("migrations") / "005_chat_messages.sql"),
+    (6, Path(__file__).with_name("migrations") / "006_material_parse_report.sql"),
+    (7, Path(__file__).with_name("migrations") / "007_material_pages.sql"),
+    (8, Path(__file__).with_name("migrations") / "008_recognition_results.sql"),
+    (9, Path(__file__).with_name("migrations") / "009_assistant_replies.sql"),
+    (10, Path(__file__).with_name("migrations") / "010_chat_decisions.sql"),
+    (11, Path(__file__).with_name("migrations") / "011_agent_state.sql"),
+    (12, Path(__file__).with_name("migrations") / "012_agent_host.sql"),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -144,6 +152,19 @@ def initialize_database(connection: sqlite3.Connection) -> dict:
             applied = []
         else:
             applied = _versions(connection, allow_pending=True)
+        # The published B branch used migration 4 for agent_state, while A
+        # used it for sessions.mode. Recognize the entire known B4 schema,
+        # not merely its version number, before applying the missing A step.
+        # All changes remain in this outer transaction, including failures.
+        if applied == [1, 2, 3, 4] and not any(
+                row[1] == 'mode' for row in connection.execute('PRAGMA table_info(sessions)')):
+            with database(':memory:') as reference:
+                for _, migration in MIGRATIONS[:3]:
+                    _execute_script(reference, migration.read_text(encoding='utf-8'))
+                _execute_script(reference, (Path(__file__).with_name('migrations') / '004_agent_state.sql').read_text(encoding='utf-8'))
+                if _objects(reference) != _objects(connection):
+                    raise SchemaError('Unrecognized version-4 database; no compatibility repair performed.')
+            _execute_script(connection, MIGRATIONS[3][1].read_text(encoding='utf-8'))
         for version, migration in MIGRATIONS:
             if version not in applied:
                 _execute_script(connection, migration.read_text(encoding="utf-8"))

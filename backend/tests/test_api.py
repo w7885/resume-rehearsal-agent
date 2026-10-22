@@ -27,7 +27,7 @@ async def request_asgi(app, method, url, *, data=None, body=None, headers=None, 
     body = b"" if body is None else body
     values["content-length"] = str(len(body))
     values.update(headers or {})
-    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "scheme": "http",
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "scheme": "http",
              "method": method, "path": parsed.path, "raw_path": parsed.path.encode(), "query_string": parsed.query.encode(),
              "root_path": "", "server": ("127.0.0.1", 3001), "client": ("127.0.0.1", 12345),
              "headers": [(key.lower().encode(), value.encode("latin-1")) for key, value in values.items()]}
@@ -246,7 +246,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.count("draft_blocks"), 1)
         self.assertEqual(self.version(session["sessionId"]), 2)
 
-    def test_raw_binary_formats_are_saved_pending_and_download_exactly(self):
+    def test_originals_survive_even_when_documents_fail_parsing_and_images_remain_pending(self):
         session = self.new_session()
         docx = BytesIO()
         with zipfile.ZipFile(docx, "w") as archive:
@@ -261,7 +261,7 @@ class ApiTests(unittest.TestCase):
             result = self.request("POST", f"/api/sessions/{session['sessionId']}/materials?{params}", body=raw, headers={"content-type": media_type})
             self.assertEqual(result["status"], 201, result)
             material = result["json"]["data"]["material"]
-            self.assertEqual(material["parseStatus"], "pending")
+            self.assertEqual(material["parseStatus"], "failed" if name.endswith((".docx", ".pdf")) else "pending")
             self.assertEqual(result["json"]["data"]["sources"], [])
             download = self.request("GET", f"/api/sessions/{session['sessionId']}/materials/{material['materialId']}/file")
             self.assertEqual(download["body"], raw)

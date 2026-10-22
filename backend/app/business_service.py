@@ -15,6 +15,38 @@ class BusinessService:
     def __init__(self, repository: Repository):
         self.repository = repository
 
+    def prepare_material_page(self, session_id, material_id, payload):
+        from app.page_service import prepare_material_page
+        return prepare_material_page(self, session_id, material_id, payload)
+
+    def save_recognition_result(self, context, payload, *, synthetic=False):
+        from app.recognition_service import save_result
+        return save_result(self, context, payload, synthetic)
+
+    def get_cached_recognition(self, context, material_id, page_number, recognition_version):
+        from app.recognition_service import cached_result
+        return cached_result(self.repository, context, material_id, page_number, recognition_version)
+
+    def reorder_images(self, session_id, payload):
+        from app.recognition_service import reorder_images
+        return reorder_images(self, session_id, payload)
+
+    def request_recognition_retry(self, session_id, material_id, payload):
+        from app.recognition_service import request_retry
+        return request_retry(self, session_id, material_id, payload)
+
+    def save_assistant_message(self, context, payload, *, synthetic=False):
+        from app.assistant_service import save_assistant
+        return save_assistant(self, context, payload, synthetic)
+
+    def get_chat_turn_context(self, context, user_message_id):
+        from app.assistant_service import get_turn_context
+        return get_turn_context(self, context, user_message_id)
+
+    def apply_resolved_user_decision(self, context, payload, *, synthetic=False):
+        from app.chat_decisions import apply_resolution
+        return apply_resolution(self, context, payload, synthetic=synthetic)
+
     def _mutate(self, scope, operation, payload, request_id, callback, session_id=None):
         fingerprint = hashlib.sha256(json.dumps(
             {"operation": operation, "payload": payload}, sort_keys=True,
@@ -36,7 +68,7 @@ class BusinessService:
             bound = Repository(self.repository.path, _connection=connection)
             data = callback(bound)
             response = {"ok": True, "data": data}
-            link = data["sessionId"] if operation == "create_session" else session_id
+            link = data["sessionId"] if operation in {"create_session", "create_mock_session", "create_chat_session"} else session_id
             if operation == "delete_session":
                 link = None
             connection.execute(
@@ -48,6 +80,24 @@ class BusinessService:
     def create_session(self, payload):
         return self._mutate("sessions", "create_session", payload, payload["requestId"],
                             lambda repo: repo.create_session(payload["direction"]))
+
+    def create_mock_session(self, payload):
+        from app.mock_demo import create_demo
+        return self._mutate("sessions", "create_mock_session", payload, payload["requestId"], create_demo)
+
+    def create_chat_session(self, payload):
+        from app.chat_service import create_chat_session
+        return self._mutate("sessions", "create_chat_session", payload, payload["requestId"], create_chat_session)
+
+    def save_chat_message(self, session_id, payload):
+        from app.chat_service import save_chat_message
+        return self._mutate(f"session:{session_id}", "save_chat_message", payload, payload["requestId"],
+                            lambda repo: save_chat_message(repo, RequestContext(session_id, payload["expectedStateRevision"]), payload), session_id)
+
+    def analyze_mock_session(self, session_id, payload):
+        from app.mock_demo import analyze_demo
+        return self._mutate(f"session:{session_id}", "analyze_mock_session", payload, payload["requestId"],
+                            lambda repo: analyze_demo(repo, RequestContext(session_id, payload["expectedStateRevision"])), session_id)
 
     def save_message(self, session_id, payload):
         def apply(repo):
@@ -66,34 +116,38 @@ class BusinessService:
         return self._mutate(f"session:{session_id}", "save_message", payload, payload["requestId"], apply, session_id)
 
     def save_material(self, session_id, metadata, raw, media_type, extracted_text=None):
+        from app.document_parser import parse_upload
+        parsed = parse_upload(media_type, raw, extracted_text)
         payload = {**metadata, "mediaType": media_type, "contentHash": hashlib.sha256(raw).hexdigest()}
         def apply(repo):
             context = RequestContext(session_id, metadata["expectedStateRevision"])
-            existing_draft = repo.get_draft(context)
+            has_draft_history = repo.has_draft_history(context)
             role = metadata["role"]
-            ambiguous_resume = role == "resume" and bool(existing_draft["blocks"])
-            usable = extracted_text is not None and role != "unknown" and not ambiguous_resume
+            ambiguous_resume = role == "resume" and has_draft_history
+            usable = parsed["status"] == "parsed" and role != "unknown" and not ambiguous_resume
             material = repo.save_material(
                 context, name=metadata["name"], media_type=media_type, original_data=raw, role=role,
-                parse_status="parsed" if extracted_text is not None else "pending", use_status="active" if usable else "pending",
+                parse_status=parsed["status"], use_status="active" if usable else "pending",
             )
+            repo._connection.execute("UPDATE attachments SET parse_report_json = ? WHERE session_id = ? AND attachment_id = ?",
+                                     (json.dumps(parsed["report"], ensure_ascii=False), session_id, material["materialId"]))
+            material["parseReport"] = parsed["report"]
             sources = []
-            if extracted_text is not None:
+            for block in parsed["blocks"]:
                 current = repo.get_session(RequestContext(session_id))
                 source = repo.save_source(
-                    RequestContext(session_id, current["stateRevision"]), text=extracted_text, role=role,
+                    RequestContext(session_id, current["stateRevision"]), text=block["text"], role=role,
                     use_status="active" if usable else "pending",
-                    origin={"kind": "material", "materialId": material["materialId"],
-                            "lineStart": 1, "lineEnd": max(1, len(extracted_text.splitlines()))},
+                    origin={"kind": "material", "materialId": material["materialId"], **block["origin"]},
                 )
                 sources.append(source)
             draft_created = False
-            if usable and role == "resume" and not existing_draft["blocks"]:
+            if usable and role == "resume" and not has_draft_history:
                 current = repo.get_session(RequestContext(session_id))
                 repo.create_initial_draft(RequestContext(session_id, current["stateRevision"]), [{
-                    "markdown": extracted_text,
-                    "sourceRefs": [{"sourceId": sources[0]["sourceId"], "sourceRevision": 1, "quote": extracted_text}],
-                }])
+                    "markdown": source["text"],
+                    "sourceRefs": [{"sourceId": source["sourceId"], "sourceRevision": 1, "quote": source["text"]}],
+                } for source in sources])
                 draft_created = True
             session = repo.get_session(RequestContext(session_id))
             return {"material": material, "sources": sources, "draftCreated": draft_created,
@@ -104,6 +158,25 @@ class BusinessService:
     def delete_session(self, session_id, payload):
         return self._mutate(f"session:{session_id}", "delete_session", payload, payload["requestId"],
                             lambda repo: repo.delete_session(RequestContext(session_id, payload["expectedStateRevision"])), session_id)
+
+    def correct_material_source(self, session_id, material_id, source_id, payload):
+        from app.repository import RepositoryError
+        def apply(repo):
+            context = RequestContext(session_id, payload["expectedStateRevision"])
+            with repo._operation(context, write=True) as (connection, session):
+                if session["mode"] != "local":
+                    raise RepositoryError("scope_violation", "模拟历史只供回顾，不能修改为个人材料。", False)
+                row = repo._find_source(connection, session_id, source_id)
+                parent = connection.execute("SELECT * FROM attachments WHERE session_id = ? AND attachment_id = ?", (session_id, material_id)).fetchone()
+                if parent is None or row["attachment_id"] != material_id:
+                    raise RepositoryError("source_not_found", "原文不属于当前会话附件。")
+                if parent["use_status"] == "history" or row["resume_generation"] != session["current_resume_generation"]:
+                    raise RepositoryError("stale_state", "历史材料不能直接修改为当前事实，请重新上传。")
+                source = repo.save_source(context, text=payload["text"], role=row["role"], origin=json.loads(row["origin_json"]),
+                    use_status=row["use_status"], source_id=source_id, expected_source_revision=payload["expectedSourceRevision"])
+                current = repo.get_session(RequestContext(session_id))
+                return {"source": source, "stateRevision": current["stateRevision"], "draftRevision": current["draftRevision"]}
+        return self._mutate(f"session:{session_id}", "correct_material_source", {**payload, "materialId": material_id, "sourceId": source_id}, payload["requestId"], apply, session_id)
 
     def apply_suggestion_decision(self, session_id, suggestion_id, payload):
         fingerprint_payload = {**payload, "suggestionId": suggestion_id}

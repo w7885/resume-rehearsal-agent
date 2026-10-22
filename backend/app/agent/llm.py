@@ -199,6 +199,10 @@ class DeepSeekClient:
                 raise LLMError("budget_exhausted", "daily budget exhausted", False)
             try:
                 response = await self._post(payload)
+            except asyncio.CancelledError:
+                if self.budget is not None:
+                    await self.budget.charge_unknown(run_id, estimate)
+                raise
             except httpx.RequestError as exc:
                 if self.budget is not None:
                     await self.budget.charge_unknown(run_id, estimate)
@@ -223,8 +227,17 @@ class DeepSeekClient:
                     retryable,
                 )
 
-            body = response.json()
+            try:
+                body = response.json()
+            except ValueError:
+                if self.budget is not None:
+                    await self.budget.charge_unknown(run_id, estimate)
+                raise LLMError('invalid_json', 'provider returned invalid JSON', True) from None
             usage = body.get("usage") or {}
+            if not isinstance(usage,dict) or any(type(usage.get(key)) is not int or usage[key]<0 for key in ('prompt_tokens','completion_tokens')):
+                if self.budget is not None:
+                    await self.budget.charge_unknown(run_id, estimate)
+                raise LLMError('usage_unknown', 'provider usage is unavailable; reserved cost retained', False)
             prompt_tokens = int(usage.get("prompt_tokens") or 0)
             completion_tokens = int(usage.get("completion_tokens") or 0)
             actual = cost_cents(prompt_tokens, completion_tokens)

@@ -233,6 +233,13 @@ class ARepoAdapter:
             "sourceRefs": refs,
             "gaps": [gap for gap in gaps if gap.strip()],
         }
+        if operation not in {'replace', 'insert_after', 'delete'}:
+            raise RepoError('invalid_input', '不支持的建议操作。', False)
+        if before is not None and before != block.markdown:
+            raise RepoError('stale_state', '建议旧文已改变，不能套用最新正文。', True)
+        for ref in source_refs:
+            if ref.source_revision not in (0, sources[ref.source_id].source_revision):
+                raise RepoError('stale_state', '建议引用的来源版本已改变。', True)
         return _suggestion(_unwrap(self.tools.dispatch("propose_change", proposal)))
 
     def save_issues(self, session_id: str, issues: list[Issue]) -> list[str]:
@@ -272,33 +279,16 @@ class ARepoAdapter:
         via: str,
         message_id: str | None = None,
     ) -> None:
-        if self.repository is None or self.user_context is None:
-            raise RepoError(
-                "scope_violation", "接受/拒绝必须由用户会话触发。", False
-            )
-        suggestion = self.repository.get_suggestion(self.user_context, suggestion_id)
-        self.repository.apply_suggestion_decision(
-            self.user_context,
-            suggestion_id,
-            {
-                "decision": decision,
-                "feedback": "",
-                "expectedBlockRevision": suggestion["target"]["expectedBlockRevision"],
-            },
-        )
+        raise RepoError('scope_violation', '决定须由受信 Host 关联真实答复后执行。', False)
 
     def save_assistant_message(self, text: str) -> str:
-        message = self.repository.save_message(self.context, text, role="assistant")
-        return message["messageId"]
+        raise RepoError('scope_violation', '回复须由受信 Host 保存询问与来源关联。', False)
 
     def append_event(self, event: dict[str, Any]) -> None:
-        self.repository.append_run_event(self.context, event)
+        raise RepoError('scope_violation', '事件由受信 Host 持久化。', False)
 
     def finish_run(self, outcome: str) -> None:
-        status, error_code = _FINISH_STATUS.get(outcome, ("failed", outcome))
-        self.repository.finish_run(
-            self.context, status=status, error_code=error_code
-        )
+        raise RepoError('scope_violation', '运行状态由受信 Host 维护。', False)
 
     def cancel_run(self) -> None:
-        self.repository.cancel_run(self.context)
+        raise RepoError('scope_violation', '取消由受信 Host 维护。', False)

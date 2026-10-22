@@ -115,6 +115,20 @@ class SendMessage(Mutation):
         return value
 
 
+class ChatMessage(Mutation):
+    content: str = Field(default="", max_length=MAX_TEXT_CHARACTERS)
+    attachmentIds: list[str] = Field(default_factory=list, max_length=10)
+    replyToMessageId: str | None = Field(default=None,min_length=1,max_length=128)
+
+    @model_validator(mode="after")
+    def validate_turn(self):
+        if not self.content.strip() and not self.attachmentIds:
+            raise ValueError("Message or attachment is required")
+        if len(set(self.attachmentIds)) != len(self.attachmentIds) or any(not value.strip() or len(value) > 128 for value in self.attachmentIds):
+            raise ValueError("Attachment identifiers must be nonempty and unique")
+        return self
+
+
 class DeleteSession(Mutation):
     confirmed: StrictBool
 
@@ -140,6 +154,19 @@ class SuggestionDecision(Mutation):
 
 class DraftEdit(Mutation):
     markdown: str = Field(max_length=MAX_TEXT_CHARACTERS)
+
+
+class SourceCorrection(Mutation):
+    expectedSourceRevision: int = Field(ge=1, le=2**63 - 1)
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARACTERS)
+
+
+class PagePreparation(Mutation):
+    pageNumber: int = Field(ge=1, le=40)
+
+
+class ImageOrder(Mutation):
+    materialIds: list[str] = Field(max_length=200)
 
 
 class DraftReplacement(DeleteSession):
@@ -181,7 +208,7 @@ class PastedMaterial(UploadMetadata):
 
 
 def inspect_upload(name, raw, declared_type):
-    """Recognize supported file containers; parsing binary formats is deferred."""
+    """Validate supported containers and MIME; bounded extraction follows in the service."""
     if not raw:
         raise RepositoryError("invalid_input", "文件内容为空。")
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -232,6 +259,33 @@ def list_sessions(request: Request):
 @router.post("/sessions", status_code=201)
 def create_session(payload: CreateSession, request: Request):
     return _service(request).create_session(payload.model_dump())
+
+
+@router.post("/demo/sessions", status_code=201)
+def create_demo_session(payload: RequestId, request: Request):
+    return _service(request).create_mock_session(payload.model_dump())
+
+
+@router.post("/chat/sessions", status_code=201)
+def create_chat_session(payload: RequestId, request: Request):
+    return _service(request).create_chat_session(payload.model_dump())
+
+
+@router.get("/sessions/{session_id}/conversation")
+def read_conversation(session_id: str, request: Request):
+    value = _service(request).repository.get_conversation(RequestContext(session_id))
+    value['capabilities'] = request.app.state.agent_host.capabilities()
+    return _ok(value)
+
+
+@router.post("/sessions/{session_id}/chat/messages", status_code=201)
+def send_chat_message(session_id: str, payload: ChatMessage, request: Request):
+    return _service(request).save_chat_message(session_id, payload.model_dump(exclude_none=True))
+
+
+@router.post("/sessions/{session_id}/mock-analysis")
+def analyze_mock_session(session_id: str, payload: Mutation, request: Request):
+    return _service(request).analyze_mock_session(session_id, payload.model_dump())
 
 
 @router.get("/sessions/{session_id}")
@@ -322,9 +376,41 @@ def download_material(session_id: str, material_id: str, request: Request):
     })
 
 
+@router.post("/sessions/{session_id}/materials/{material_id}/sources/{source_id}/revisions")
+def correct_source(session_id: str, material_id: str, source_id: str, payload: SourceCorrection, request: Request):
+    return _service(request).correct_material_source(session_id, material_id, source_id, payload.model_dump())
+
+
 @router.get("/sessions/{session_id}/sources/{source_id}/revisions/{revision}")
 def source_snapshot(session_id: str, source_id: str, revision: int, request: Request):
     return _ok(_service(request).repository.read_source_snapshot(RequestContext(session_id), source_id, revision))
+
+
+@router.get('/sessions/{session_id}/materials/{material_id}/pages')
+def material_pages(session_id: str, material_id: str, request: Request):
+    from app.page_service import list_pages
+    return _ok(list_pages(_service(request).repository, RequestContext(session_id), material_id))
+
+
+@router.post('/sessions/{session_id}/materials/image-order')
+def reorder_images(session_id: str, payload: ImageOrder, request: Request):
+    return _service(request).reorder_images(session_id, payload.model_dump())
+
+
+@router.post('/sessions/{session_id}/materials/{material_id}/recognition-retry')
+def recognition_retry(session_id: str, material_id: str, payload: Mutation, request: Request):
+    return _service(request).request_recognition_retry(session_id, material_id, payload.model_dump())
+
+
+@router.post('/sessions/{session_id}/materials/{material_id}/pages/prepare')
+def prepare_material_page(session_id: str, material_id: str, payload: PagePreparation, request: Request):
+    return _service(request).prepare_material_page(session_id, material_id, payload.model_dump())
+
+
+@router.get('/sessions/{session_id}/materials/{material_id}/pages/{page_number}/image')
+def material_page_image(session_id: str, material_id: str, page_number: int, request: Request):
+    image = _service(request).repository.read_material_page(RequestContext(session_id), material_id, page_number)
+    return Response(image['imageData'], media_type='image/png', headers={'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store'})
 
 
 @router.get("/sessions/{session_id}/suggestions/{suggestion_id}")
