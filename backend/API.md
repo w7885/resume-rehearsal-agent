@@ -8,6 +8,8 @@ FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的�
 
 应用启动时装配 AgentHost、运行／停止／预算路由。B 的推理循环、路由、工具、记忆与模型客户端保留，HTTP 接口改为受信 Host 管理；不再接收客户端传来的独立 message 文本或“已同意”证明。
 
+前端只保留真实聊天界面：首页 `/` 与既有 `/chat` 链接加载同一个 ChatPage，查询参数中的 session 继续用于恢复会话。旧工作台和纯内存预览页已删除，不再提供切回入口；此界面清理不删除数据库记录，也不移除已有业务 API。
+
 | 方法与路径 | 输入／结果 |
 |---|---|
 | POST `/api/sessions/{id}/runs` | requestId、userMessageId、expectedStateRevision → 持久 SSE；原话只从当前已保存用户消息读取 |
@@ -205,7 +207,7 @@ A-T08.1 的会话结构增加 mode=local／mock，旧会话迁移后默认为 lo
 
 ## 连续聊天保存与恢复（A-T08.3，本次已实现范围）
 
-真实聊天页为 `/chat`；`/chat-preview` 继续作为纯内存视觉示例，原 `/` 工作台保留。此次不接自然语言决定、不调用真实或模拟 Agent、不把旧模拟事件编成真实助手发言。A-T08.3 实现消息与原件保存；A-T08.4 现已复用既有 draft 接口接入聊天内当前稿编辑、保存、预览、复制、导出，以及附件原文／确切版本依据的按需查看。
+真实聊天页现统一作为 `/` 首页，既有 `/chat` 会话链接继续有效；旧工作台与 `/chat-preview` 内存示例的实现已删除。A-T08.3 当时实现消息与原件保存，A-T08.4 复用既有 draft 接口接入聊天内当前稿编辑、保存、预览、复制、导出，以及附件原文／确切版本依据的按需查看；后续真实 Agent 与结构化决定接入见顶部整合说明，不把旧模拟事件编成真实助手发言。
 
 新增结构版本 5／18 表：sessions 增加 direction_status、chat_title，messages 增加 input_channel，新增 chat_message_attachments。旧会话方向默认为 provided，旧消息默认 legacy；不重写原文或原件。迁移仍按序事务执行，不改旧迁移。
 

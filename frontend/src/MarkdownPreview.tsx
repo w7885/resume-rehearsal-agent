@@ -33,7 +33,7 @@ export default function MarkdownPreview({ markdown }: { markdown: string }) {
       const heading = /^(#{1,6})\s+(.+)$/.exec(line), item = /^\s*(?:([-*+])|\d+[.)])\s+(.+)$/.exec(line);
       if (heading) {
         flush(); const content = inline(heading[2]);
-        // Preview headings start at h3 to keep the workbench heading hierarchy.
+        // Preview headings start at h3 below the chat and draft panel headings.
         const Tag = heading[1].length === 1 ? 'h3' : heading[1].length === 2 ? 'h4' : 'h5';
         output.push(<Tag key={output.length}>{content}</Tag>);
       } else if (item) {

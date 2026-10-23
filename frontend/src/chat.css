@@ -99,7 +99,6 @@
 .cp-skip { position:fixed; left:15px; top:10px; background:#fff; color:#285a4b; padding:10px; z-index:100; transform:translateY(-150%); }.cp-skip:focus { transform:none; }
 .cp-live .cp-history { min-height:0; }.cp-live-history-list { min-height:0; overflow-y:auto; scrollbar-width:thin; }.cp-live-history-list .cp-history-item { width:100%; }
 .cp-live-history-empty { padding:10px; color:#738176; font-size:12px; line-height:1.9; }.cp-live .cp-sidebar-note { padding-top:24px; }
-.cp-old-link { margin-left:auto; font-size:10px; color:#65776a; text-decoration:none; }.cp-old-link:hover { text-decoration:underline; }
 .cp-live-header-tools { display:flex; align-items:center; gap:8px; }.cp-live-system { text-align:center; color:#6b786f; font-size:11px; line-height:1.9; margin:24px 0 0; }
 .cp-live-capability { margin-top:20px!important; font-size:12px!important; color:#687a6e!important; }.cp-live-readonly { font-size:11px; color:#738176; padding:4px 6px; }
 .cp-live-error { background:#fff6f2; border:1px solid #ecd5c9; border-radius:8px; color:#88513d; font-size:12px; padding:10px 13px; line-height:1.8; margin-bottom:10px; }
