@@ -175,6 +175,7 @@ class Runtime:
         self.budget = host.budget(row['root_run_id'])
         self.serial = 0
         self.waiting = False
+        self.initial_import = False
 
     def _emit(self, kind, payload, connection=None):
         if connection is None:
@@ -246,7 +247,7 @@ class Runtime:
                 if prompt['state']=='reply_saved' and (not turn['replyToMessageId'] or turn['replyToMessageId']==prompt['promptMessageId']):
                     row=connection.execute('SELECT materials_json FROM agent_material_prompts WHERE session_id=? AND prompt_message_id=?',(self.sid,prompt['promptMessageId'])).fetchone()
                     if row:
-                        prompts.extend(json.loads(row[0]))
+                        prompts.extend(item for item in json.loads(row[0]) if 'materialId' in item)
         if prompts:
             choice=await self._json('判断用户对附件用途询问的答复。明确时 status=resolved，materials 为用户明确确认的 materialId、role(resume/jd/supplement)；否定或不明确时 status=clarify，materials=[]。不要猜测附件属于本人。',{'userContent':turn['userMessage']['content'],'materials':prompts})
             if choice.get('status')=='resolved':
@@ -302,6 +303,7 @@ class Runtime:
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
             connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
+        self.initial_import = bool(initial)
 
     async def _decisions(self, turn):
         candidates=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and p['suggestions'] and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
@@ -332,10 +334,11 @@ class Runtime:
             else:
                 from app.agent.llm import DeepSeekClient, LLMSettings
                 self.llm=DeepSeekClient(LLMSettings.from_env(),budget=self.budget)
+            from app.agent_text_intake import handle as handle_text
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
             if turn.get('decisionReceipt'):
                 self._reply('这条答复的决定已经处理，请查看当前稿。')
-            elif await self._materials(turn) or await self._decisions(self.service.get_chat_turn_context(self.context,self.user_id)):
+            elif await self._materials(turn) or await self._decisions(self.service.get_chat_turn_context(self.context,self.user_id)) or await handle_text(self,self.service.get_chat_turn_context(self.context,self.user_id)):
                 pass
             elif not self.repo.get_draft(self.context)['blocks']:
                 self._reply('请先上传文字简历，或说明希望修改的经历。图片原件可以预览，自动识别服务尚未接入。','question')
@@ -343,7 +346,7 @@ class Runtime:
                 adapter=HostAdapter(self); store=GuardedStateStore(self)
                 saved=[]; notices=[]; questions=[]; outcome='completed'
                 async for event in stream_run(session_id=self.sid,text=turn['userMessage']['content'],repo=adapter,store=store,llm=self.llm,
-                        request_id=self.request_id,message_id=self.user_id,run_id=self.context.run_id,expected_state_revision=self.context.expected_state_revision):
+                        request_id=self.request_id,message_id=self.user_id,run_id=self.context.run_id,expected_state_revision=self.context.expected_state_revision,start_analysis=self.initial_import):
                     with self.repo._operation(self.context):
                         pass
                     if event.type=='suggestion':

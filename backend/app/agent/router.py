@@ -21,7 +21,7 @@ from app.agent.memory import (
     SessionDoc,
 )
 from app.agent.ports import Issue, Phase, SessionContext
-from app.agent.route import route_message
+from app.agent.route import RouteResult, route_message
 from app.agent.store import AgentStateStore
 
 _NOTICES = {
@@ -122,6 +122,7 @@ async def _execute(
     sink: EventSink,
     expected_state_revision: int | None = None,
     cancel_event: asyncio.Event | None = None,
+    start_analysis: bool = False,
 ) -> None:
     started_at = now_iso()
     ctx = repo.get_session_context(session_id)
@@ -214,7 +215,8 @@ async def _execute(
     sink.emit("run_started", focus_experience_id=focus_id)
 
     try:
-        decision = await route_message(
+        decision = RouteResult(action='answer', target_experience_id=focus_id, scope='experience',
+                               rationale='材料用途已确认，开始首次分析') if start_analysis else await route_message(
             message=text,
             ctx=ctx,
             docs=docs,
@@ -408,6 +410,7 @@ async def stream_run(
     run_id: str | None = None,
     expected_state_revision: int | None = None,
     cancel_event: asyncio.Event | None = None,
+    start_analysis: bool = False,
 ) -> AsyncIterator[RunEvent]:
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     request_id = request_id or run_id
@@ -431,6 +434,7 @@ async def stream_run(
                     sink=sink,
                     expected_state_revision=expected_state_revision,
                     cancel_event=cancel_event,
+                    start_analysis=start_analysis,
                 )
         except Exception as exc:
             sink.emit("error", code="run_failed", message=str(exc)[:200])
