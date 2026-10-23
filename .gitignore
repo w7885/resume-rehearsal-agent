@@ -18,7 +18,6 @@ dist/
 # 仅本地保留的文档、说明与项目计划
 /docs/
 /project-status.md
-/README.md
 /tests/fixtures/README.md
 
 # 本机 Agent 工具与飞书授权二维码

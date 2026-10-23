@@ -9,7 +9,7 @@ import type { Inspection } from './ChatInspector';
 import { useChatDraft } from './useChatDraft';
 import type { ChatAttachment } from './chatSend';
 import type { ChatMaterial, ChatMessage, ChatSession, Conversation } from './types';
-import './chat-preview.css';
+import './chat.css';
 
 type ComposerDraft = { text: string; attachments: ChatAttachment[]; replyToMessageId?: string };
 type Pending = { key: string; operation: ChatSendOperation };
@@ -198,13 +198,6 @@ export default function ChatPage() {
     } catch (failure) { setError(errorText(failure)); }
     finally { locked.current = false; setLoading(false); }
   };
-  const leaveWorkbench = async () => {
-    if (locked.current || pendingRef.current) return;
-    locked.current = true; setLoading(true);
-    try { await editor.flush(); window.location.assign('/'); }
-    catch (failure) { setError(errorText(failure)); locked.current = false; setLoading(false); }
-  };
-
   const replyTarget = conversation?.messages.find(message => message.messageId === draft.replyToMessageId);
   const selectReply = (message: ChatMessage) => {
     if (unavailable || message.assistant?.questionState !== 'awaiting_reply') return;
@@ -222,7 +215,7 @@ export default function ChatPage() {
       <div className="cp-live-history-list">{sessions.map(session => <button className={`cp-history-item ${conversation?.session.sessionId === session.sessionId ? 'cp-active' : ''}`} key={session.sessionId} disabled={loading || sending || !!pending} aria-current={conversation?.session.sessionId === session.sessionId ? 'page' : undefined} onClick={() => { void navigate(session.sessionId); }}><Icon name="chat" size={17} /><span>{session.title}{session.mode === 'mock' ? ' · 模拟' : ''}</span></button>)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
-      <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span><a className="cp-old-link" href="/" onClick={event => { event.preventDefault(); void leaveWorkbench(); }}>原工作台</a></footer>
+      <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
     </aside>
 
     <main className="cp-chat" aria-label="真实聊天保存与恢复">
