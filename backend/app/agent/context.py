@@ -87,6 +87,7 @@ def assemble_context(
     experiences: list[ExperienceDoc],
     phases: dict[str, Phase],
     focus_experience_id: str | None,
+    session_goal: str = "",
 ) -> str:
     by_id = {doc.experience_id: doc for doc in experiences}
     focus = by_id.get(focus_experience_id or "")
@@ -103,6 +104,13 @@ def assemble_context(
         )
     experience_block = "\n".join(experience_lines) or "（暂无）"
 
+    brake = ""
+    if focus is not None and focus.no_fact_streak >= 2:
+        brake = (
+            "\n\n## 追问刹车\n"
+            "连续 2 轮没有新增事实。本轮禁止 ask_user，只能 propose_change 或 finish。"
+        )
+
     draft_block = "（暂无）"
     if focus is not None:
         for block in ctx.draft_blocks:
@@ -112,6 +120,7 @@ def assemble_context(
 
     sections = [
         f"## 会话\n方向：{ctx.session.direction or '未填写'}\n"
+        f"目标：{session_goal or '未确认'}\n"
         f"JD 关键词：{', '.join(ctx.session.jd_keywords) or '未填写'}\n"
         f"摘要：{_clip(ctx.session.summary, 300) or '（暂无）'}",
         f"## 经历清单\n{experience_block}",
@@ -125,6 +134,6 @@ def assemble_context(
             f"## 已确认事实\n{_facts_block(focus)}\n\n"
             f"## 问题与缺口\n{_questions_block(focus)}\n\n"
             f"## 最近对话\n{_messages_block(ctx)}\n\n"
-            f"## 当前稿\n{draft_block}"
+            f"## 当前稿\n{draft_block}{brake}"
         )
     return "\n\n".join(sections)

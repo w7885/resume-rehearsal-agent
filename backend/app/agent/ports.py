@@ -35,6 +35,7 @@ class Message(BaseModel):
 class SessionInfo(BaseModel):
     session_id: str
     direction: str = ""
+    direction_confirmed: bool = False
     jd_keywords: list[str] = Field(default_factory=list)
     primary_material_id: str | None = None
     experience_order: list[str] = Field(default_factory=list)

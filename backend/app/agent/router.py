@@ -31,7 +31,12 @@ _NOTICES = {
     "global_edit": "整体改写还没开放，先改当前这段。",
 }
 _LOCKS: dict[str, asyncio.Lock] = {}
-_DECLINE_WORDS = ("没做过", "不会", "没有", "不记得", "不清楚", "跳过", "算了")
+_GOAL_QUESTION = "这次想投什么岗位/方向？简历往哪边侧重？"
+_GOAL_CANCEL = {"算了", "取消", "不改了"}
+_DECLINE_WORDS = (
+    "没做过", "不会", "没有", "不记得", "记不清", "忘记", "忘了",
+    "不确定", "不清楚", "应该吧", "大概吧", "可能吧", "好像", "跳过", "算了",
+)
 
 
 def _asked_question(doc: ExperienceDoc):
@@ -214,17 +219,34 @@ async def _execute(
 
     sink.emit("run_started", focus_experience_id=focus_id)
 
+    goal_reply = (
+        session_doc.awaiting_goal
+        and not has_question
+        and bool(text.strip())
+        and text.strip() not in _GOAL_CANCEL
+    )
+
     try:
-        decision = RouteResult(action='answer', target_experience_id=focus_id, scope='experience',
-                               rationale='材料用途已确认，开始首次分析') if start_analysis else await route_message(
-            message=text,
-            ctx=ctx,
-            docs=docs,
-            phases=phases,
-            pending=session_doc.pending_clarification,
-            has_pending_question=has_question,
-            llm=llm,
-        )
+        if goal_reply:
+            session_doc.goal = text.strip()[:200]
+            session_doc.awaiting_goal = False
+            decision = RouteResult(
+                action="answer",
+                target_experience_id=focus_id,
+                scope="experience",
+                rationale="目标答复",
+            )
+        else:
+            decision = RouteResult(action='answer', target_experience_id=focus_id, scope='experience',
+                                   rationale='材料用途已确认，开始首次分析') if start_analysis else await route_message(
+                message=text,
+                ctx=ctx,
+                docs=docs,
+                phases=phases,
+                pending=session_doc.pending_clarification,
+                has_pending_question=has_question,
+                llm=llm,
+            )
     except Exception as exc:
         sink.emit("error", code="route_failed", message=str(exc)[:200])
         close("limited", action=None)
@@ -309,6 +331,27 @@ async def _execute(
         close("no_focus", action=action)
         return
 
+    if (
+        action in ("answer", "correct")
+        and not has_question
+        and not session_doc.goal
+        and not ctx.session.direction_confirmed
+        and not session_doc.goal_asked
+    ):
+        session_doc.goal_asked = True
+        session_doc.awaiting_goal = True
+        save_session(store, session_id, session_doc, session_revision)
+        sink.emit(
+            "question",
+            question_id="goal",
+            text=_GOAL_QUESTION,
+            slot=None,
+            related_source_ids=[],
+            fallback=False,
+        )
+        close("waiting_user", action=action)
+        return
+
     if action == "confirm":
         pending = next(
             (
@@ -336,6 +379,7 @@ async def _execute(
         close("completed", action=action)
         return
 
+    answered = False
     if action == "skip":
         question = _asked_question(focus_doc)
         if question is None:
@@ -346,6 +390,7 @@ async def _execute(
             return
         record_answer(focus_doc, question.id, message_id, declined=True)
         _persist_doc(store, session_id, focus_doc)
+        answered = True
 
     if action == "correct":
         pending = next(
@@ -370,6 +415,7 @@ async def _execute(
                 focus_doc, question.id, message_id, declined=declined
             )
             _persist_doc(store, session_id, focus_doc)
+            answered = True
 
     # ponytail: every interview-style turn runs the single-segment loop; other
     # actions were handled above and need no model call.
@@ -381,6 +427,8 @@ async def _execute(
         llm=llm,
         focus_experience_id=focus_id,
         message_id=message_id,
+        answered_question=answered,
+        session_goal=session_doc.goal,
         sink=sink,
         emit_start=False,
         cancel_event=cancel_event,

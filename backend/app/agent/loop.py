@@ -9,7 +9,13 @@ from pydantic import ValidationError
 
 from app.agent.context import assemble_context
 from app.agent.events import EventSink, RunEvent
-from app.agent.guard import MAX_ROUNDS, MAX_STEPS, GuardState, check
+from app.agent.guard import (
+    MAX_ROUNDS,
+    MAX_STEPS,
+    GuardState,
+    call_signature,
+    check,
+)
 from app.agent.llm import LLMError
 from app.agent.memory import (
     ExperienceDoc,
@@ -30,7 +36,7 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.store import AgentStateStore
-from app.agent.tools import ToolContext, execute_tool, tool_spec_text
+from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_text
 
 _PHRASES = {
     "responsibility": "哪部分是你本人负责的",
@@ -40,6 +46,20 @@ _PHRASES = {
     "tech": "用到了哪些技术",
 }
 _SLOT_ORDER = ("responsibility", "action", "result", "evidence", "tech")
+
+
+def _normalize_action(raw) -> Any:
+    if isinstance(raw, dict):
+        action = raw.get("action")
+        if isinstance(action, str) and action in TOOL_SPECS and "tool" not in raw:
+            args = {k: v for k, v in raw.items() if k not in ("action", "rationale")}
+            return {
+                "action": "tool",
+                "tool": action,
+                "args": args,
+                "rationale": raw.get("rationale", ""),
+            }
+    return raw
 
 
 @dataclass
@@ -67,6 +87,8 @@ def _load_docs(
 
 
 def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
+    if doc.no_fact_streak >= 2:
+        return None, None
     if doc.round >= MAX_ROUNDS:
         return None, None
     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
@@ -93,6 +115,8 @@ async def run_loop(
     state_revision_changed: bool = False,
     sink: EventSink | None = None,
     emit_start: bool = True,
+    answered_question: bool = False,
+    session_goal: str = "",
     cancel_event: asyncio.Event | None = None,
 ) -> LoopResult:
     sink = sink or EventSink(session_id, run_id)
@@ -115,6 +139,31 @@ async def run_loop(
             completion_tokens=0,
             cost_cents=0,
         )
+
+    focus_block_text = ""
+    if focus_doc is not None:
+        for block in ctx.draft_blocks:
+            if (
+                block.block_id == focus_doc.block_id
+                or block.experience_id == focus_doc.experience_id
+            ):
+                focus_block_text = block.markdown
+                break
+        if not focus_block_text:
+            focus_block_text = focus_doc.raw_text
+    call_max_tokens = max(
+        2000, min(6000, int(len(focus_block_text) / 1.2) + 800)
+    )
+
+    def active_fact_count() -> int:
+        return sum(
+            1
+            for doc in _load_docs(repo, store, session_id, ctx)
+            for fact in doc.facts
+            if fact.status == "active"
+        )
+
+    facts_before = active_fact_count()
 
     reconciled = reconcile(session_id, ctx, store)
     if reconciled.issues:
@@ -186,6 +235,11 @@ async def run_loop(
             source_kinds=source_kinds,
             focus_block_markdown=focus_block,
             state_revision_changed=state_revision_changed,
+            recent_calls=[
+                call_signature(trace.tool or "", trace.args)
+                for trace in traces
+                if trace.action == "tool" and trace.tool
+            ],
         )
 
     def load_ref_sources(decision: StepDecision) -> None:
@@ -225,7 +279,21 @@ async def run_loop(
             return doc.experience_id
         return None
 
+    def settle_streak() -> None:
+        if not answered_question or focus_id is None:
+            return
+        loaded = load_experience(store, session_id, focus_id)
+        if loaded is None:
+            return
+        doc, revision = loaded
+        if active_fact_count() > facts_before:
+            doc.no_fact_streak = 0
+        else:
+            doc.no_fact_streak += 1
+        save_experience(store, session_id, doc, revision)
+
     def finish_result(outcome: str) -> LoopResult:
+        settle_streak()
         next_id = next_experience() if outcome == "completed" else None
         unresolved = [
             issue.issue_id for issue in ctx.issues if issue.issue_id is not None
@@ -293,20 +361,25 @@ async def run_loop(
         return finish_result("waiting_user")
 
     async def ask_model(note: str) -> tuple[StepDecision | None, int, int, int]:
-        user = assemble_context(ctx, docs, phases, focus_id)
+        user = assemble_context(
+            ctx, docs, phases, focus_id, session_goal=session_goal
+        )
         if history:
             user += "\n\n## 本轮已执行\n" + "\n".join(history)
         if note:
             user += "\n\n## 注意\n" + note
         completion = await llm.decide(
-            system=system_prompt, user=user, run_id=run_id
+            system=system_prompt,
+            user=user,
+            run_id=run_id,
+            max_tokens=call_max_tokens,
         )
         raw = getattr(completion, "data", completion)
         prompt_tokens = getattr(completion, "prompt_tokens", 0)
         completion_tokens = getattr(completion, "completion_tokens", 0)
         cost = getattr(completion, "cost_cents", 0)
         try:
-            decision = StepDecisionAdapter.validate_python(raw)
+            decision = StepDecisionAdapter.validate_python(_normalize_action(raw))
         except (ValidationError, ValueError):
             decision = None
         return decision, prompt_tokens, completion_tokens, cost

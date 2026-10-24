@@ -45,6 +45,7 @@ class FakeRepo:
         *,
         session_id: str = "s_01",
         direction: str = "前端开发实习",
+        direction_confirmed: bool = False,
         sources: list[SourceText] | None = None,
         messages: list[Message] | None = None,
         draft_blocks: list[DraftBlock] | None = None,
@@ -55,6 +56,7 @@ class FakeRepo:
         self.session = SessionInfo(
             session_id=session_id,
             direction=direction,
+            direction_confirmed=direction_confirmed,
             primary_material_id="mat_01",
             experience_order=experience_order
             if experience_order is not None

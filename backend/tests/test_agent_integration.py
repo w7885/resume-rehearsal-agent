@@ -71,6 +71,51 @@ class AgentIntegrationTests(unittest.TestCase):
     def conversation(self,session):
         return self.request('GET',f"/api/sessions/{session['sessionId']}/conversation")['json']['data']
 
+    def answer_goal(self,session,key='goal'):
+        prompt=self.conversation(session)['messages'][-1]
+        self.assertIn('岗位',prompt['content'])
+        answer=self.send(session,'前端开发实习',request_id=key,replyToMessageId=prompt['messageId'])
+        return self.analyze(session,answer,key)
+
+    def test_suggestion_accepts_whitespace_only_before_difference(self):
+        class Trimmed(FakeClient):
+            async def decide(self,**kwargs):
+                result=await super().decide(**kwargs)
+                data=result.data or {}
+                args=data.get('args') or {}
+                if data.get('tool')=='propose_change':
+                    args['before']=args['before'].rstrip()
+                return result
+        session=self.chat()
+        self.material(session,text='项目经历：整理反馈，协助测试。\n',role='resume')
+        user=self.send(session,'请帮我梳理职责。')
+        self.host=self.app.state.agent_host
+        self.host.client_factory=lambda runtime,budget:Trimmed(runtime)
+        events=self.analyze(session,user,'trim')
+        self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
+        self.answer_goal(session)
+        self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'],'change_question')
+
+    def test_duplicate_source_refs_are_merged(self):
+        class Duplicate(FakeClient):
+            async def decide(self,**kwargs):
+                result=await super().decide(**kwargs)
+                data=result.data or {}
+                args=data.get('args') or {}
+                if data.get('tool')=='propose_change':
+                    ref=args['source_refs'][0]
+                    args['source_refs']=[ref,{**ref,'quote':'协助测试'}]
+                return result
+        session=self.chat()
+        self.material(session,text='项目经历：整理反馈，协助测试。',role='resume')
+        user=self.send(session,'请帮我梳理职责。')
+        self.host=self.app.state.agent_host
+        self.host.client_factory=lambda runtime,budget:Duplicate(runtime)
+        self.analyze(session,user,'dup')
+        self.answer_goal(session,'dup-goal')
+        self.assertEqual(self.count('suggestions'),1)
+        self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'],'change_question')
+
     def test_disabled_agent_keeps_saved_chat_and_exposes_registered_routes(self):
         session=self.chat(); user=self.send(session,'构造消息')
         with patch.dict('os.environ',{'AGENT_ENABLED':'0','AGENT_BUDGET_CONFIRMED':'0'}):
@@ -84,6 +129,7 @@ class AgentIntegrationTests(unittest.TestCase):
         session,user=self.ready()
         events=self.analyze(session,user)
         self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
+        self.answer_goal(session)
         value=self.conversation(session)
         prompt=value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'],'change_question',value)
@@ -110,6 +156,7 @@ class AgentIntegrationTests(unittest.TestCase):
         answer=self.send(session,'这是要修改的个人简历。',request_id='answer',replyToMessageId=prompt['messageId'])
         events=self.analyze(session,answer,'confirm-material')
         self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
+        self.answer_goal(session,'confirm-goal')
         value=self.conversation(session)
         self.assertEqual(value['materials'][0]['role'],'resume')
         self.assertTrue(value['draft']['markdown'])
