@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron';
+type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron' | 'more' | 'trash';
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     plus: <path d="M12 5v14M5 12h14" />,
@@ -14,6 +14,8 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     edit: <><path d="m15 4 5 5M4 20l4-1L21 6a2 2 0 0 0-5-5L3 14l-1 6Z" /></>,
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     chevron: <path d="m9 5 7 7-7 7" />,
+    more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
+    trash: <><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

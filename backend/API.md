@@ -1,6 +1,8 @@
 # 本机业务 API（持久聊天与 A/B Agent 整合）
 
 基础地址 `http://127.0.0.1:3001`，前端开发时经 `http://127.0.0.1:5173/api` 代理访问。
+聊天页通过会话菜单接入既有 DELETE `/api/sessions/{id}`：请求包含 requestId、expectedStateRevision、confirmed=true；删除成功返回 `{sessionId,deleted:true}`。同一成功请求可重放；版本变化返回 stale_state，运行中的会话返回 run_busy，前端重新确认或等待停止，不自动删除较新版本。会话关联内容级联删除，项目费用账本保留。
+GET conversation 增加只读 `originalDraft`（无可靠导入记录为 null）：`{sessionId,resumeGeneration,markdown,sourceRefs,materialIds}`。在同一读取事务中取本代次 import／replacement 的首版记录，按创建顺序拼回正文，避免手改重排影响初版；引用保留导入时的确切版本，materialIds 仅包含该初版关联的简历原件。不会用当前稿、JD 或后续补充冒充初版，不进行模型调用或数据库迁移。
 FastAPI 的 `/docs` 和 `/openapi.json` 展示已登记接口；材料上传的两种正文格式以本文为准。
 已提供建议确认、手改、明确整体替换，以及已保存聊天到 B Agent 的受信 Host 连接。模拟示例与个人材料会话分开；真实调用默认关闭，未满足密钥与预算条件时只保存内容，不调用模型。
 

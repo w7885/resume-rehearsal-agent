@@ -86,7 +86,9 @@ export function uploadMaterial(sid: string, payload: { requestId: string; expect
   const query = new URLSearchParams(Object.entries(payload).map(([key, value]) => [key, String(value)]));
   return http(`${path(sid)}/materials?${query}`, 'POST', undefined, undefined, new Blob([file], { type: file.name.toLowerCase().endsWith('.md') ? 'text/markdown' : file.type }));
 }
-export const deleteSession = (sid: string, payload: { requestId: string; expectedStateRevision: number; confirmed: true }) => http(path(sid), 'DELETE', payload);
+export type SessionDeleteWrite = { requestId: string; expectedStateRevision: number; confirmed: true };
+export const deleteSession = (sid: string, payload: SessionDeleteWrite) => http<{ sessionId: string; deleted: true }>(path(sid), 'DELETE', payload,
+  v => object(v) && v.sessionId === sid && v.deleted === true);
 export const replaceDraft = (sid: string, payload: { requestId: string; expectedStateRevision: number; expectedDraftRevision: number; materialId: string; authorizationMessageId: string; confirmed: true; completeConfirmed: true }) => http<DraftResult>(`${path(sid)}/draft/replacement`, 'POST', payload, hasDraft);
 export const readSource = (sid: string, ref: { sourceId: string; sourceRevision: number }) => http<{ source: Source; historical: boolean }>(`${path(sid)}/sources/${encodeURIComponent(ref.sourceId)}/revisions/${ref.sourceRevision}`, 'GET', undefined,
   v => object(v) && isSource(v.source) && object(v.source) && v.source.sourceId === ref.sourceId && v.source.sourceRevision === ref.sourceRevision && typeof v.historical === 'boolean');
@@ -133,6 +135,10 @@ function isConversation(value: unknown): value is Conversation {
   if (!object(value)) return false;
   const record: Record<string, unknown> = value;
   return hasDraft(value) && isChatSession(record.session) && Array.isArray(record.messages) && record.messages.every(isChatMessage) &&
+    (record.originalDraft === undefined || record.originalDraft === null || object(record.originalDraft) &&
+      record.originalDraft.sessionId === record.session.sessionId && record.originalDraft.resumeGeneration === record.session.currentResumeGeneration &&
+      typeof record.originalDraft.markdown === 'string' && Array.isArray(record.originalDraft.sourceRefs) && record.originalDraft.sourceRefs.every(isReference) &&
+      Array.isArray(record.originalDraft.materialIds) && record.originalDraft.materialIds.every(id => typeof id === 'string') && new Set(record.originalDraft.materialIds).size === record.originalDraft.materialIds.length) &&
     (record.draftReviewRequired === undefined || typeof record.draftReviewRequired === 'boolean') &&
     Array.isArray(record.materials) && record.materials.every(isChatMaterial) && object(record.capabilities) &&
     typeof record.capabilities.agentAvailable === 'boolean' && typeof record.capabilities.decisionExecutionAvailable === 'boolean';
