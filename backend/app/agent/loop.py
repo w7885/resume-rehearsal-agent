@@ -39,11 +39,11 @@ from app.agent.store import AgentStateStore
 from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_text
 
 _PHRASES = {
-    "responsibility": "哪部分是你本人负责的",
-    "action": "你具体做了哪些步骤",
-    "result": "结果上有没有可量化的数字",
-    "evidence": "有没有材料能证明这部分",
-    "tech": "用到了哪些技术",
+    "responsibility": "这段经历中，你本人负责哪部分",
+    "action": "这段经历中，你具体做了哪些步骤",
+    "result": "这段经历取得了哪些可以确认的结果",
+    "evidence": "有没有材料能支持这段经历的描述",
+    "tech": "这段经历用到了哪些技术",
 }
 _SLOT_ORDER = ("responsibility", "action", "result", "evidence", "tech")
 
@@ -95,8 +95,7 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
     for slot in _SLOT_ORDER:
         if slot in doc.declined or slot in active_slots:
             continue
-        snippet = doc.title or doc.raw_text.strip()[:8] or "这段经历"
-        text = f"「{snippet}」这部分{_PHRASES[slot]}？"
+        text = f"{_PHRASES[slot]}？"
         if len(text) > 60:
             text = text[:59] + "？"
         return text, slot
@@ -568,6 +567,7 @@ async def run_loop(
             if focus_doc is not None:
                 focus_doc.last_run_outcome = outcome
                 persist(focus_doc)
+            sink.emit('section_finished', focus_id=focus_id, outcome=outcome, summary=decision.summary[:400])
             traces.append(
                 StepTrace(
                     seq=step_number,

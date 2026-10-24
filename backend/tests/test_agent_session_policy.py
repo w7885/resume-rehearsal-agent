@@ -126,7 +126,7 @@ class DeclineAndStreakTests(unittest.TestCase):
             decide_script=[
                 {
                     "action": "ask_user",
-                    "message": "「校园二手交易平台」这部分的动作具体有哪些？",
+                    "message": "你在校园二手交易平台中具体做了哪些工作？",
                     "slot": "action",
                     "rationale": "动作未确认",
                 },
@@ -257,7 +257,7 @@ class GoalTests(unittest.TestCase):
 
 ASK_ACTION = {
     "action": "ask_user",
-    "message": "「校园二手交易平台」这部分的动作具体有哪些？",
+    "message": "你在校园二手交易平台中具体做了哪些工作？",
     "slot": "action",
     "rationale": "动作未确认",
 }
