@@ -127,7 +127,7 @@ Content-Type: application/pdf
 [文件原始字节]
 ```
 
-文件名不得含路径分隔符或控制字符，原附件以 BLOB 入库，不按传入名称写磁盘。支持 .md、.docx、PDF、PNG/JPEG；旧 .doc 提示转换。校验声明 MIME／扩展名与文件头或 DOCX 容器。**文件头通过不表示完整格式解析通过**：MD 保留原文及行号，DOCX／文字型 PDF 接本地解析器；图片仍为 pending。具体结果看 parseStatus 与 parseReport，失败仍保留已识别格式的原件，不生成假识别文本。
+文件名不得含路径分隔符或控制字符，原附件以 BLOB 入库，不按传入名称写磁盘。支持 .md、.docx、PDF、PNG/JPEG；旧 .doc 提示转换。校验声明 MIME／扩展名与文件头或 DOCX 容器。**文件头通过不表示完整格式解析通过**：MD 保留原文及行号，DOCX／文字型 PDF 接本地解析器；PNG／JPEG 在启用视觉识别（`VISION_ENABLED=1`）并成功转录时为 parsed，未启用、识别失败或文字过少时为 pending。具体结果看 parseStatus 与 parseReport，失败仍保留已识别格式的原件，不生成假识别文本。
 
 当前初始边界：JSON 请求最多 1 MiB，原文件最多 10 MiB，文本最多 50000 字符。属于待多格式样例校准的实现上限，不宣称适合所有实际简历；后续限制调整需同步文档。流式接收也检查累计大小，不能只相信 Content-Length。
 
