@@ -246,7 +246,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.count("draft_blocks"), 1)
         self.assertEqual(self.version(session["sessionId"]), 2)
 
-    def test_image_upload_becomes_parsed_source_and_initial_draft_when_transcribed(self):
+    def test_image_upload_saves_original_before_any_paid_recognition(self):
         from PIL import Image
         session = self.new_session()
         output = BytesIO()
@@ -254,13 +254,14 @@ class ApiTests(unittest.TestCase):
             image.save(output, format="PNG")
         params = urlencode({"name": "截图.png", "requestId": "vision-1", "role": "resume",
                             "expectedStateRevision": self.version(session["sessionId"])})
-        with patch("app.vision.transcribe_image", new=AsyncMock(return_value="# 构造简历\n负责需求整理")):
+        with patch("app.vision.transcribe_image", new=AsyncMock(return_value="# 构造简历\n负责需求整理")) as transcribe:
             result = self.request("POST", f"/api/sessions/{session['sessionId']}/materials?{params}",
                                   body=output.getvalue(), headers={"content-type": "image/png"})
         data = result["json"]["data"]
-        self.assertEqual(data["material"]["parseStatus"], "parsed", result)
-        self.assertEqual([source["text"] for source in data["sources"]], ["# 构造简历\n负责需求整理"])
-        self.assertTrue(data["draftCreated"])
+        transcribe.assert_not_awaited()
+        self.assertEqual(data["material"]["parseStatus"], "pending", result)
+        self.assertEqual(data["sources"], [])
+        self.assertFalse(data["draftCreated"])
 
     def test_originals_survive_even_when_documents_fail_parsing_and_images_remain_pending(self):
         session = self.new_session()

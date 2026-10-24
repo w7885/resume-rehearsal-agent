@@ -93,7 +93,15 @@ def _load_session_doc(
             summary=info.summary,
         )
         revision = None
-    return sync_experiences(session_id, ctx, store, doc, revision)
+    doc, revision = sync_experiences(session_id, ctx, store, doc, revision)
+    if ctx.session.direction_confirmed:
+        changed = doc.direction != ctx.session.direction or doc.awaiting_goal or doc.goal != ctx.session.direction
+        doc.direction = ctx.session.direction
+        doc.awaiting_goal = False
+        doc.goal = ctx.session.direction
+        if changed:
+            revision = save_session(store, session_id, doc, revision)
+    return doc, revision
 
 
 def _persist_doc(store: AgentStateStore, session_id: str, doc: ExperienceDoc) -> None:

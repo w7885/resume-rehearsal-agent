@@ -174,19 +174,22 @@ def replace_draft(repo, context, payload):
             raise RepositoryError("source_not_found", "没有找到新版材料。")
         if material["role"] != "resume" or material["parse_status"] != "parsed" or material["use_status"] not in {"pending", "active"} or material["resume_generation"] != session["current_resume_generation"]:
             raise RepositoryError("invalid_input", "新版须为当前代次、已完整解析且归属明确的简历材料。")
-        # A-T07 supports only lossless pasted/Markdown candidates. Binary formats
-        # remain pending until parsers and completeness checks are implemented.
-        if material["media_type"] != "text/markdown":
-            raise RepositoryError("unsupported_format", "当前请用完整 Markdown 或粘贴简历进行替换。")
-        rows = connection.execute("SELECT b.* FROM source_blocks b WHERE b.session_id = ? AND b.attachment_id = ? AND b.role = 'resume' AND b.use_status IN ('pending', 'active') AND b.source_revision = (SELECT max(v.source_revision) FROM source_blocks v WHERE v.source_id = b.source_id) ORDER BY b.line_start, b.source_id",
+        rows = connection.execute("SELECT b.* FROM source_blocks b WHERE b.session_id = ? AND b.attachment_id = ? AND b.role = 'resume' AND b.use_status IN ('pending', 'active') AND b.source_revision = (SELECT max(v.source_revision) FROM source_blocks v WHERE v.source_id = b.source_id) ORDER BY b.rowid",
                                   (context.session_id, material["attachment_id"])).fetchall()
-        try:
-            markdown = material["original_data"].decode("utf-8-sig")
-        except UnicodeDecodeError:
-            raise RepositoryError("invalid_input", "新版原文编码无效。") from None
-        if not markdown.strip() or len(rows) != 1 or rows[0]["text"] != markdown:
-            raise RepositoryError("invalid_input", "新版来源与完整原文不一致，请重新粘贴完整简历。")
-        source = rows[0]
+        if material['media_type'] == 'text/markdown':
+            try:
+                markdown = material["original_data"].decode("utf-8-sig")
+            except UnicodeDecodeError:
+                raise RepositoryError("invalid_input", "新版原文编码无效。") from None
+            if not markdown.strip() or len(rows) != 1 or rows[0]["text"] != markdown:
+                raise RepositoryError("invalid_input", "新版来源与完整原文不一致，请重新粘贴完整简历。")
+        elif material['media_type'] in {'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}:
+            report = json.loads(material['parse_report_json'] or '{}')
+            if report.get('status') != 'parsed' or report.get('warnings') or not rows:
+                raise RepositoryError('invalid_input', '新版未完整提取，请先补充完整可读简历。')
+            markdown = join_markdown([{'markdown': row['text']} for row in rows])
+        else:
+            raise RepositoryError('unsupported_format', '新版须为完整可读的 Markdown、DOCX 或文字型 PDF。')
         before = repo._draft(connection, session)
         previous_scope = [row[0] for row in connection.execute(
             f"SELECT b.source_id FROM source_blocks b JOIN sessions s ON s.session_id = b.session_id WHERE b.session_id = ? AND {_ACTIVE_SOURCE} ORDER BY b.source_id", (context.session_id,))]
@@ -198,13 +201,17 @@ def replace_draft(repo, context, payload):
         connection.execute("UPDATE messages SET use_status = 'active', resume_generation = ? WHERE session_id = ? AND message_id IN (SELECT message_id FROM source_blocks WHERE session_id = ? AND role = 'jd' AND use_status = 'active')",
                            (generation, context.session_id, context.session_id))
         connection.execute("UPDATE attachments SET use_status = 'active', resume_generation = ? WHERE session_id = ? AND attachment_id = ?", (generation, context.session_id, material["attachment_id"]))
-        connection.execute("UPDATE source_blocks SET use_status = 'active', resume_generation = ? WHERE session_id = ? AND source_id = ? AND source_revision = ?", (generation, context.session_id, source["source_id"], source["source_revision"]))
+        for source in rows:
+            connection.execute("UPDATE source_blocks SET use_status = 'active', resume_generation = ? WHERE session_id = ? AND source_id = ? AND source_revision = ?", (generation, context.session_id, source["source_id"], source["source_revision"]))
         connection.execute("UPDATE draft_blocks SET is_current = 0 WHERE session_id = ? AND is_current = 1", (context.session_id,))
         connection.execute("UPDATE suggestions SET status = 'invalidated' WHERE session_id = ? AND status = 'pending'", (context.session_id,))
         connection.execute("UPDATE issues SET is_current = 0 WHERE session_id = ? AND is_current = 1", (context.session_id,))
         connection.execute("UPDATE sessions SET current_resume_generation = ?, draft_revision = draft_revision + 1 WHERE session_id = ?", (generation, context.session_id))
         updated = _current(connection, context.session_id)
-        _write_block(connection, updated, markdown, 0, "replacement", [{"sourceId": source["source_id"], "sourceRevision": source["source_revision"], "quote": markdown}])
+        from app.resume_structure import structure_blocks
+        blocks = structure_blocks([{'markdown': source['text'], 'sourceRefs': [{'sourceId': source['source_id'], 'sourceRevision': source['source_revision'], 'quote': source['text']}]} for source in rows])
+        for position, block in enumerate(blocks):
+            _write_block(connection, updated, block['markdown'], position, 'replacement', block['sourceRefs'])
         next_scope = [row[0] for row in connection.execute(
             f"SELECT b.source_id FROM source_blocks b JOIN sessions s ON s.session_id = b.session_id WHERE b.session_id = ? AND {_ACTIVE_SOURCE} ORDER BY b.source_id", (context.session_id,))]
         replacement_id = _id("replacement")

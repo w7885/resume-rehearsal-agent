@@ -22,7 +22,8 @@ class TextClient(test_agent_integration.FakeClient):
         self.runtime.host.test_calls.append(system)
         if system.startswith('识别用户是否提供'):
             matches = [m for m in value['messages'] if m['content'] == RESUME]
-            data = {'status': 'candidate', 'messageId': matches[0]['messageId']} if matches else {'status': 'none'}
+            lines = [line for line in RESUME.splitlines() if line.strip()]
+            data = {'status': 'candidate', 'messageId': matches[0]['messageId'], 'resumeStart': lines[0], 'resumeEnd': lines[-1]} if matches else {'status': 'none'}
         elif system.startswith('判断用户是否确认'):
             data = {'status': self.runtime.host.test_choice, 'messageId': self.runtime.host.test_target or value['candidates'][0]['messageId']}
         else:

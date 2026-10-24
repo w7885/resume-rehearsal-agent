@@ -90,6 +90,12 @@ def apply_resolution(service, context, payload, *, synthetic=False):
                 proposal = valid_suggestion(repo, connection, session, item['suggestionId'])
                 block_id = proposal['target']['blockId']
                 if item['decision'] == 'accept':
+                    from app.agent_edit_scope import resolve_scope, validate_project_refs
+                    allowed = resolve_scope(repo, context)
+                    if allowed is not None:
+                        if block_id not in allowed:
+                            raise RepositoryError('scope_violation', '采用目标超出用户指定的项目范围。', False)
+                        validate_project_refs(repo, context, block_id, proposal['sourceRefs'])
                     if block_id in accepted_blocks:
                         raise RepositoryError('invalid_input', '同一段落的多个改写不能同时采用，请先澄清选择。')
                     accepted_blocks.add(block_id)

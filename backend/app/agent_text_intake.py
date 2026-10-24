@@ -3,6 +3,7 @@ import hashlib
 import json
 
 from app.repository import Repository, RepositoryError, RequestContext
+from app.resume_structure import body_span, structure_blocks
 
 
 def fingerprint(text):
@@ -19,13 +20,21 @@ def activate(runtime, candidate):
                                  (runtime.sid, candidate['messageId'], session['current_resume_generation'])).fetchone()
         if row is None or fingerprint(row['content']) != candidate['contentHash']:
             raise RepositoryError('stale_state', '待确认的文字已不适用于当前简历。')
+        a, b = candidate.get('bodyStart'), candidate.get('bodyEnd')
+        if type(a) is not int or type(b) is not int or not 0 <= a < b <= len(row['content']):
+            raise RepositoryError('invalid_input', '旧询问未绑定简历正文范围，请重新确认正文。')
+        body = row['content'][a:b]
+        if fingerprint(body) != candidate.get('bodyHash'):
+            raise RepositoryError('stale_state', '待确认的正文范围已经变化。')
         context = RequestContext(runtime.sid, session['state_revision'])
-        source = bound.save_source(context, text=row['content'], role='resume',
-                                   origin={'kind': 'message', 'messageId': row['message_id']}, use_status='active')
+        source = bound.save_source(context, text=body, role='resume',
+                                   origin={'kind': 'message', 'messageId': row['message_id'],
+                                           'lineStart': row['content'][:a].count('\n') + 1,
+                                           'lineEnd': row['content'][:a].count('\n') + max(1, len(body.splitlines()))}, use_status='active')
         current = bound.get_session(RequestContext(runtime.sid))
-        bound.create_initial_draft(RequestContext(runtime.sid, current['stateRevision']), [
-            {'markdown': row['content'], 'sourceRefs': [{'sourceId': source['sourceId'],
-                'sourceRevision': source['sourceRevision'], 'quote': row['content']}]}])
+        bound.create_initial_draft(RequestContext(runtime.sid, current['stateRevision']), structure_blocks([
+            {'markdown': body, 'sourceRefs': [{'sourceId': source['sourceId'],
+                'sourceRevision': source['sourceRevision'], 'quote': body}]}]))
         current = bound.get_session(RequestContext(runtime.sid))
         connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
                            (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
@@ -48,6 +57,8 @@ async def handle(runtime, turn):
         # Bound recovery context also covers a resume pasted before an old fallback.
         rows = connection.execute("SELECT message_id,content FROM messages WHERE session_id=? AND role='user' AND input_channel='chat' AND use_status='active' AND resume_generation=? AND trim(content)!='' ORDER BY rowid DESC LIMIT 6",
                                   (runtime.sid, session['current_resume_generation'])).fetchall()
+    # Legacy pending prompts have no body scope. Re-detect instead of importing whole messages.
+    candidates = [item for item in candidates if 'bodyStart' in item and 'bodyEnd' in item and 'bodyHash' in item]
     if candidates:
         choice = await runtime._json('判断用户是否确认把指定聊天文字作为本次待修改的简历。返回 status=confirm/decline/clarify 和 messageId。仅明确确认且范围唯一时 confirm；否定、不是本人材料、仅供参考或示例时 decline；条件、假设、引用或范围不明时 clarify。messageId 只能来自候选，不能将其他消息或新答复当成原文。',
                                      {'userContent': turn['userMessage']['content'], 'candidates': candidates})
@@ -55,7 +66,7 @@ async def handle(runtime, turn):
         if choice.get('status') == 'confirm' and choice.get('messageId') in allowed:
             activate(runtime, allowed[choice['messageId']])
             runtime._continue()
-            runtime._reply('已将确认的文字原样保存为初始稿，接下来会依据原文分析。')
+            runtime._reply('已将确认的简历正文原样保存并按明确边界分段，聊天指令保留在对话中，接下来会依据原文分析。')
             return False
         if choice.get('status') == 'decline':
             runtime._reply('好的，这段文字保留在对话中，不导入当前稿。请提供本次要修改的简历，或说明希望处理的内容。', 'question')
@@ -69,7 +80,7 @@ async def handle(runtime, turn):
             runtime._reply('这段文字较长，请保存为 Markdown 文件上传；我会保留这里的原话，不截取片段导入。', 'question')
             return True
         return False
-    choice = await runtime._json('识别用户是否提供了本次要修改的简历原文。返回 status=candidate/none 和 messageId。candidate 仅指包含实际履历的完整简历或经历段落；不要把求职意向、操作指令、提问、假设、否定或仅供参考的示例当成履历。结合最新用户原话判断是否仍要处理先前材料；用户拒绝或转向时 none。不能合成原文，编号只能选自 messages。此步骤只发起用途确认，不授权写入事实。',
+    choice = await runtime._json('识别用户是否提供了本次要修改的简历原文。返回 status=candidate/none、messageId、resumeStart、resumeEnd。resumeStart 和 resumeEnd 必须分别逐字复制正文第一条和最后一条非空完整行（不含换行符），不能改字或缩写，不能返回偏移量。正文须为两行之间连续的完整简历或经历，保留所有教育、项目、技能等内容；首尾的聊天指令或 JD 不纳入正文。指令夹在正文中、同一行混合指令或无法确定完整边界时 none。candidate 仅指实际履历；不要把操作指令、提问、假设、否定或仅供参考的示例当成履历。结合最新用户原话判断是否仍处理先前材料；用户拒绝或转向时 none。编号只能选自 messages，此步骤只发起用途确认，不授权写入事实。',
                                  {'userContent': turn['userMessage']['content'], 'messages': messages})
     allowed = {item['messageId']: item for item in messages}
     if choice.get('status') != 'candidate' or choice.get('messageId') not in allowed:
@@ -78,6 +89,13 @@ async def handle(runtime, turn):
             return True
         return False
     selected = allowed[choice['messageId']]
-    runtime._reply('已收到简历文字。是否将这段文字作为本次要修改的简历？确认后我会开始分析。', 'question',
-                   materials=[{'messageId': selected['messageId'], 'contentHash': fingerprint(selected['content'])}])
+    try:
+        a, b = body_span(selected['content'], choice.get('resumeStart'), choice.get('resumeEnd'))
+    except RepositoryError:
+        runtime._reply('已收到文字，但还不能确定完整简历正文的边界。请将简历正文与修改要求分开发送；原话已保留，当前稿未改变。', 'question')
+        return True
+    body = selected['content'][a:b]
+    runtime._reply('已收到简历文字。识别的正文从「' + choice['resumeStart'][:100] + '」到「' + choice['resumeEnd'][:100] + '」，不含范围外的聊天指令。是否将这部分作为本次要修改的简历？', 'question',
+                   materials=[{'messageId': selected['messageId'], 'contentHash': fingerprint(selected['content']),
+                               'bodyStart': a, 'bodyEnd': b, 'bodyHash': fingerprint(body)}])
     return True
