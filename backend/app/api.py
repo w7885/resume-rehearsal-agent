@@ -360,8 +360,8 @@ async def upload_material(session_id: str, request: Request):
         except ValidationError as error:
             return validation_response(error)
         media_type, text = inspect_upload(metadata["name"], raw, declared)
-    if media_type in {"image/png", "image/jpeg"}:
-        text = await vision.transcribe_image(media_type, raw)
+    # Persist originals before the Host performs budgeted recognition. Upload replays
+    # and invalid session/version requests must never trigger provider calls.
     return await run_in_threadpool(_service(request).save_material, session_id, metadata, raw, media_type, text)
 
 

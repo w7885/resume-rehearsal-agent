@@ -21,7 +21,10 @@ class FakeClient:
 
     async def complete_json(self,*,system,user,run_id='test'):
         value=json.loads(user)
-        if system.startswith('判断用户对附件'):
+        if system.startswith('识别附件正文'):
+            # Existing ambiguous fixtures exercise the clarification path.
+            data={'materials':[{'materialId':m['materialId'],'role':'resume' if '简历' in value['userContent'] and '项目经历' in m['text'] else 'unknown','quote':m['text'],'use':'current','authorizationQuote':''} for m in value['materials']]}
+        elif system.startswith('判断用户对附件'):
             data={'status':'resolved','materials':[{'materialId':m['materialId'],'role':'resume'} for m in value['materials']]}
         elif system.startswith('解析用户对改写'):
             prompt=value['candidatePrompts'][0]
@@ -124,6 +127,25 @@ class AgentIntegrationTests(unittest.TestCase):
         self.assertEqual(self.count('messages'),1)
         self.assertEqual(self.count('runs'),0)
         self.assertIn('/api/sessions/{session_id}/runs',self.app.openapi()['paths'])
+
+    def test_saved_unread_image_reports_disabled_vision_without_claiming_it_was_read(self):
+        from types import SimpleNamespace
+        from app.agent_host import Runtime
+        session = self.chat()
+        repo = self.app.state.business_service.repository
+        repo.save_material(RequestContext(session['sessionId'], self.version(session['sessionId'])),
+                           name='unread.png', media_type='image/png', original_data=b'fixture-image')
+        runtime = SimpleNamespace(repo=repo, sid=session['sessionId'], context=RequestContext(session['sessionId']))
+        with patch.dict('os.environ', {'VISION_ENABLED': '0'}):
+            text = Runtime._missing_draft_message(runtime)
+        self.assertIn('图片识别当前未启用', text)
+        self.assertIn('图片原件已保存', text)
+        self.assertNotIn('会自动识别', text)
+        self.assertEqual(self.count('source_blocks'), 0)
+        with patch.dict('os.environ', {'VISION_ENABLED': '1', 'DEEPSEEK_API_KEY': 'synthetic-no-call', 'AGENT_BUDGET_CONFIRMED': '1'}):
+            text = Runtime._missing_draft_message(runtime)
+        self.assertIn('未能从图片提取出可用文字', text)
+        self.assertNotIn('当前未启用', text)
 
     def test_agent_generates_saved_question_then_accepts_exact_reply_once(self):
         session,user=self.ready()

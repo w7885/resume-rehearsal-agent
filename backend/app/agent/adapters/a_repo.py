@@ -122,6 +122,15 @@ class ARepoAdapter:
             )
             for row in data.get("draft", {}).get("blocks", [])
         ]
+        source_rows = list(data.get('sources', []))
+        jd_rows = sorted((row for row in source_rows if row.get('role') == 'jd'), key=lambda row: (
+            (row.get('origin') or {}).get('materialId', ''),
+            (row.get('origin') or {}).get('page', 1),
+            (row.get('origin') or {}).get('paragraph', (row.get('origin') or {}).get('lineStart', 1)),
+            (row.get('origin') or {}).get('table', 0),
+            (row.get('origin') or {}).get('row', 0),
+            (row.get('origin') or {}).get('column', 0)))
+        source_rows = [row for row in source_rows if row.get('role') != 'jd'] + jd_rows
         sources = [
             SourceText(
                 source_id=row["sourceId"],
@@ -129,7 +138,7 @@ class ARepoAdapter:
                 text=row.get("text", ""),
                 source_revision=int(row.get("sourceRevision") or 1),
             )
-            for row in data.get("sources", [])
+            for row in source_rows
         ]
         return SessionContext(
             session=SessionInfo(

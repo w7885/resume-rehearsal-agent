@@ -148,7 +148,33 @@ class AgentHost:
 class HostAdapter(ARepoAdapter):
     def __init__(self, runtime):
         self.runtime = runtime
+        from app.agent_edit_scope import resolve_scope
+        self.allowed = resolve_scope(runtime.repo, runtime.context)
+        if self.allowed == set():
+            raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目。请明确项目序号；如果是旧版整块简历，请重新上传并明确替换，历史会保留。')
         super().__init__(tools=None,context=runtime.context,repository=runtime.repo,session_id=runtime.sid)
+
+    def get_session_context(self, session_id):
+        ctx = super().get_session_context(session_id)
+        if self.allowed is not None:
+            ctx.draft_blocks = [block for block in ctx.draft_blocks if block.block_id in self.allowed]
+            ctx.session.experience_order = [block.block_id for block in ctx.draft_blocks]
+            ctx.session.current_focus_id = next(iter(self.allowed))
+            ctx.suggestions = [s for s in ctx.suggestions if s.block_id in self.allowed]
+            # Show each scoped source excerpt, not the first 800 characters of an entire resume.
+            for source in ctx.sources:
+                quotes = [ref.quote for block in ctx.draft_blocks for ref in block.source_refs if ref.source_id == source.source_id]
+                if source.kind == 'resume' and quotes:
+                    source.text = '\n'.join(dict.fromkeys(quotes))
+        return ctx
+
+    def save_suggestion(self, session_id, experience_id, operation, before, after, reason, source_refs, gaps):
+        if self.allowed is not None:
+            if experience_id not in self.allowed:
+                raise RepositoryError('scope_violation', '建议目标不属于用户指定的项目。', False)
+            from app.agent_edit_scope import validate_project_refs
+            validate_project_refs(self.runtime.repo, self.runtime.context, experience_id, source_refs)
+        return super().save_suggestion(session_id, experience_id, operation, before, after, reason, source_refs, gaps)
 
     @property
     def tools(self):
@@ -241,36 +267,20 @@ class Runtime:
             return items[:10]
 
     async def _materials(self, turn):
-        prompts=[]
-        with self.repo._operation(self.context) as (connection,_):
-            for prompt in turn['candidatePrompts']:
-                if prompt['state']=='reply_saved' and (not turn['replyToMessageId'] or turn['replyToMessageId']==prompt['promptMessageId']):
-                    row=connection.execute('SELECT materials_json FROM agent_material_prompts WHERE session_id=? AND prompt_message_id=?',(self.sid,prompt['promptMessageId'])).fetchone()
-                    if row:
-                        prompts.extend(item for item in json.loads(row[0]) if 'materialId' in item)
-        if prompts:
-            choice=await self._json('判断用户对附件用途询问的答复。明确时 status=resolved，materials 为用户明确确认的 materialId、role(resume/jd/supplement)；否定或不明确时 status=clarify，materials=[]。不要猜测附件属于本人。',{'userContent':turn['userMessage']['content'],'materials':prompts})
-            if choice.get('status')=='resolved':
-                try:
-                    self._activate(choice.get('materials'),prompts)
-                except RepositoryError as error:
-                    if error.code!='replacement_required':
-                        raise
-                    self._reply('当前已有一份简历。这份附件先保留；请说明它是补充资料，还是需要明确替换当前简历。','question',materials=prompts)
-                    return True
-                self._continue()
-                self._reply('附件用途已确认。我会依据这些材料继续核对表达。')
-                return False
-            self._reply('请说明这些附件分别是要修改的简历、岗位描述，还是补充资料。','question',materials=prompts)
-            return True
-        pending=self._pending()
-        if pending:
-            names='、'.join(item['name'] for item in pending)
-            self._reply(f'已收到 {names}。它们分别是要修改的简历、岗位描述，还是补充资料？','question',materials=pending)
-            return True
-        return False
+        from app.agent_material_intake import handle
+        return await handle(self, turn)
 
-    def _activate(self, selected, candidates):
+    def _missing_draft_message(self):
+        with self.repo._operation(self.context) as (connection, session):
+            image = connection.execute("SELECT 1 FROM attachments a WHERE a.session_id=? AND a.resume_generation=? AND a.use_status='pending' AND a.media_type IN ('image/png','image/jpeg') AND NOT EXISTS (SELECT 1 FROM source_blocks b WHERE b.session_id=a.session_id AND b.attachment_id=a.attachment_id) LIMIT 1",
+                                       (self.sid, session['current_resume_generation'])).fetchone()
+        if image:
+            from app import vision
+            reason = '图片识别当前未启用，尚未获得正文。' if not vision.configured() else '这次未能从图片提取出可用文字。'
+            return '图片原件已保存，可打开预览；' + reason + '你可以粘贴简历和岗位描述的文字，或上传 DOCX／文字型 PDF 继续。'
+        return '请先上传可读的简历，或说明希望修改的经历。'
+
+    def _activate(self, selected, candidates, *, reference_ids=()):
         if not isinstance(selected,list) or not selected or len(selected)>10:
             raise RepositoryError('invalid_input','附件用途结果无效。')
         allowed={item['materialId']:item for item in candidates}
@@ -282,13 +292,16 @@ class Runtime:
             if resume_count>1 or (resume_count and bound.has_draft_history(RequestContext(self.sid))):
                 raise RepositoryError('replacement_required','需要明确整体替换。')
             for item in selected:
-                if not isinstance(item,dict) or set(item)!={'materialId','role'} or item['role'] not in {'resume','jd','supplement'} or item['materialId'] not in allowed or item['materialId'] in seen:
+                if not isinstance(item,dict) or set(item)!={'materialId','role'} or (item['role'] not in {'resume','jd','supplement'} and not (item['role']=='unknown' and item['materialId'] in reference_ids)) or item['materialId'] not in allowed or item['materialId'] in seen:
                     raise RepositoryError('scope_violation','附件用途超出询问范围。')
                 seen.add(item['materialId']); saved=allowed[item['materialId']]
                 material=connection.execute('SELECT * FROM attachments WHERE session_id=? AND attachment_id=? AND resume_generation=? AND use_status=\'pending\'',(self.sid,item['materialId'],session['current_resume_generation'])).fetchone()
                 if material is None or material['content_hash']!=saved['contentHash']:
                     raise RepositoryError('stale_state','附件已经变化。')
                 connection.execute('UPDATE attachments SET role=?,use_status=\'active\' WHERE session_id=? AND attachment_id=?',(item['role'],self.sid,item['materialId']))
+                if item['materialId'] in reference_ids:
+                    # Keep readable originals available without promoting examples to personal evidence.
+                    continue
                 for source in saved['sources']:
                     row=connection.execute('SELECT * FROM source_blocks WHERE session_id=? AND source_id=? ORDER BY source_revision DESC LIMIT 1',(self.sid,source['source_id'])).fetchone()
                     if row is None or row['source_revision']!=source['source_revision'] or row['attachment_id']!=item['materialId']:
@@ -299,17 +312,28 @@ class Runtime:
                         initial.append({'markdown':row['text'],'sourceRefs':[{'sourceId':activated['sourceId'],'sourceRevision':activated['sourceRevision'],'quote':row['text']}]})
             if initial:
                 current=bound.get_session(RequestContext(self.sid))
-                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),initial)
+                from app.resume_structure import structure_blocks
+                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial))
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
             connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
     async def _decisions(self, turn):
-        candidates=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and p['suggestions'] and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
+        active_prompts=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
+        candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
             return False
-        data=await self._json('解析用户对改写询问的决定。返回 status=none/clarify/resolved 和 decisions 数组。明确时每项只有 promptMessageId,suggestionId,decision(accept/reject/revise),feedback。feedback 必须逐字摘自用户原话；要求调整必须非空。否定、条件、引用、假设及范围不明确时先 clarify，不默认最后一条或全部。不要输出新的目标或版本。',{'userContent':turn['userMessage']['content'],'replyToMessageId':turn['replyToMessageId'],'candidatePrompts':candidates})
+        positive = turn['userMessage']['content'].strip().rstrip('。！!').strip() in {'是', '是的', '采用', '采纳', '接受', '确认', '同意', '好', '好的', '可以', '就这样'}
+        if positive:
+            if len(active_prompts) == 1 and len(candidates) == 1 and len(candidates[0]['suggestions']) == 1:
+                prompt = candidates[0]
+                data = {'status': 'resolved', 'decisions': [{'promptMessageId': prompt['promptMessageId'],
+                        'suggestionId': prompt['suggestions'][0]['suggestionId'], 'decision': 'accept', 'feedback': ''}]}
+            else:
+                data = {'status': 'clarify', 'decisions': []}
+        else:
+            data=await self._json('解析用户对改写询问的决定。返回 status=none/clarify/resolved 和 decisions 数组。明确时每项只有 promptMessageId,suggestionId,decision(accept/reject/revise),feedback。feedback 必须逐字摘自用户原话；要求调整必须非空。否定、条件、引用、假设及范围不明确时先 clarify，不默认最后一条或全部。不要输出新的目标或版本。',{'userContent':turn['userMessage']['content'],'replyToMessageId':turn['replyToMessageId'],'candidatePrompts':candidates})
         result=self.service.apply_resolved_user_decision(self.context,{'requestId':fresh_id('decision'),'userMessageId':self.user_id,'userContent':turn['userMessage']['content'],'status':data.get('status'),'decisions':data.get('decisions')},synthetic=self.host.client_factory is not None)['data']
         if result['status']=='clarify':
             ids=list(dict.fromkeys(s['suggestionId'] for p in candidates for s in p['suggestions']))
@@ -317,6 +341,8 @@ class Runtime:
             return True
         if result['status']=='resolved':
             self._continue()
+            from app.agent_goal import sync
+            sync(self)
             actions={d['decision'] for d in result['decisions']}
             text='已按你明确选择的建议更新当前稿。' if 'accept' in actions else '已记录你的决定，当前正文保持不变。'
             if 'revise' in actions:
@@ -336,14 +362,26 @@ class Runtime:
                 self.llm=DeepSeekClient(LLMSettings.from_env(),budget=self.budget)
             from app.agent_text_intake import handle as handle_text
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
+            from app.agent_image_intake import recognize
+            await recognize(self, turn['userMessage']['content'])
+            turn=self.service.get_chat_turn_context(self.context,self.user_id)
             if turn.get('decisionReceipt'):
                 self._reply('这条答复的决定已经处理，请查看当前稿。')
             elif await self._materials(turn) or await self._decisions(self.service.get_chat_turn_context(self.context,self.user_id)) or await handle_text(self,self.service.get_chat_turn_context(self.context,self.user_id)):
                 pass
             elif not self.repo.get_draft(self.context)['blocks']:
-                self._reply('请先上传文字简历，或说明希望修改的经历。图片会自动识别；识别不出时可重试、换清晰图或粘贴文字。','question')
+                self._reply(self._missing_draft_message(),'question')
             else:
+                from app.agent_goal import sync
+                sync(self)
                 adapter=HostAdapter(self); store=GuardedStateStore(self)
+                if adapter.allowed:
+                    from app.agent.memory import load_session, save_session
+                    existing = load_session(store, self.sid)
+                    if existing and existing[0].current_focus_id not in adapter.allowed:
+                        doc, revision = existing
+                        doc.current_focus_id = next(iter(adapter.allowed))
+                        save_session(store, self.sid, doc, revision)
                 saved=[]; notices=[]; questions=[]; outcome='completed'
                 async for event in stream_run(session_id=self.sid,text=turn['userMessage']['content'],repo=adapter,store=store,llm=self.llm,
                         request_id=self.request_id,message_id=self.user_id,run_id=self.context.run_id,expected_state_revision=self.context.expected_state_revision,start_analysis=self.initial_import):
@@ -374,6 +412,10 @@ class Runtime:
             self.finish('interrupted','cancelled',check=False)
         except Exception as error:
             try:
+                if isinstance(error, RepositoryError) and error.code == 'edit_scope_ambiguous':
+                    self._reply(error.message, 'question')
+                    self.finish('done', 'waiting_user')
+                    return
                 if not isinstance(error,RepositoryError) or error.code not in {'cancelled','stale_state','session_not_found'}:
                     self._reply('本轮处理未完成，消息和当前稿仍已保存。请稍后继续；不会把未完成的修改显示为成功。')
                 self.finish('failed',getattr(error,'code','agent_failed'))

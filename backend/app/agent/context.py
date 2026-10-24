@@ -120,11 +120,14 @@ def assemble_context(
 
     sections = [
         f"## 会话\n方向：{ctx.session.direction or '未填写'}\n"
-        f"目标：{session_goal or '未确认'}\n"
+        f"目标：{session_goal or (ctx.session.direction if ctx.session.direction_confirmed else '未确认')}\n"
         f"JD 关键词：{', '.join(ctx.session.jd_keywords) or '未填写'}\n"
         f"摘要：{_clip(ctx.session.summary, 300) or '（暂无）'}",
         f"## 经历清单\n{experience_block}",
     ]
+    jd = [f'[{source.source_id}，版本 {source.source_revision}]\n{source.text}' for source in ctx.sources if source.kind == 'jd']
+    if jd:
+        sections.append('## 目标岗位描述（仅用于匹配要求，不能当作用户经历）\n' + _clip('\n\n'.join(jd), 6000))
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:

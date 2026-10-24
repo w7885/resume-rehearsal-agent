@@ -99,6 +99,17 @@ def _evidence_text(state: GuardState) -> str:
     return "\n".join(parts)
 
 
+def _personal_change_evidence(args: ProposeChangeArgs, state: GuardState) -> str:
+    """Keep original draft facts, but require personal quotes for additions.
+
+    JD describes requirements, raw chat may be a question or hypothetical, and
+    model-maintained memory is not itself a new primary source.
+    """
+    original = state.focus_block_markdown or (state.focus_doc.raw_text if state.focus_doc else '')
+    quotes = [ref.quote for ref in args.source_refs if state.source_kinds.get(ref.source_id) in {'resume', 'supplement'}]
+    return '\n'.join([original, *quotes])
+
+
 def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     text = step.message.strip()
     marks = text.count("？") + text.count("?")
@@ -180,7 +191,7 @@ def _evidence_gate(
             violation=Violation("source_role", "必须引用简历或用户补充", True)
         )
 
-    evidence = _evidence_text(state)
+    evidence = _personal_change_evidence(args, state)
     compact = re.sub(r"\s+", "", evidence)
     for number in _NUMBER.findall(args.after) + _CN_NUMBER.findall(args.after):
         if number not in compact:
