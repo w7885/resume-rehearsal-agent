@@ -146,8 +146,10 @@ class AgentHost:
 
 
 class HostAdapter(ARepoAdapter):
-    def __init__(self, runtime):
+    def __init__(self, runtime, focus_id=None, enforce_focus=False):
         self.runtime = runtime
+        self.focus_id, self.enforce_focus = focus_id, enforce_focus
+        self.phase_suggestion_saved = False
         from app.agent_edit_scope import resolve_scope
         self.allowed = resolve_scope(runtime.repo, runtime.context)
         if self.allowed == set():
@@ -156,6 +158,8 @@ class HostAdapter(ARepoAdapter):
 
     def get_session_context(self, session_id):
         ctx = super().get_session_context(session_id)
+        if self.focus_id:
+            ctx.session.current_focus_id = self.focus_id
         if self.allowed is not None:
             ctx.draft_blocks = [block for block in ctx.draft_blocks if block.block_id in self.allowed]
             ctx.session.experience_order = [block.block_id for block in ctx.draft_blocks]
@@ -169,12 +173,19 @@ class HostAdapter(ARepoAdapter):
         return ctx
 
     def save_suggestion(self, session_id, experience_id, operation, before, after, reason, source_refs, gaps):
-        if self.allowed is not None:
-            if experience_id not in self.allowed:
+        if self.phase_suggestion_saved:
+            from app.agent.ports import RepoError
+            raise RepoError('suggestion_limit', '本轮已生成一条建议，先等待用户确认。', False)
+        if self.enforce_focus and experience_id != self.focus_id:
+            raise RepositoryError('scope_violation', '本轮只能提出当前接续段落的改写。', False)
+        if self.allowed is not None or self.enforce_focus:
+            if self.allowed is not None and experience_id not in self.allowed:
                 raise RepositoryError('scope_violation', '建议目标不属于用户指定的项目。', False)
             from app.agent_edit_scope import validate_project_refs
             validate_project_refs(self.runtime.repo, self.runtime.context, experience_id, source_refs)
-        return super().save_suggestion(session_id, experience_id, operation, before, after, reason, source_refs, gaps)
+        result = super().save_suggestion(session_id, experience_id, operation, before, after, reason, source_refs, gaps)
+        self.phase_suggestion_saved = True
+        return result
 
     @property
     def tools(self):
@@ -202,6 +213,8 @@ class Runtime:
         self.serial = 0
         self.waiting = False
         self.initial_import = False
+        self.accepted_this_turn = False
+        self.advance_after_accept = False
 
     def _emit(self, kind, payload, connection=None):
         if connection is None:
@@ -324,6 +337,11 @@ class Runtime:
         candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
             return False
+        from app.agent_progress import CONTINUE, plain
+        if plain(turn['userMessage']['content']) in CONTINUE:
+            ids = list(dict.fromkeys(s['suggestionId'] for p in candidates for s in p['suggestions']))
+            self._reply('当前还有待确认的改写。请先采用、拒绝或说明调整要求；“继续”不会替你采用它。', 'change_question', ids)
+            return True
         positive = turn['userMessage']['content'].strip().rstrip('。！!').strip() in {'是', '是的', '采用', '采纳', '接受', '确认', '同意', '好', '好的', '可以', '就这样'}
         if positive:
             if len(active_prompts) == 1 and len(candidates) == 1 and len(candidates[0]['suggestions']) == 1:
@@ -340,16 +358,119 @@ class Runtime:
             self._reply('请说明要采用、拒绝或调整哪一条改写；也可以直接指出需要保留的内容。','change_question',ids[:10])
             return True
         if result['status']=='resolved':
+            actions={d['decision'] for d in result['decisions']}
+            self.accepted_this_turn = 'accept' in actions
             self._continue()
             from app.agent_goal import sync
             sync(self)
-            actions={d['decision'] for d in result['decisions']}
+            from app.agent_progress import record
+            offered = {s['suggestionId']: s for p in candidates for s in p['suggestions']}
+            for item in result['decisions']:
+                if item['decision'] == 'reject':
+                    record(self, offered[item['suggestionId']]['target']['blockId'], completed=True)
             text='已按你明确选择的建议更新当前稿。' if 'accept' in actions else '已记录你的决定，当前正文保持不变。'
             if 'revise' in actions:
                 text+='调整要求已保留，可以继续说明希望怎样修改。'
             self._reply(text)
+            if 'accept' in actions:
+                paused = any(word in turn['userMessage']['content'] for word in ('先停', '先暂停', '不继续', '不要继续', '先到这里'))
+                if not paused:
+                    self.advance_after_accept = True
+                    return False
+                self._reply('已暂停后续处理，刚才采用的内容已保存。')
             return True
         return False
+
+    async def _analyze_next(self, turn):
+        from app.agent_goal import sync
+        from app.agent_progress import CONTINUE, plain, plan, record, label, completion
+        from app.agent.memory import load_session, save_session
+        sync(self)
+        progress = plan(self)
+        if progress['pending']:
+            self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
+            return 'completed'
+        forced = self.advance_after_accept or self.initial_import or plain(turn['userMessage']['content']) in CONTINUE
+        if progress['review']:
+            self._reply('继续前需要核对当前段落的来源：原文或引用版本已变化，请先核对材料；已保存内容保留。', 'question')
+            return 'completed'
+        store = GuardedStateStore(self)
+        existing = load_session(store, self.sid)
+        if forced and not progress['remaining']:
+            self._reply(completion(progress))
+            return 'completed'
+        choices = progress['remaining'] or progress['blocks']
+        if not choices:
+            self._reply('当前稿没有可处理的正文，请先提供简历。', 'question')
+            return 'completed'
+        focus = choices[0]
+        if not forced and existing:
+            focus = next((b for b in progress['blocks'] if b['blockId'] == existing[0].current_focus_id), focus)
+        adapter = HostAdapter(self, focus['blockId'], enforce_focus=forced)
+        if existing and existing[0].current_focus_id != focus['blockId']:
+            doc, revision = existing
+            doc.current_focus_id = focus['blockId']
+            save_session(store, self.sid, doc, revision)
+        if self.budget.status()['remainingCents'] == 0:
+            self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
+            return 'completed'
+        self._emit('progress', {'message': '正在检查当前段落。'})
+        saved, notices, questions, warnings = [], [], [], []
+        section = None
+        active_focus = focus
+        outcome = 'completed'
+        async for event in stream_run(session_id=self.sid, text=turn['userMessage']['content'], repo=adapter, store=store, llm=self.llm,
+                request_id=self.request_id, message_id=self.user_id, run_id=self.context.run_id,
+                expected_state_revision=self.context.expected_state_revision, start_analysis=forced):
+            with self.repo._operation(self.context):
+                pass
+            if event.type == 'suggestion':
+                saved.append(event.payload['suggestion_id'])
+            elif event.type in {'route', 'focus_changed'}:
+                target = event.payload.get('target_experience_id') or event.payload.get('experience_id')
+                active_focus = next((b for b in progress['blocks'] if b['blockId'] == target), active_focus)
+            elif event.type == 'question':
+                questions.append(event.payload.get('text', ''))
+            elif event.type == 'notice' and event.payload.get('text'):
+                notices.append(event.payload['text'])
+            elif event.type == 'warning':
+                warnings.append(event.payload.get('code', ''))
+            elif event.type == 'section_finished':
+                section = event.payload
+            elif event.type == 'error':
+                if not saved:
+                    raise RepositoryError('agent_failed', '下一步分析未完成，已保存的改写不会回滚。')
+            elif event.type == 'run_finished':
+                outcome = event.payload.get('outcome', 'completed')
+        if saved:
+            proposals = {p['suggestionId']: p for p in self.repo.get_session_context(self.context)['suggestions']}
+            proposals = [proposals[sid] for sid in saved]
+            target = proposals[0]['target']['blockId']
+            record(self, target)
+            self._reply('建议表述为：\n\n' + '\n\n'.join(p['after'] for p in proposals) + '\n\n是否采用？也可以说明需要保留或调整的地方。', 'change_question', saved)
+        elif questions:
+            record(self, active_focus['blockId'])
+            self._reply(questions[-1], 'question')
+        elif notices:
+            self._reply(notices[-1])
+        elif section and outcome == 'completed':
+            record(self, section['focus_id'], completed=True)
+            following = plan(self)
+            reason = section.get('summary', '').strip()[:300]
+            text = '本段本轮保留原文。' + (reason + '\n' if reason else '\n')
+            text += ('下一步检查' + label(following['remaining'][0]) + '，回复“继续”即可接着处理。') if following['remaining'] else completion(following)
+            self._reply(text)
+        elif 'budget_exhausted' in warnings:
+            self._reply('剩余额度不足以生成下一条建议。已采用的内容已保存；当前稿仍可预览或导出。')
+        elif outcome == 'focused':
+            record(self, active_focus['blockId'])
+            self._reply('已定位到指定段落。下一步会检查这段与 JD 的对应表达，回复“继续”即可处理。')
+        else:
+            record(self, active_focus['blockId'])
+            issues = self.repo.get_session_context(self.context)['issues']
+            issue = next((item['summary'] for item in reversed(issues) if active_focus['blockId'] in item.get('affectedBlockIds', [])), '')
+            self._reply('本段暂未生成可采用的改写。' + (issue + '。' if issue else '') + '请核对这一段的原文依据，或指出希望调整的具体一句；已保存内容保留。', 'question')
+        return 'completed'
 
     async def run(self):
         try:
@@ -362,6 +483,11 @@ class Runtime:
                 self.llm=DeepSeekClient(LLMSettings.from_env(),budget=self.budget)
             from app.agent_text_intake import handle as handle_text
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
+            from app.agent_progress import STOP, plain
+            if plain(turn['userMessage']['content']) in STOP:
+                self._reply('已暂停后续处理。已保存的当前稿和待确认建议保留；需要时可回复“继续”。')
+                self.finish('done', 'completed')
+                return
             from app.agent_image_intake import recognize
             await recognize(self, turn['userMessage']['content'])
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
@@ -372,41 +498,7 @@ class Runtime:
             elif not self.repo.get_draft(self.context)['blocks']:
                 self._reply(self._missing_draft_message(),'question')
             else:
-                from app.agent_goal import sync
-                sync(self)
-                adapter=HostAdapter(self); store=GuardedStateStore(self)
-                if adapter.allowed:
-                    from app.agent.memory import load_session, save_session
-                    existing = load_session(store, self.sid)
-                    if existing and existing[0].current_focus_id not in adapter.allowed:
-                        doc, revision = existing
-                        doc.current_focus_id = next(iter(adapter.allowed))
-                        save_session(store, self.sid, doc, revision)
-                saved=[]; notices=[]; questions=[]; outcome='completed'
-                async for event in stream_run(session_id=self.sid,text=turn['userMessage']['content'],repo=adapter,store=store,llm=self.llm,
-                        request_id=self.request_id,message_id=self.user_id,run_id=self.context.run_id,expected_state_revision=self.context.expected_state_revision,start_analysis=self.initial_import):
-                    with self.repo._operation(self.context):
-                        pass
-                    if event.type=='suggestion':
-                        saved.append(event.payload['suggestion_id'])
-                    elif event.type=='question':
-                        questions.append(event.payload.get('text',''))
-                    elif event.type=='notice' and event.payload.get('text'):
-                        notices.append(event.payload['text'])
-                    elif event.type=='error':
-                        raise RepositoryError('agent_failed','本轮分析未完成，原话和当前稿仍已保存。')
-                    elif event.type=='run_finished':
-                        outcome=event.payload.get('outcome','completed')
-                if saved:
-                    proposals={s['suggestionId']:s for s in self.repo.get_session_context(self.context)['suggestions']}
-                    texts=[proposals[sid]['after'] for sid in saved]
-                    self._reply('建议表述为：\n\n'+'\n\n'.join(texts)+'\n\n是否采用？也可以说明需要保留或调整的地方。','change_question',saved)
-                elif questions:
-                    self._reply(questions[-1],'question')
-                elif notices:
-                    self._reply(notices[-1])
-                else:
-                    self._reply('本轮未生成可采用的新改写。你可以补充具体职责、行动或结果，我会继续核对。')
+                outcome = await self._analyze_next(self.service.get_chat_turn_context(self.context, self.user_id))
             self.finish('done','limited' if outcome=='limited' else 'waiting_user' if self.waiting else 'completed')
         except asyncio.CancelledError:
             self.finish('interrupted','cancelled',check=False)
@@ -416,9 +508,13 @@ class Runtime:
                     self._reply(error.message, 'question')
                     self.finish('done', 'waiting_user')
                     return
-                if not isinstance(error,RepositoryError) or error.code not in {'cancelled','stale_state','session_not_found'}:
-                    self._reply('本轮处理未完成，消息和当前稿仍已保存。请稍后继续；不会把未完成的修改显示为成功。')
-                self.finish('failed',getattr(error,'code','agent_failed'))
+                if self.accepted_this_turn and (not isinstance(error, RepositoryError) or error.code not in {'cancelled', 'stale_state', 'session_not_found'}):
+                    self._reply('上一条改写已保存；下一步暂未完成，可稍后回复“继续”。已采用内容不会因接续失败而回滚。')
+                    self.finish('done', 'completed')
+                else:
+                    if not isinstance(error,RepositoryError) or error.code not in {'cancelled','stale_state','session_not_found'}:
+                        self._reply('本轮处理未完成，消息和当前稿仍已保存。请稍后继续；不会把未完成的修改显示为成功。')
+                    self.finish('failed',getattr(error,'code','agent_failed'))
             except RepositoryError:
                 self.finish('interrupted','stale_state',check=False)
         finally:

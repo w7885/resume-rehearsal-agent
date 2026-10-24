@@ -77,18 +77,6 @@ def call_signature(tool: str, args: dict) -> str:
     return f"{tool}:{json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)}"
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"[\s，。！？、,.!?;；:：\"'“”‘’（）()]+", "", text)
-
-
-def _anchor_hit(question: str, anchor: str) -> bool:
-    q = _normalize(question)
-    a = _normalize(anchor)
-    if len(a) < 4:
-        return True
-    return any(a[i : i + 4] in q for i in range(len(a) - 3))
-
-
 def _evidence_text(state: GuardState) -> str:
     parts = [state.anchor_text]
     if state.focus_doc is not None:
@@ -121,8 +109,8 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         return Violation("question_multi", "一次只能问一个点")
     if len(_QUESTION_WORDS.findall(text)) > 1:
         return Violation("question_multi", "一次只能问一个点")
-    if not _anchor_hit(text, state.anchor_text):
-        return Violation("question_unanchored", "问题必须引用原文或上一轮回答")
+    if re.match(r'^(?:「[^」\n]*」|【[^】\n]*】|\[[^\]\n]*\]|“[^”\n]*”)\s*', text):
+        return Violation("question_prefix", "直接自然提问，不在开头添加人名、标题或原文引用标签")
     if any(word in text for word in _LEADING):
         return Violation("question_leading", "问题不能诱导或预设答案")
     if any(word in text for word in _PRIVACY):
