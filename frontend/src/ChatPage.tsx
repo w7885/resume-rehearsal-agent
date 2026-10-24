@@ -3,6 +3,8 @@ import { Icon } from './ChatIcons';
 import * as api from './api';
 import { ChatSendOperation } from './chatSend';
 import { ChatAgentOperation } from './chatAgent';
+import { ChatDeleteOperation } from './chatDelete';
+import { DeleteSessionDialog, SessionHistoryRow } from './ChatSessionActions';
 import ChatDraftPanel from './ChatDraftPanel';
 import ChatInspector from './ChatInspector';
 import type { Inspection } from './ChatInspector';
@@ -32,6 +34,8 @@ export default function ChatPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [draftOpen, setDraftOpen] = useState(() => window.innerWidth >= 1000);
   const [inspecting, setInspecting] = useState<Inspection | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ session: ChatSession; operation: ChatDeleteOperation } | null>(null);
+  const [deleting, setDeleting] = useState(false), [deleteError, setDeleteError] = useState('');
   const composer = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const thread = useRef<HTMLDivElement>(null);
@@ -39,8 +43,8 @@ export default function ChatPage() {
   const draft = drafts[key] ?? EMPTY;
   const selections = pending?.key === key ? pending.operation.attachments() : draft.attachments;
   const readOnly = conversation?.session.mode === 'mock';
-  const unavailable = loading || sending || !!pending || readOnly;
-  const editor = useChatDraft(loading || sending || !!pending, (sid, result) => {
+  const unavailable = loading || sending || !!pending || !!deleteTarget || readOnly;
+  const editor = useChatDraft(loading || sending || !!pending || !!deleteTarget, (sid, result) => {
     if (active.current?.session.sessionId !== sid) return;
     const next = { ...active.current, session: { ...active.current.session, ...result.session }, draft: result.draft };
     active.current = next; setConversation(next);
@@ -205,14 +209,62 @@ export default function ChatPage() {
     requestAnimationFrame(() => composer.current?.focus());
   };
 
+  const forgetDeletedSession = (sid: string) => {
+    setSessions(previous => previous.filter(item => item.sessionId !== sid));
+    setDrafts(previous => { const next = { ...previous }; delete next[sid]; return next; });
+    if (active.current?.session.sessionId === sid) { install(null); setAgentTask(null); setHistoryOpen(false); }
+  };
+  const openDelete = async (session: ChatSession) => {
+    if (locked.current || pendingRef.current || sending || loading || editor.snapshot.status === 'saving') return;
+    locked.current = true; setLoading(true); setError('');
+    try {
+      await editor.flush();
+      const fresh = await api.readConversation(session.sessionId);
+      if (fresh.session.status === 'running') throw new api.ApiError('会话正在处理中，请先完成或停止任务再删除。', 'run_busy');
+      setDeleteError('');
+      setDeleteTarget({ session: fresh.session, operation: new ChatDeleteOperation(session.sessionId, fresh.session.stateRevision) });
+    } catch (failure) {
+      if (failure instanceof api.ApiError && failure.code === 'session_not_found') {
+        forgetDeletedSession(session.sessionId);
+      }
+      setError(errorText(failure));
+    } finally { locked.current = false; setLoading(false); }
+  };
+  const cancelDelete = () => {
+    if (deleting) return;
+    const sid = deleteTarget?.session.sessionId;
+    setDeleteTarget(null); setDeleteError('');
+    requestAnimationFrame(() => document.getElementById(`session-actions-${sid}`)?.focus());
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget || locked.current || pendingRef.current || sending) return;
+    const target = deleteTarget;
+    locked.current = true; setDeleting(true); setDeleteError('');
+    try {
+      await target.operation.run();
+      const sid = target.session.sessionId;
+      forgetDeletedSession(sid);
+      setDeleteTarget(null); setError('');
+      requestAnimationFrame(() => composer.current?.focus());
+    } catch (failure) {
+      if (failure instanceof api.ApiError && ['stale_state', 'run_busy'].includes(failure.code)) {
+        try {
+          const fresh = await api.readConversation(target.session.sessionId);
+          setDeleteTarget({ session: fresh.session, operation: new ChatDeleteOperation(fresh.session.sessionId, fresh.session.stateRevision) });
+          setDeleteError(failure.code === 'stale_state' ? '会话已更新，已读取最新版本，请再次确认删除。' : failure.message);
+        } catch { setDeleteError('未能读取会话的最新状态，删除未确认成功。请取消后重新打开删除确认。'); }
+      } else setDeleteError('删除结果未确认成功，请重试。' + errorText(failure));
+    } finally { locked.current = false; setDeleting(false); }
+  };
+
   return <div className={`cp-page cp-live ${draftOpen ? 'cp-with-draft' : ''}`}>
     <a className="cp-skip" href="#live-composer">跳到对话输入框</a>
     {historyOpen && <button className="cp-shade" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)} />}
     <aside className={`cp-history ${historyOpen ? 'cp-history-open' : ''}`} aria-label="会话历史">
       <div className="cp-brand"><span className="cp-logo">历</span><strong>历历在练</strong><button className="cp-icon cp-mobile-close" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)}><Icon name="close" /></button></div>
-      <button className="cp-new" disabled={loading || sending || !!pending} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
+      <button className="cp-new" disabled={loading || sending || !!pending || !!deleteTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
       <div className="cp-history-label">已保存的会话</div>
-      <div className="cp-live-history-list">{sessions.map(session => <button className={`cp-history-item ${conversation?.session.sessionId === session.sessionId ? 'cp-active' : ''}`} key={session.sessionId} disabled={loading || sending || !!pending} aria-current={conversation?.session.sessionId === session.sessionId ? 'page' : undefined} onClick={() => { void navigate(session.sessionId); }}><Icon name="chat" size={17} /><span>{session.title}{session.mode === 'mock' ? ' · 模拟' : ''}</span></button>)}</div>
+      <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={loading || sending || !!pending || !!deleteTarget || editor.snapshot.status === 'saving'} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
       <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
@@ -239,11 +291,12 @@ export default function ChatPage() {
       </div>
     </main>
 
-    {draftOpen && <ChatDraftPanel key={key} conversation={conversation} snapshot={editor.snapshot} disabled={unavailable} onChange={text => editor.buffer?.setText(text)} onSave={() => { void saveDraft(); }} onRecover={keep => { void recoverDraft(keep); }} onClose={() => setDraftOpen(false)} onEvidence={() => setInspecting('evidence')} />}
+    {draftOpen && <ChatDraftPanel key={key} conversation={conversation} snapshot={editor.snapshot} disabled={unavailable} onChange={text => editor.buffer?.setText(text)} onSave={() => { void saveDraft(); }} onRecover={keep => { void recoverDraft(keep); }} onClose={() => setDraftOpen(false)} onEvidence={() => setInspecting('evidence')} onOriginalMaterial={setInspecting} />}
     {inspecting && conversation && <ChatInspector inspecting={inspecting} conversation={conversation} unsaved={editor.snapshot.status !== 'saved'} disabled={unavailable} attached={selections.flatMap(item => item.material ? [item.material.materialId] : [])} onAdd={addSaved} onSelect={setInspecting} onClose={() => setInspecting(null)} beforeChange={editor.flush} onChanged={async () => {
       const fresh = await api.readConversation(conversation.session.sessionId);
       editor.activate(fresh); active.current = fresh; setConversation(fresh);
     }} />}
 
+    {deleteTarget && <DeleteSessionDialog session={deleteTarget.session} busy={deleting} error={deleteError} onCancel={cancelDelete} onConfirm={() => { void confirmDelete(); }} />}
   </div>;
 }

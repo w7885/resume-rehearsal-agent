@@ -33,6 +33,7 @@ def create_chat_session(repo):
 
 
 def read_conversation(repo, context):
+    from app.original_draft import read_original_draft
     repo._user_path(context)
     with repo._operation(context) as (connection, session):
         messages = [message_view(repo, connection, row, session, sequence)
@@ -49,6 +50,7 @@ def read_conversation(repo, context):
             WHERE r.session_id = ? AND d.is_current = 1 AND NOT ({_ACTIVE_SOURCE}) LIMIT 1""", (context.session_id,)).fetchone()
         return {"session": repo._session(session), "messages": messages, "materials": materials,
                 "draft": repo._draft(connection, session),
+                "originalDraft": read_original_draft(connection, session),
                 "draftReviewRequired": bool(conflict or changed_evidence),
                 "capabilities": {"agentAvailable": False, "decisionExecutionAvailable": False}}
 

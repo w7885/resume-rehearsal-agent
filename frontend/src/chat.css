@@ -99,6 +99,28 @@
 .cp-skip { position:fixed; left:15px; top:10px; background:#fff; color:#285a4b; padding:10px; z-index:100; transform:translateY(-150%); }.cp-skip:focus { transform:none; }
 .cp-live .cp-history { min-height:0; }.cp-live-history-list { min-height:0; overflow-y:auto; scrollbar-width:thin; }.cp-live-history-list .cp-history-item { width:100%; }
 .cp-live-history-empty { padding:10px; color:#738176; font-size:12px; line-height:1.9; }.cp-live .cp-sidebar-note { padding-top:24px; }
+.cp-history-row { position:relative; display:flex; align-items:center; border-radius:7px; margin:3px 0; }
+.cp-history-row.cp-active { background:#e7ece9; color:#244e3d; }
+.cp-live-history-list { padding-bottom:52px; }
+.cp-history .cp-history-row .cp-history-item { flex:1; width:0; margin:0; min-height:44px; }
+.cp-history-row.cp-active .cp-history-item { color:#244e3d; }
+.cp-page .cp-session-more { display:grid; place-items:center; flex:0 0 44px; width:44px; height:44px; padding:0; color:#63756c; opacity:0; }
+.cp-history-row:hover .cp-session-more,.cp-history-row:focus-within .cp-session-more,.cp-session-more[aria-expanded=true] { opacity:1; }
+.cp-session-menu { position:absolute; top:calc(100% + 2px); right:0; z-index:5; background:white; border:1px solid #dce2df; border-radius:9px; box-shadow:0 6px 20px #17312115; padding:4px; min-width:140px; }
+.cp-page .cp-session-menu button { display:flex; gap:9px; align-items:center; width:100%; min-height:44px; padding:8px 12px; color:#a13d35; text-align:left; }
+.cp-page .cp-session-menu button:hover { background:#fff3f1; }
+.cp-delete-dialog { width:min(410px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; box-sizing:border-box; border:1px solid #dce2df; border-radius:16px; padding:26px; color:#35433d; box-shadow:0 20px 70px #17312129; }
+.cp-delete-dialog::backdrop { background:#253d3060; }
+.cp-delete-dialog h2 { font-size:20px; margin:0 0 18px; }
+.cp-delete-dialog p { font-size:14px; line-height:1.8; margin:12px 0; }
+.cp-delete-name { font-weight:600; overflow-wrap:anywhere; max-height:100px; overflow:auto; }
+.cp-delete-actions { display:flex; justify-content:flex-end; gap:12px; margin-top:24px; }
+.cp-page .cp-delete-actions button { min-width:80px; min-height:44px; border:1px solid #cdd8d2; border-radius:8px; padding:8px 18px; }
+.cp-page .cp-delete-actions .cp-delete-confirm { background:#ad4238; border-color:#ad4238; color:white; }
+.cp-page .cp-delete-actions .cp-delete-confirm:hover { background:#91352d; }
+.cp-delete-error { color:#943c33; }
+.cp-session-more:focus-visible,.cp-session-menu button:focus-visible,.cp-delete-actions button:focus-visible { outline:2px solid #285a4b; outline-offset:2px; }
+@media(hover:none),(max-width:680px) { .cp-page .cp-session-more { opacity:1; } }
 .cp-live-header-tools { display:flex; align-items:center; gap:8px; }.cp-live-system { text-align:center; color:#6b786f; font-size:11px; line-height:1.9; margin:24px 0 0; }
 .cp-live-capability { margin-top:20px!important; font-size:12px!important; color:#687a6e!important; }.cp-live-readonly { font-size:11px; color:#738176; padding:4px 6px; }
 .cp-live-error { background:#fff6f2; border:1px solid #ecd5c9; border-radius:8px; color:#88513d; font-size:12px; padding:10px 13px; line-height:1.8; margin-bottom:10px; }
@@ -124,8 +146,8 @@
 .cp-page .cp-draft-editor { display:block; box-sizing:border-box; width:100%; min-height:100%; resize:vertical; border:1px solid #e0e6e2; border-radius:5px; background:white; color:#344c3e; padding:20px 16px; font:13px/1.9 "Segoe UI","Microsoft YaHei",sans-serif; }
 .cp-page .cp-draft-editor:disabled { opacity:.75; }
 .cp-draft-save-area { flex-shrink:0; padding:9px 16px 12px; border-top:1px solid #e5eae6; max-height:38vh; overflow:auto; }
-.cp-draft-bottom-actions { display:flex; justify-content:space-between; gap:8px; }
-.cp-draft-bottom-actions button { color:#285a4b; font-size:12px; }
+.cp-draft-bottom-actions { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.cp-draft-bottom-actions button { color:#285a4b; font-size:12px; min-width:0; overflow-wrap:anywhere; }
 .cp-draft-help,.cp-draft-notice { color:#6d7d71; font-size:11px; line-height:1.7; padding-top:5px; }
 .cp-draft-review { color:#88513d; font-size:11px; line-height:1.8; padding:8px 0; }
 .cp-draft-save-area .cp-live-error { margin-bottom:5px; }

@@ -626,7 +626,10 @@ class Repository:
 
     def delete_session(self, context: RequestContext):
         self._user_path(context)
-        with self._operation(context, write=True) as (connection, _):
+        with self._operation(context, write=True) as (connection, session):
+            active = connection.execute("SELECT 1 FROM agent_run_requests WHERE session_id=? AND status='running' LIMIT 1", (context.session_id,)).fetchone()
+            if session['status'] == 'running' or active:
+                raise RepositoryError('run_busy', '会话正在处理中，请先完成或停止任务再删除。')
             self._touch(connection, context.session_id)
             connection.execute("DELETE FROM sessions WHERE session_id = ?", (context.session_id,))
             return {"sessionId": context.session_id, "deleted": True}
