@@ -567,15 +567,18 @@ class Repository:
             # unresolved text is included in Agent factual memory.
             materials = [self._material(row) for row in connection.execute("SELECT * FROM attachments WHERE session_id = ? AND (resume_generation = ? OR (role = 'jd' AND use_status = 'active')) ORDER BY coalesce(reading_order,original_order),original_order", (context.session_id, session["current_resume_generation"]))]
             suggestions = []
-            for row in connection.execute("SELECT * FROM suggestions WHERE session_id = ? AND status = 'pending' AND resume_generation = ? ORDER BY created_at, suggestion_id", (context.session_id, session["current_resume_generation"])):
+            # Accepted rows let the agent remember which experiences are done after
+            # a draft edit invalidates revision-scoped state; pending rows come first.
+            for row in connection.execute("SELECT * FROM suggestions WHERE session_id = ? AND status IN ('pending', 'accepted') AND resume_generation = ? ORDER BY status = 'accepted', created_at, suggestion_id", (context.session_id, session["current_resume_generation"])):
                 proposal = self._suggestion(connection, row)
-                try:
-                    block = self._current_block(connection, session, row["target_block_id"], row["expected_block_revision"])
-                    if block["markdown"] != row["before_text"]:
+                if row["status"] == "pending":
+                    try:
+                        block = self._current_block(connection, session, row["target_block_id"], row["expected_block_revision"])
+                        if block["markdown"] != row["before_text"]:
+                            continue
+                        self._refs(connection, context.session_id, proposal["sourceRefs"], required=True)
+                    except RepositoryError:
                         continue
-                    self._refs(connection, context.session_id, proposal["sourceRefs"], required=True)
-                except RepositoryError:
-                    continue
                 suggestions.append(proposal)
             issues = []
             for row in connection.execute("SELECT * FROM issues WHERE session_id = ? AND is_current = 1 AND status = 'open' AND resume_generation = ? ORDER BY created_at, rowid", (context.session_id, session["current_resume_generation"])):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +47,7 @@ _PHRASES = {
     "tech": "用到了哪些技术",
 }
 _SLOT_ORDER = ("responsibility", "action", "result", "evidence", "tech")
+_DIRECT_REWRITE = re.compile(r"直接改|别问|不用问|你决定|随便改|开始改写")
 
 
 def _normalize_action(raw) -> Any:
@@ -126,7 +128,11 @@ async def run_loop(
     focus_doc = next((doc for doc in docs if doc.experience_id == focus_id), None)
 
     if focus_doc is None:
-        sink.emit("warning", code="no_focus", message="没有可改写的经历")
+        sink.emit(
+            "warning",
+            code="no_focus",
+            message="简历里还没识别到项目/实习经历，请上传或粘贴一段项目/实习。",
+        )
         sink.emit("run_finished", outcome="no_focus", fallback_used=False)
         return LoopResult(
             outcome="no_focus",
@@ -212,6 +218,9 @@ async def run_loop(
         texts = [m.text for m in ctx.messages if m.role == "user"][-2:]
         return "\n".join(texts)
 
+    def latest_user_text() -> str:
+        return next((m.text for m in reversed(ctx.messages) if m.role == "user"), "")
+
     def guard_state() -> GuardState:
         focus_block = ""
         if focus_doc is not None:
@@ -235,6 +244,7 @@ async def run_loop(
             source_kinds=source_kinds,
             focus_block_markdown=focus_block,
             state_revision_changed=state_revision_changed,
+            direct_rewrite=bool(_DIRECT_REWRITE.search(latest_user_text())),
             recent_calls=[
                 call_signature(trace.tool or "", trace.args)
                 for trace in traces

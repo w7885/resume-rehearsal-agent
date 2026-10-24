@@ -41,6 +41,7 @@ class TextIntakeTests(unittest.TestCase):
     analyze = test_agent_integration.AgentIntegrationTests.analyze
     conversation = test_agent_integration.AgentIntegrationTests.conversation
     answer_goal = test_agent_integration.AgentIntegrationTests.answer_goal
+    answer_question = test_agent_integration.AgentIntegrationTests.answer_question
 
     def prepared(self, text=RESUME):
         self.host = self.app.state.agent_host
@@ -70,6 +71,9 @@ class TextIntakeTests(unittest.TestCase):
         value = self.conversation(session)
         self.assertEqual(value['draft']['markdown'], RESUME)
         self.assertEqual(value['messages'][0]['content'], RESUME)
+        self.assertEqual(value['messages'][-1]['assistant']['kind'], 'question')
+        self.answer_question(session, 'confirm-question')
+        value = self.conversation(session)
         self.assertEqual(value['messages'][-1]['assistant']['kind'], 'change_question')
         with db.database(self.path, read_only=True) as connection:
             row = connection.execute('SELECT * FROM source_blocks').fetchone()

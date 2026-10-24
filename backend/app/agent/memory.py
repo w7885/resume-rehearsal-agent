@@ -17,6 +17,7 @@ from app.agent.ports import (
     Suggestion,
 )
 from app.agent.store import AgentStateStore
+from app.resume_structure import block_kinds
 
 Slot = Literal["responsibility", "action", "result", "evidence", "tech", "confirm"]
 FactStatus = Literal["active", "superseded"]
@@ -394,6 +395,24 @@ def _block_title(markdown: str) -> str:
     return "未命名经历"
 
 
+def next_unconfirmed(
+    order: list[str],
+    docs: dict[str, ExperienceDoc],
+    phases: dict[str, Phase],
+    current_id: str | None = None,
+) -> str | None:
+    for experience_id in order:
+        if experience_id == current_id:
+            continue
+        doc = docs.get(experience_id)
+        if doc is None or doc.skipped or doc.archived:
+            continue
+        if phases.get(experience_id) == "confirmed":
+            continue
+        return experience_id
+    return None
+
+
 def sync_experiences(
     session_id: str,
     ctx: SessionContext,
@@ -402,35 +421,57 @@ def sync_experiences(
     revision: int | None,
 ) -> tuple[SessionDoc, int]:
     if doc is None:
-        doc = SessionDoc(
-            experience_order=list(ctx.session.experience_order),
-            current_focus_id=ctx.session.current_focus_id,
-        )
+        doc = SessionDoc()
         revision = None
-    order = list(doc.experience_order)
-    changed = False
-    for position, block in enumerate(ctx.draft_blocks):
-        if load_experience(store, session_id, block.block_id) is None:
+    kinds = block_kinds([block.markdown for block in ctx.draft_blocks])
+    present = {block.block_id for block in ctx.draft_blocks}
+    experience_ids: list[str] = []
+    for block, kind in zip(ctx.draft_blocks, kinds):
+        if kind is None:
+            continue
+        experience_ids.append(block.block_id)
+        loaded = load_experience(store, session_id, block.block_id)
+        if loaded is None:
+            # Stored memory is draft-revision scoped, so an accepted rewrite wipes it.
+            # The accepted suggestion itself persists; use it to keep the段 done.
+            accepted = [
+                suggestion
+                for suggestion in ctx.suggestions
+                if suggestion.status == "accepted"
+                and (suggestion.block_id or suggestion.experience_id) == block.block_id
+            ]
             save_experience(
                 store,
                 session_id,
                 ExperienceDoc(
                     experience_id=block.block_id,
-                    seq=position + 1,
-                    kind="project",
+                    seq=len(experience_ids),
+                    kind=kind,
                     title=_block_title(block.markdown),
                     raw_text=block.markdown,
                     source_ids=[ref.source_id for ref in block.source_refs],
                     block_id=block.block_id,
                     block_revision=block.block_revision,
+                    last_suggestion_id=accepted[-1].suggestion_id if accepted else None,
                 ),
                 None,
             )
-        if block.block_id not in order:
-            order.append(block.block_id)
-            changed = True
-    if changed:
-        doc.experience_order = order
+        elif loaded[0].kind != kind:
+            loaded[0].kind = kind
+            loaded[0].updated_at = now_iso()
+            save_experience(store, session_id, loaded[0], loaded[1])
+    # Frozen blocks that are present now drop out; ids absent from this context
+    # may simply be filtered by an explicit scope request, so keep them.
+    order = [
+        experience_id
+        for experience_id in doc.experience_order
+        if experience_id not in present or experience_id in experience_ids
+    ]
+    for experience_id in experience_ids:
+        if experience_id not in order:
+            order.append(experience_id)
+    changed = doc.experience_order != order
+    doc.experience_order = order
     if doc.current_focus_id not in order:
         doc.current_focus_id = order[0] if order else None
         changed = True

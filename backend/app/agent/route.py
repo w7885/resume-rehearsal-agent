@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from app.agent.memory import ExperienceDoc, normalize_question, question_fingerprint
+from app.agent.memory import (
+    ExperienceDoc,
+    next_unconfirmed,
+    normalize_question,
+    question_fingerprint,
+)
 from app.agent.ports import Phase, SessionContext
 from app.agent.prompts import build_route_prompt
 from app.agent.schemas import CandidateBrief, Clarification, RouteDecision
@@ -30,6 +35,7 @@ _GLOBAL = {"都改", "整体", "全部", "整体改", "都改改", "全部改", 
 _MODIFY = ("但", "不过", "改成", "改短", "改一下", "第二句", "第一条", "换个说法")
 _CANCEL = {"算了", "取消", "不改了"}
 _DELEGATE = {"随便", "你决定", "都可以", "你看着办"}
+_CONTINUE = {"继续", "下一段", "继续下一段", "下一个", "下一步", "接着来"}
 _TITLE_MATCH_LIMIT = 5
 
 
@@ -356,6 +362,23 @@ async def route_message(
         reply = _pending_reply(text, pending, docs, phases)
         if reply is not None:
             return reply
+
+    if text in _CONTINUE and not has_pending_question:
+        ordered = sorted(docs, key=lambda item: item.seq)
+        by_id = {doc.experience_id: doc for doc in ordered}
+        nxt = next_unconfirmed(
+            [doc.experience_id for doc in ordered],
+            by_id,
+            phases,
+            ctx.session.current_focus_id,
+        )
+        return RouteResult(
+            action="advance",
+            target_experience_id=nxt,
+            scope="experience",
+            echo=_echo(by_id[nxt]) if nxt else None,
+            rationale="继续下一段",
+        )
 
     if text in _CONFIRM:
         return RouteResult(

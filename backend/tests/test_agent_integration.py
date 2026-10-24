@@ -35,12 +35,11 @@ class FakeClient:
         return {'action':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1}
 
     async def decide(self,**kwargs):
-        self.steps+=1
-        if self.steps>1:
-            data={'action':'finish','outcome':'completed'}
+        context=self.runtime.repo.get_session_context(self.runtime.context)
+        block=context['draft']['blocks'][0]; source=context['sources'][0]
+        if '已问（answered）' not in kwargs['user'] and '已问（declined）' not in kwargs['user']:
+            data={'action':'ask_user','message':'「整理反馈」这部分是你本人负责的吗？','slot':'responsibility','related_source_ids':[],'rationale':'先确认职责'}
         else:
-            context=self.runtime.repo.get_session_context(self.runtime.context)
-            block=context['draft']['blocks'][0]; source=context['sources'][0]
             data={'action':'tool','tool':'propose_change','args':{'operation':'replace','target':block['blockId'],'before':block['markdown'],'after':'协助整理反馈。','reason':'梳理职责表达','source_refs':[{'source_id':source['sourceId'],'source_revision':source['sourceRevision'],'quote':'整理反馈'}],'gaps':[]}}
         return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)
 
@@ -77,6 +76,13 @@ class AgentIntegrationTests(unittest.TestCase):
         answer=self.send(session,'前端开发实习',request_id=key,replyToMessageId=prompt['messageId'])
         return self.analyze(session,answer,key)
 
+    def answer_question(self,session,key='task-answer'):
+        prompt=self.conversation(session)['messages'][-1]
+        self.assertEqual(prompt['assistant']['kind'],'question',prompt)
+        answer=self.send(session,'是我负责的。',request_id=key,replyToMessageId=prompt['messageId'])
+        self.analyze(session,answer,key)
+        return self.conversation(session)['messages'][-1]
+
     def test_suggestion_accepts_whitespace_only_before_difference(self):
         class Trimmed(FakeClient):
             async def decide(self,**kwargs):
@@ -94,7 +100,67 @@ class AgentIntegrationTests(unittest.TestCase):
         events=self.analyze(session,user,'trim')
         self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
         self.answer_goal(session)
+        self.answer_question(session,'trim-question')
         self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'],'change_question')
+
+    def test_accept_then_continue_asks_the_second_segment(self):
+        class SegmentClient(FakeClient):
+            async def decide(self,**kwargs):
+                context=self.runtime.repo.get_session_context(self.runtime.context)
+                # Source text carries the whole resume, so locate the focused block.
+                section=kwargs['user'].split('## 当前段',1)[-1]
+                block=next(b for b in context['draft']['blocks'] if b['markdown'] in section)
+                name='课程系统' if '课程系统' in block['markdown'] else '反馈平台'
+                source=context['sources'][0]
+                if '已问（answered）' not in kwargs['user'] and '已问（declined）' not in kwargs['user']:
+                    data={'action':'ask_user','message':f'「{name}」这部分是你本人负责的吗？','slot':'responsibility','related_source_ids':[],'rationale':'先确认职责'}
+                else:
+                    # A real rewrite keeps the entry heading; only the bullet changes.
+                    header=block['markdown'].splitlines()[0]
+                    quote='使用MySQL保存数据' if name=='课程系统' else '整理反馈'
+                    data={'action':'tool','tool':'propose_change','args':{'operation':'replace','target':block['blockId'],'before':block['markdown'],
+                        'after':header+'\n- 协助整理反馈。','reason':'梳理职责表达','source_refs':[{'source_id':source['sourceId'],'source_revision':source['sourceRevision'],'quote':quote}],'gaps':[]}}
+                return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)
+        session=self.chat()
+        resume=('项目经历1\n2025.01—2025.03｜反馈平台｜开发\n- 整理反馈，协助测试。\n'
+                '项目经历2\n2025.04—2025.06｜课程系统｜开发\n- 使用MySQL保存数据。\n')
+        self.material(session,text=resume,role='unknown')
+        self.host=self.app.state.agent_host
+        self.host.client_factory=lambda runtime,budget:SegmentClient(runtime)
+        user=self.send(session,'帮我按项目梳理。')
+        self.analyze(session,user)
+        prompt=self.conversation(session)['messages'][-1]
+        answer=self.send(session,'这是要修改的个人简历。',request_id='role',replyToMessageId=prompt['messageId'])
+        self.analyze(session,answer,'role')
+        self.answer_goal(session)
+        self.assertEqual(len(self.conversation(session)['draft']['blocks']),2)
+        self.answer_question(session,'seg-one-question')
+        prompt=self.conversation(session)['messages'][-1]
+        self.assertEqual(prompt['assistant']['kind'],'change_question')
+        accept=self.send(session,'采用这条。',request_id='seg-one-accept',replyToMessageId=prompt['messageId'])
+        self.analyze(session,accept,'seg-one-accept')
+        reply=self.conversation(session)['messages'][-1]
+        self.assertIn('下一段是第 2 段「课程系统」',reply['content'])
+        self.assertIn('回复「继续」开始',reply['content'])
+        cont=self.send(session,'继续',request_id='advance')
+        events=self.analyze(session,cont,'advance')
+        self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
+        question=self.conversation(session)['messages'][-1]
+        self.assertEqual(question['assistant']['kind'],'question')
+        self.assertIn('课程系统',question['content'])
+
+    def test_overall_rewrite_request_continues_with_current_segment(self):
+        class Overall(FakeClient):
+            async def route(self,**kwargs):
+                return {'action':'global_edit','scope':'whole_resume','confidence':1}
+        session=self.chat()
+        self.material(session,text='项目经历：整理反馈，协助测试。',role='resume')
+        user=self.send(session,'帮我整体优化简历。')
+        self.host=self.app.state.agent_host
+        self.host.client_factory=lambda runtime,budget:Overall(runtime)
+        events=self.analyze(session,user,'overall')
+        self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
+        self.assertIn('岗位',self.conversation(session)['messages'][-1]['content'])
 
     def test_duplicate_source_refs_are_merged(self):
         class Duplicate(FakeClient):
@@ -113,6 +179,7 @@ class AgentIntegrationTests(unittest.TestCase):
         self.host.client_factory=lambda runtime,budget:Duplicate(runtime)
         self.analyze(session,user,'dup')
         self.answer_goal(session,'dup-goal')
+        self.answer_question(session,'dup-question')
         self.assertEqual(self.count('suggestions'),1)
         self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'],'change_question')
 
@@ -130,6 +197,10 @@ class AgentIntegrationTests(unittest.TestCase):
         events=self.analyze(session,user)
         self.assertEqual(events[-1]['payload']['outcome'],'waiting_user',events)
         self.answer_goal(session)
+        value=self.conversation(session)
+        self.assertEqual(value['messages'][-1]['assistant']['kind'],'question',value)
+        self.assertNotIn('协助整理反馈。',value['draft']['markdown'])
+        self.answer_question(session,'task-question')
         value=self.conversation(session)
         prompt=value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'],'change_question',value)
@@ -160,6 +231,9 @@ class AgentIntegrationTests(unittest.TestCase):
         value=self.conversation(session)
         self.assertEqual(value['materials'][0]['role'],'resume')
         self.assertTrue(value['draft']['markdown'])
+        self.assertEqual(value['messages'][-1]['assistant']['kind'],'question',value)
+        self.answer_question(session,'confirm-question')
+        value=self.conversation(session)
         self.assertEqual(value['messages'][-1]['assistant']['kind'],'change_question',value)
         self.assertEqual(self.count('source_blocks'),2)
         self.assertEqual(self.count('suggestion_decisions'),0)
@@ -205,8 +279,11 @@ class AgentIntegrationTests(unittest.TestCase):
 
     def test_clarification_does_not_execute_and_new_answer_can_choose(self):
         session,user=self.ready();self.analyze(session,user)
+        self.answer_goal(session)
+        self.answer_question(session,'clarify-question')
         prompt=self.conversation(session)['messages'][-1]
-        answer=self.send(session,'可以。',request_id='ambiguous',replyToMessageId=prompt['messageId'])
+        self.assertEqual(prompt['assistant']['kind'],'change_question')
+        answer=self.send(session,'这条看起来可以吧？',request_id='ambiguous',replyToMessageId=prompt['messageId'])
         self.host.client_factory=lambda runtime,budget:FakeClient(runtime,'clarify')
         self.analyze(session,answer,'clarify')
         self.assertEqual(self.count('suggestion_decisions'),0)

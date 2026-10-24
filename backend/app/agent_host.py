@@ -305,6 +305,51 @@ class Runtime:
             connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
+    def _next_segment_note(self):
+        try:
+            from app.agent.memory import (
+                SessionDoc, derive_phase, load_experience, load_session,
+                next_unconfirmed, sync_experiences,
+            )
+            adapter = HostAdapter(self)
+            store = GuardedStateStore(self)
+            ctx = adapter.get_session_context(self.sid)
+            loaded = load_session(store, self.sid)
+            # Accepting a suggestion bumps the draft revision, which invalidates
+            # the stored memory; rebuild it before asking for the next segment.
+            doc = loaded[0] if loaded is not None else SessionDoc(
+                direction=ctx.session.direction,
+                primary_material_id=ctx.session.primary_material_id,
+                jd_keywords=list(ctx.session.jd_keywords),
+                experience_order=list(ctx.session.experience_order),
+                current_focus_id=ctx.session.current_focus_id,
+            )
+            doc, _ = sync_experiences(self.sid, ctx, store, doc, loaded[1] if loaded else None)
+            suggestions = {s.suggestion_id: s for s in ctx.suggestions}
+            docs = {}
+            for experience_id in ctx.session.experience_order:
+                loaded = load_experience(store, self.sid, experience_id)
+                if loaded is not None:
+                    docs[experience_id] = loaded[0]
+            phases = {
+                experience_id: derive_phase(
+                    doc,
+                    suggestions.get(doc.last_suggestion_id)
+                    if doc.last_suggestion_id
+                    else None,
+                )
+                for experience_id, doc in docs.items()
+            }
+            next_id = next_unconfirmed(
+                ctx.session.experience_order, docs, phases, doc.current_focus_id
+            )
+        except RepositoryError:
+            return ''
+        if next_id is None:
+            return '识别到的项目/实习都已处理完。'
+        doc = docs[next_id]
+        return f'下一段是第 {doc.seq} 段「{doc.title or "这段经历"}」。回复「继续」开始。'
+
     async def _decisions(self, turn):
         candidates=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and p['suggestions'] and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
         if not candidates:
@@ -319,6 +364,10 @@ class Runtime:
             self._continue()
             actions={d['decision'] for d in result['decisions']}
             text='已按你明确选择的建议更新当前稿。' if 'accept' in actions else '已记录你的决定，当前正文保持不变。'
+            if 'accept' in actions:
+                note = self._next_segment_note()
+                if note:
+                    text += '\n\n' + note
             if 'revise' in actions:
                 text+='调整要求已保留，可以继续说明希望怎样修改。'
             self._reply(text)

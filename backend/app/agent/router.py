@@ -13,6 +13,7 @@ from app.agent.memory import (
     derive_phase,
     load_experience,
     load_session,
+    next_unconfirmed,
     now_iso,
     record_answer,
     save_experience,
@@ -72,6 +73,30 @@ def _phases(ctx: SessionContext, docs: list[ExperienceDoc]) -> dict[str, Phase]:
         )
         for doc in docs
     }
+
+
+def _next_experience_id(repo, store: AgentStateStore, session_id: str, current_id: str | None) -> str | None:
+    fresh = repo.get_session_context(session_id)
+    # The accepted decision bumped the draft revision; rebuild scoped memory first.
+    _load_session_doc(repo, store, session_id, fresh)
+    docs = _load_docs(repo, store, session_id, fresh)
+    suggestions = {s.suggestion_id: s for s in fresh.suggestions}
+    by_id = {doc.experience_id: doc for doc in docs}
+    phases = {
+        doc.experience_id: derive_phase(
+            doc,
+            suggestions.get(doc.last_suggestion_id)
+            if doc.last_suggestion_id
+            else None,
+        )
+        for doc in docs
+    }
+    return next_unconfirmed(
+        [doc.experience_id for doc in sorted(docs, key=lambda item: item.seq)],
+        by_id,
+        phases,
+        current_id,
+    )
 
 
 def _load_session_doc(
@@ -285,6 +310,23 @@ async def _execute(
         close("clarify", action=action)
         return
 
+    advancing = action == "advance"
+    if action == "advance":
+        if decision.target_experience_id is None:
+            sink.emit(
+                "notice",
+                code="no_experience",
+                text="识别到的项目/实习都已处理完。",
+            )
+            close("completed", action=action)
+            return
+        sink.emit(
+            "focus_changed",
+            experience_id=decision.target_experience_id,
+            echo=decision.echo,
+        )
+        action = "answer"
+
     if action == "focus":
         if decision.target_experience_id == previous_focus:
             action = "correct"
@@ -318,8 +360,8 @@ async def _execute(
                 )
             ],
         )
-        close("limited", action=action)
-        return
+        # Whole-resume rewriting is unsupported; fall through to the current segment.
+        action = "answer"
 
     if action in ("meta", "chitchat", "refuse"):
         sink.emit("notice", code=action, text=_NOTICES[action])
@@ -327,7 +369,11 @@ async def _execute(
         return
 
     if focus_doc is None:
-        sink.emit("error", code="no_focus", message="没有可改写的经历")
+        sink.emit(
+            "notice",
+            code="no_experience",
+            text="简历里还没识别到项目/实习经历，请上传或粘贴一段项目/实习。",
+        )
         close("no_focus", action=action)
         return
 
@@ -376,7 +422,13 @@ async def _execute(
             suggestion_id=pending.suggestion_id,
             experience_id=pending.experience_id,
         )
-        close("completed", action=action)
+        close(
+            "completed",
+            action=action,
+            next_experience_id=_next_experience_id(
+                repo, store, session_id, focus_doc.experience_id
+            ),
+        )
         return
 
     answered = False
@@ -407,7 +459,7 @@ async def _execute(
                 pending.suggestion_id, "reject", "message", message_id
             )
 
-    if action == "answer":
+    if action == "answer" and not advancing:
         question = _asked_question(focus_doc)
         if question is not None:
             declined = any(word in text for word in _DECLINE_WORDS)

@@ -1,18 +1,23 @@
 import asyncio
 import unittest
 
+from app.agent.guard import GuardState, check
 from app.agent.loop import run_loop
+from app.agent.schemas import StepDecisionAdapter
 from app.agent.memory import (
     ExperienceDoc,
     Question,
     SessionDoc,
+    derive_phase,
     load_experience,
     load_session,
+    next_unconfirmed,
     question_fingerprint,
     save_experience,
     save_session,
+    sync_experiences,
 )
-from app.agent.ports import DraftBlock, SourceRef
+from app.agent.ports import DraftBlock, SessionContext, SessionInfo, SourceRef, Suggestion
 from app.agent.router import handle_message
 from app.agent.store import InMemoryStateStore
 from fakes import FakeLLM, FakeRepo
@@ -48,7 +53,7 @@ def make_repo(
     )
 
 
-def seed_experience(store, *, streak=0, asked=None, slot="result") -> None:
+def seed_experience(store, *, streak=0, asked=None, slot="result", answered=False) -> None:
     doc = ExperienceDoc(
         experience_id="exp_01",
         seq=1,
@@ -68,6 +73,7 @@ def seed_experience(store, *, streak=0, asked=None, slot="result") -> None:
                 text=asked,
                 fingerprint=question_fingerprint(asked),
                 round=1,
+                outcome="answered" if answered else "asked",
             )
         )
     save_experience(store, SESSION, doc, None)
@@ -212,6 +218,7 @@ class GoalTests(unittest.TestCase):
     def test_goal_answer_is_captured_and_run_continues(self):
         repo, store = make_repo(direction=""), InMemoryStateStore()
         seed_session(store, goal_asked=True, awaiting_goal=True)
+        seed_experience(store, asked="这段经历你负责哪些部分？", slot="responsibility", answered=True)
         propose = {
             "action": "tool",
             "tool": "propose_change",
@@ -342,7 +349,7 @@ class DuplicateToolTests(unittest.TestCase):
 class NormalizeTests(unittest.TestCase):
     def test_flat_propose_change_is_normalized(self):
         repo, store = make_repo(), InMemoryStateStore()
-        seed_experience(store)
+        seed_experience(store, asked="这段经历你负责哪些部分？", slot="responsibility", answered=True)
         flat = {
             "action": "propose_change",
             "operation": "replace",
@@ -364,6 +371,222 @@ class NormalizeTests(unittest.TestCase):
         result = run_loop_once(repo, store, llm)
         self.assertTrue(any(event.type == "suggestion" for event in result.events))
         self.assertEqual(repo.suggestions[-1].after, flat["after"])
+
+
+class SegmentMemoryTests(unittest.TestCase):
+    def blocks(self):
+        return [
+            DraftBlock(block_id="head", experience_id="head", markdown="张三\n电话 138"),
+            DraftBlock(block_id="school", experience_id="school", markdown="教育背景\n测试大学"),
+            DraftBlock(block_id="p1", experience_id="p1", markdown="项目经历1\n- 动作"),
+        ]
+
+    def context(self):
+        repo = make_repo()
+        repo.session.experience_order = []
+        repo.draft_blocks = self.blocks()
+        return repo.get_session_context(SESSION)
+
+    def test_only_experiences_get_docs_and_focus_is_first(self):
+        store = InMemoryStateStore()
+        doc, _ = sync_experiences(SESSION, self.context(), store, None, None)
+        self.assertEqual(doc.experience_order, ["p1"])
+        self.assertEqual(doc.current_focus_id, "p1")
+        self.assertEqual(load_experience(store, SESSION, "p1")[0].kind, "project")
+        self.assertIsNone(load_experience(store, SESSION, "head"))
+        self.assertIsNone(load_experience(store, SESSION, "school"))
+
+    def test_frozen_blocks_drop_out_but_scoped_absent_ids_survive(self):
+        store = InMemoryStateStore()
+        save_session(
+            store,
+            SESSION,
+            SessionDoc(
+                experience_order=["head", "p1", "gone"], current_focus_id="head"
+            ),
+            None,
+        )
+        doc, _ = sync_experiences(SESSION, self.context(), store, *load_session(store, SESSION))
+        self.assertEqual(doc.experience_order, ["p1", "gone"])
+        self.assertEqual(doc.current_focus_id, "p1")
+
+    def test_accepted_segment_stays_confirmed_after_memory_rebuild(self):
+        store = InMemoryStateStore()
+        ctx = SessionContext(
+            session=SessionInfo(
+                session_id=SESSION,
+                experience_order=["p1", "p2"],
+                current_focus_id="p1",
+            ),
+            draft_blocks=[
+                DraftBlock(block_id="p1", experience_id="p1", markdown="项目经历1\n- 动作"),
+                DraftBlock(block_id="p2", experience_id="p2", markdown="项目经历2\n- 动作"),
+            ],
+            suggestions=[
+                Suggestion(
+                    suggestion_id="s1",
+                    experience_id="p1",
+                    block_id="p1",
+                    status="accepted",
+                )
+            ],
+        )
+        doc, _ = sync_experiences(SESSION, ctx, store, None, None)
+        docs = {
+            experience_id: load_experience(store, SESSION, experience_id)[0]
+            for experience_id in doc.experience_order
+        }
+        suggestions = {s.suggestion_id: s for s in ctx.suggestions}
+        phases = {
+            experience_id: derive_phase(
+                item,
+                suggestions.get(item.last_suggestion_id)
+                if item.last_suggestion_id
+                else None,
+            )
+            for experience_id, item in docs.items()
+        }
+        self.assertEqual(phases, {"p1": "confirmed", "p2": "pending"})
+        self.assertEqual(
+            next_unconfirmed(doc.experience_order, docs, phases, "p1"), "p2"
+        )
+
+    def test_no_experiences_clears_the_focus(self):
+        repo = make_repo()
+        repo.session.experience_order = []
+        repo.draft_blocks = self.blocks()[:2]
+        doc, _ = sync_experiences(
+            SESSION, repo.get_session_context(SESSION), InMemoryStateStore(), None, None
+        )
+        self.assertEqual(doc.experience_order, [])
+        self.assertIsNone(doc.current_focus_id)
+
+
+class AskFirstGuardTests(unittest.TestCase):
+    def state(self, *, answered=False, direct=False):
+        doc = ExperienceDoc(
+            experience_id="exp_01",
+            seq=1,
+            kind="project",
+            title="校园二手交易平台",
+            raw_text=MARKDOWN,
+            source_ids=["src_1"],
+            block_id="exp_01",
+            block_revision=1,
+        )
+        if answered:
+            doc.questions.append(
+                Question(
+                    id="q1",
+                    slot="responsibility",
+                    text="这部分是你本人负责的吗？",
+                    fingerprint="q1",
+                    outcome="answered",
+                )
+            )
+        return GuardState(
+            session=SessionContext(
+                session=SessionInfo(
+                    session_id=SESSION, experience_order=["exp_01", "exp_02"]
+                ),
+                draft_blocks=[DraftBlock(block_id="exp_01", markdown=MARKDOWN)],
+            ),
+            focus_doc=doc,
+            anchor_text=MARKDOWN,
+            focus_block_markdown=MARKDOWN,
+            source_texts={"src_1": MARKDOWN},
+            source_kinds={"src_1": "resume"},
+            direct_rewrite=direct,
+        )
+
+    def propose(self, target="exp_01"):
+        return StepDecisionAdapter.validate_python(
+            {
+                "action": "tool",
+                "tool": "propose_change",
+                "args": {
+                    "operation": "replace",
+                    "target": target,
+                    "before": MARKDOWN,
+                    "after": "校园二手交易平台：负责前端页面开发与接口联调。",
+                    "reason": "补充联调职责",
+                    "source_refs": [
+                        {
+                            "source_id": "src_1",
+                            "source_revision": 1,
+                            "quote": "负责前端页面开发",
+                        }
+                    ],
+                    "gaps": [],
+                },
+            }
+        )
+
+    def test_propose_needs_one_answered_question_first(self):
+        result = check(self.propose(), self.state())
+        self.assertEqual(result.violation.code, "ask_first")
+        self.assertTrue(result.violation.retryable)
+
+    def test_answered_question_unlocks_the_rewrite(self):
+        self.assertIsNone(check(self.propose(), self.state(answered=True)).violation)
+
+    def test_explicit_direct_rewrite_skips_the_first_question(self):
+        self.assertIsNone(check(self.propose(), self.state(direct=True)).violation)
+
+    def test_other_segment_is_never_rewritten(self):
+        result = check(self.propose("exp_02"), self.state(answered=True))
+        self.assertEqual(result.violation.code, "wrong_target")
+
+
+class AdvanceRouteTests(unittest.TestCase):
+    def context(self, phases):
+        repo = make_repo()
+        repo.session.experience_order = ["exp_01", "exp_02"]
+        repo.draft_blocks = [
+            DraftBlock(block_id="exp_01", experience_id="exp_01", markdown="项目一\n- 动作"),
+            DraftBlock(block_id="exp_02", experience_id="exp_02", markdown="项目二\n- 动作"),
+        ]
+        docs = [
+            ExperienceDoc(experience_id="exp_01", seq=1, kind="project", title="项目一"),
+            ExperienceDoc(experience_id="exp_02", seq=2, kind="project", title="项目二"),
+        ]
+        return repo.get_session_context(SESSION), docs
+
+    def test_continue_targets_the_next_unconfirmed_segment(self):
+        from app.agent.route import route_message
+
+        ctx, docs = self.context(None)
+        result = asyncio.run(
+            route_message(
+                message="继续",
+                ctx=ctx,
+                docs=docs,
+                phases={"exp_01": "confirmed", "exp_02": "pending"},
+                pending=None,
+                has_pending_question=False,
+                llm=FakeLLM(),
+            )
+        )
+        self.assertEqual(result.action, "advance")
+        self.assertEqual(result.target_experience_id, "exp_02")
+
+    def test_continue_after_the_last_segment_has_no_target(self):
+        from app.agent.route import route_message
+
+        ctx, docs = self.context(None)
+        result = asyncio.run(
+            route_message(
+                message="继续",
+                ctx=ctx,
+                docs=docs,
+                phases={"exp_01": "confirmed", "exp_02": "confirmed"},
+                pending=None,
+                has_pending_question=False,
+                llm=FakeLLM(),
+            )
+        )
+        self.assertEqual(result.action, "advance")
+        self.assertIsNone(result.target_experience_id)
 
 
 class TokenTests(unittest.TestCase):

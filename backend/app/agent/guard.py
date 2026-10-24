@@ -70,6 +70,7 @@ class GuardState:
     source_kinds: dict[str, str] = field(default_factory=dict)
     focus_block_markdown: str = ""
     state_revision_changed: bool = False
+    direct_rewrite: bool = False
     recent_calls: list[str] = field(default_factory=list)
 
 
@@ -266,6 +267,24 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 "scope_violation", f"{experience_id} 不属于本会话", False
             )
         )
+
+    if decision.tool == "propose_change" and state.focus_doc is not None:
+        if args.target != state.focus_doc.experience_id:
+            return GuardResult(
+                violation=Violation(
+                    "wrong_target", "只能改写当前这段经历，请把 target 设为当前段", True
+                )
+            )
+        asked = any(
+            question.outcome in ("answered", "declined") and question.slot != "confirm"
+            for question in state.focus_doc.questions
+        )
+        if not asked and not state.direct_rewrite:
+            return GuardResult(
+                violation=Violation(
+                    "ask_first", "先问一个职责问题，用户答复后才能改写", True
+                )
+            )
 
     if (
         state.focus_doc is not None
