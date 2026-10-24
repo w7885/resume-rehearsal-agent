@@ -145,7 +145,9 @@ class DeepSeekClient:
         self.budget = budget
         self._client = client
 
-    def _payload(self, system: str, user: str) -> dict[str, Any]:
+    def _payload(
+        self, system: str, user: str, max_tokens: int
+    ) -> dict[str, Any]:
         return {
             "model": self.settings.model,
             "messages": [
@@ -154,7 +156,7 @@ class DeepSeekClient:
             ],
             "response_format": {"type": "json_object"},
             "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": max_tokens,
         }
 
     async def _post(self, payload: dict[str, Any]) -> httpx.Response:
@@ -187,14 +189,15 @@ class DeepSeekClient:
         system: str,
         user: str,
         run_id: str = "unknown",
+        max_tokens: int | None = None,
     ) -> Completion:
         if not self.settings.api_key:
             raise LLMError("config_error", "DEEPSEEK_API_KEY is empty", False)
 
-        payload = self._payload(system, user)
-        estimate = estimate_cents(len(system) + len(user), self.settings.max_tokens)
-
+        effective = max_tokens or self.settings.max_tokens
         for attempt in range(2):
+            payload = self._payload(system, user, effective)
+            estimate = estimate_cents(len(system) + len(user), effective)
             if self.budget is not None and not await self.budget.reserve(estimate):
                 raise LLMError("budget_exhausted", "daily budget exhausted", False)
             try:
@@ -244,6 +247,19 @@ class DeepSeekClient:
             if self.budget is not None:
                 await self.budget.settle(run_id, actual, estimate)
 
+            finish_reason = (
+                ((body.get("choices") or [{}])[0] or {}).get("finish_reason")
+            )
+            if finish_reason == "length":
+                if attempt == 0:
+                    effective = min(8192, effective * 2)
+                    continue
+                raise LLMError(
+                    "output_truncated",
+                    "model output reached max_tokens",
+                    True,
+                )
+
             content = body["choices"][0]["message"].get("content") or ""
             try:
                 data = json.loads(_extract_json(content))
@@ -263,9 +279,19 @@ class DeepSeekClient:
         raise LLMError("llm_unavailable", "retry exhausted", True)
 
     async def decide(
-        self, *, system: str, user: str, run_id: str = "unknown"
+        self,
+        *,
+        system: str,
+        user: str,
+        run_id: str = "unknown",
+        max_tokens: int | None = None,
     ) -> Completion:
-        return await self.complete_json(system=system, user=user, run_id=run_id)
+        return await self.complete_json(
+            system=system,
+            user=user,
+            run_id=run_id,
+            max_tokens=max_tokens,
+        )
 
     async def route(
         self, *, system: str, user: str, run_id: str = "unknown"

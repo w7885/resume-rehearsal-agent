@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -69,6 +70,11 @@ class GuardState:
     source_kinds: dict[str, str] = field(default_factory=dict)
     focus_block_markdown: str = ""
     state_revision_changed: bool = False
+    recent_calls: list[str] = field(default_factory=list)
+
+
+def call_signature(tool: str, args: dict) -> str:
+    return f"{tool}:{json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)}"
 
 
 def _normalize(text: str) -> str:
@@ -215,6 +221,14 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
         return GuardResult()
 
     if isinstance(decision, AskStep):
+        if state.focus_doc is not None and state.focus_doc.no_fact_streak >= 2:
+            return GuardResult(
+                violation=Violation(
+                    "ask_blocked",
+                    "连续两轮无新增事实，本轮必须改写或结束",
+                    True,
+                )
+            )
         if state.focus_doc is not None and state.focus_doc.round >= MAX_ROUNDS:
             return GuardResult(
                 violation=Violation("round_limit", "已达到轮次上限", False)
@@ -233,6 +247,11 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 "tool_not_allowed", f"工具 {decision.tool} 不在白名单", True
             )
         )
+    if call_signature(decision.tool, decision.args) in state.recent_calls:
+        return GuardResult(
+            violation=Violation("duplicate_tool", "该工具已用同样参数调用过", True)
+        )
+
     try:
         args = parse_args(decision)
     except ValidationError as exc:

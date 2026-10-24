@@ -135,6 +135,7 @@ class ARepoAdapter:
             session=SessionInfo(
                 session_id=session["sessionId"],
                 direction=session.get("direction", ""),
+                direction_confirmed=session.get("directionStatus") == "provided",
                 experience_order=[block.block_id for block in blocks],
                 current_focus_id=blocks[0].block_id if blocks else None,
                 state_revision=int(session.get("stateRevision") or 1),
@@ -202,12 +203,17 @@ class ARepoAdapter:
             raise RepoError("stale_state", "目标段落不在当前稿中。", True)
         sources = {source.source_id: source for source in ctx.sources}
         refs: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
         for ref in source_refs:
             source = sources.get(ref.source_id)
             if source is None:
                 raise RepoError("source_not_found", "引用的来源不存在。", True)
             if not ref.quote or ref.quote not in source.text:
                 raise RepoError("invalid_input", "引用文字与来源原文不符。", True)
+            key = (source.source_id, source.source_revision)
+            if key in seen:
+                continue
+            seen.add(key)
             refs.append(
                 {
                     "sourceId": source.source_id,
@@ -235,7 +241,7 @@ class ARepoAdapter:
         }
         if operation not in {'replace', 'insert_after', 'delete'}:
             raise RepoError('invalid_input', '不支持的建议操作。', False)
-        if before is not None and before != block.markdown:
+        if before is not None and before.strip() != block.markdown.strip():
             raise RepoError('stale_state', '建议旧文已改变，不能套用最新正文。', True)
         for ref in source_refs:
             if ref.source_revision not in (0, sources[ref.source_id].source_revision):

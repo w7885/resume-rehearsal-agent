@@ -40,6 +40,7 @@ class TextIntakeTests(unittest.TestCase):
     count = test_agent_integration.AgentIntegrationTests.count
     analyze = test_agent_integration.AgentIntegrationTests.analyze
     conversation = test_agent_integration.AgentIntegrationTests.conversation
+    answer_goal = test_agent_integration.AgentIntegrationTests.answer_goal
 
     def prepared(self, text=RESUME):
         self.host = self.app.state.agent_host
@@ -65,6 +66,7 @@ class TextIntakeTests(unittest.TestCase):
         self.assertEqual(self.count('source_blocks'), 0)
         events = self.confirm(session)
         self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user', events)
+        self.answer_goal(session, 'confirm-goal')
         value = self.conversation(session)
         self.assertEqual(value['draft']['markdown'], RESUME)
         self.assertEqual(value['messages'][0]['content'], RESUME)

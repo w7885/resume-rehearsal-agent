@@ -69,6 +69,7 @@ class ExperienceDoc(BaseModel):
     declined: list[Slot] = Field(default_factory=list)
     last_suggestion_id: str | None = None
     last_run_outcome: str | None = None
+    no_fact_streak: int = 0
     accepted_at: str | None = None
     summary: str = ""
     updated_at: str = ""
@@ -77,6 +78,9 @@ class ExperienceDoc(BaseModel):
 class SessionDoc(BaseModel):
     schema_version: int = 1
     direction: str = ""
+    goal: str = ""
+    goal_asked: bool = False
+    awaiting_goal: bool = False
     primary_material_id: str | None = None
     jd_keywords: list[str] = Field(default_factory=list)
     experience_order: list[str] = Field(default_factory=list)
