@@ -6,7 +6,7 @@ from io import BytesIO
 import json
 from urllib.parse import urlencode, urlsplit
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import zipfile
 
 from app.api import MAX_JSON_BYTES, MAX_UPLOAD_BYTES
@@ -245,6 +245,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.count("source_blocks"), 1)
         self.assertEqual(self.count("draft_blocks"), 1)
         self.assertEqual(self.version(session["sessionId"]), 2)
+
+    def test_image_upload_becomes_parsed_source_and_initial_draft_when_transcribed(self):
+        from PIL import Image
+        session = self.new_session()
+        output = BytesIO()
+        with Image.new("RGB", (80, 40), "white") as image:
+            image.save(output, format="PNG")
+        params = urlencode({"name": "截图.png", "requestId": "vision-1", "role": "resume",
+                            "expectedStateRevision": self.version(session["sessionId"])})
+        with patch("app.vision.transcribe_image", new=AsyncMock(return_value="# 构造简历\n负责需求整理")):
+            result = self.request("POST", f"/api/sessions/{session['sessionId']}/materials?{params}",
+                                  body=output.getvalue(), headers={"content-type": "image/png"})
+        data = result["json"]["data"]
+        self.assertEqual(data["material"]["parseStatus"], "parsed", result)
+        self.assertEqual([source["text"] for source in data["sources"]], ["# 构造简历\n负责需求整理"])
+        self.assertTrue(data["draftCreated"])
 
     def test_originals_survive_even_when_documents_fail_parsing_and_images_remain_pending(self):
         session = self.new_session()

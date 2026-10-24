@@ -23,7 +23,7 @@ def result(status, blocks=(), warnings=(), page_count=None):
             'parsed': '文本已提取，请对照原件核对内容；不代表事实已确认。',
             'partial': '仅提取部分内容，或存在阅读顺序风险，请核对原件。',
             'failed': '未能提取可用文本，原件仍已保存；可转换文件或粘贴文字。',
-            'pending': '原件已保存，图片识别尚未接入。'}[status]}}
+            'pending': '原件已保存，图片文字未识别；可重试、换更清晰的图或粘贴文字。'}[status]}}
 
 
 class Collector:

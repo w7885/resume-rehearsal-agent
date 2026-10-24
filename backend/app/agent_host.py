@@ -341,7 +341,7 @@ class Runtime:
             elif await self._materials(turn) or await self._decisions(self.service.get_chat_turn_context(self.context,self.user_id)) or await handle_text(self,self.service.get_chat_turn_context(self.context,self.user_id)):
                 pass
             elif not self.repo.get_draft(self.context)['blocks']:
-                self._reply('请先上传文字简历，或说明希望修改的经历。图片原件可以预览，自动识别服务尚未接入。','question')
+                self._reply('请先上传文字简历，或说明希望修改的经历。图片会自动识别；识别不出时可重试、换清晰图或粘贴文字。','question')
             else:
                 adapter=HostAdapter(self); store=GuardedStateStore(self)
                 saved=[]; notices=[]; questions=[]; outcome='completed'
