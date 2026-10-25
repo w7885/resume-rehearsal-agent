@@ -39,11 +39,21 @@ class SegmentedClient(integration.FakeClient):
 
     async def decide(self, **kwargs):
         self.steps += 1
-        if self.steps > 1:
-            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
+        user = kwargs['user']
+        if not self.answered(user):
+            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历中，你本人负责哪部分？', 'slot': 'responsibility', 'related_source_ids': [], 'rationale': '先确认个人职责'})
         ctx = HostAdapter(self.runtime).get_session_context(self.runtime.sid)
         self.runtime.host.test_visible_blocks = [b.block_id for b in ctx.draft_blocks]
         block = next(b for b in ctx.draft_blocks if OLD in b.markdown)
+        if '[effect]' not in user:
+            if '这段经历上线或交付后' in user:
+                return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                    'experience_id': block.block_id,
+                    'facts': [{'slot': 'effect', 'statement': '老师录入时间从半小时缩短到五分钟'}]}, 'rationale': '记录实际效果'})
+            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+        if self.proposed:
+            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
+        self.proposed = True
         ref = block.source_refs[0]
         return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
             'operation': 'replace', 'target': block.block_id, 'before': block.markdown,
@@ -92,6 +102,26 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(''.join(parts), body)
         self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
 
+    def test_space_separated_date_rows_inside_sections_are_separate(self):
+        body = ('实习经历\n2025.10—2025.12    某公司    后端实习生\n- 接口甲\n'
+                '2025.07—2025.08    另一公司    测试实习生\n- 用例乙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 3)
+        self.assertFalse(any('接口甲' in p and '用例乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work'])
+
+    def test_space_separated_date_project_rows_and_titles(self):
+        from app.agent.memory import _block_title
+        body = ('项目经历\n2024年7月 - 至今    学生信息管理系统    开发成员\n- 动作甲\n'
+                '2025.07—2025.08    个人博客网站    个人开发者\n- 动作乙\n技能证书\nPython')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'project', 'project', None])
+        self.assertEqual(_block_title(parts[1]), '学生信息管理系统 开发成员')
+        self.assertEqual(_block_title(parts[2]), '个人博客网站 个人开发者')
+
     def test_duplicate_or_rewritten_boundary_cannot_select_a_body(self):
         for content, a, b in [('重复\n正文\n重复', '重复', '重复'), (BODY, '模型改写的开头', BODY.splitlines()[-1])]:
             with self.subTest(a=a), self.assertRaises(RepositoryError):
@@ -139,6 +169,15 @@ class ScopedChatTests(unittest.TestCase):
         events = self.analyze(session, user, 'confirm')
         self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user', events)
         return session, host
+
+    def test_material_upload_segments_only_experience_and_keeps_bytes(self):
+        session = self.chat()
+        self.material(session, text=BODY, role='resume')
+        draft = self.conversation(session)['draft']
+        self.assertEqual(draft['markdown'], BODY)
+        self.assertEqual(len(draft['blocks']), 6)
+        self.assertEqual(block_kinds([b['markdown'] for b in draft['blocks']]),
+                         [None, None, 'project', 'project', None, None])
 
     def test_chat_instruction_stays_in_message_and_out_of_draft_and_evidence(self):
         session, host = self.imported()
@@ -211,11 +250,16 @@ class ScopedChatTests(unittest.TestCase):
 
     def test_scope_cannot_treat_a_legacy_combined_block_as_a_single_project(self):
         session = self.chat()
-        self.material(session, text=BODY, role='resume')
         # Simulate a historical single-block import; no migration silently rewrites it.
         repo = Repository(self.path)
+        user = self.send(session, BODY, request_id='legacy-body')
+        source = repo.save_source(RequestContext(session['sessionId']), text=BODY, role='resume',
+                                  origin={'kind': 'message', 'messageId': user['messageId']}, use_status='active')
+        repo.create_initial_draft(RequestContext(session['sessionId']), [{
+            'markdown': BODY,
+            'sourceRefs': [{'sourceId': source['sourceId'], 'sourceRevision': 1, 'quote': BODY}]}])
         self.assertEqual(len(repo.get_draft(RequestContext(session['sessionId']))['blocks']), 1)
-        self.send(session, INSTRUCTION)
+        self.send(session, INSTRUCTION, request_id='legacy-instruction')
         self.assertEqual(resolve_scope(repo, RequestContext(session['sessionId'])), set())
 
     def test_acceptance_rechecks_scope_even_if_a_bad_suggestion_was_saved_elsewhere(self):

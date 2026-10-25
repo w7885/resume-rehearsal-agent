@@ -143,11 +143,12 @@ class BusinessService:
                 sources.append(source)
             draft_created = False
             if usable and role == "resume" and not has_draft_history:
+                from app.resume_structure import structure_blocks
                 current = repo.get_session(RequestContext(session_id))
-                repo.create_initial_draft(RequestContext(session_id, current["stateRevision"]), [{
+                repo.create_initial_draft(RequestContext(session_id, current["stateRevision"]), structure_blocks([{
                     "markdown": source["text"],
                     "sourceRefs": [{"sourceId": source["sourceId"], "sourceRevision": 1, "quote": source["text"]}],
-                } for source in sources])
+                } for source in sources]))
                 draft_created = True
             session = repo.get_session(RequestContext(session_id))
             return {"material": material, "sources": sources, "draftCreated": draft_created,

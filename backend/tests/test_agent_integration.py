@@ -18,6 +18,19 @@ import test_assistant_replies
 class FakeClient:
     def __init__(self,runtime,answer='accept'):
         self.runtime,self.answer,self.steps=runtime,answer,0
+        self.proposed=False
+
+    @staticmethod
+    def answered(user):
+        return '已问（answered）' in user or '已问（declined）' in user
+
+    @staticmethod
+    def effect_known(user):
+        return '[effect]' in user
+
+    @staticmethod
+    def effect_asked(user):
+        return '这段经历上线或交付后' in user
 
     async def complete_json(self,*,system,user,run_id='test'):
         value=json.loads(user)
@@ -39,12 +52,22 @@ class FakeClient:
 
     async def decide(self,**kwargs):
         self.steps+=1
-        if self.steps>1:
+        user=kwargs['user']
+        context=self.runtime.repo.get_session_context(self.runtime.context)
+        block=context['draft']['blocks'][0]
+        source=next((s for s in context['sources'] if s.get('role')=='resume'),context['sources'][0])
+        if not self.answered(user):
+            data={'action':'ask_user','message':'这段经历中，你本人负责哪部分？','slot':'responsibility','related_source_ids':[],'rationale':'先确认个人职责'}
+        elif not self.effect_known(user):
+            if self.effect_asked(user):
+                data={'action':'tool','tool':'save_facts','args':{'experience_id':block['blockId'],'facts':[{'slot':'effect','statement':'老师录入时间从半小时缩短到五分钟'}]},'rationale':'记录实际效果'}
+            else:
+                data={'action':'ask_user','message':'这段经历上线或交付后，带来了哪些实际变化？','slot':'effect','related_source_ids':[],'rationale':'确认实际效果'}
+        elif self.proposed:
             data={'action':'finish','outcome':'completed'}
         else:
-            context=self.runtime.repo.get_session_context(self.runtime.context)
-            block=context['draft']['blocks'][0]; source=context['sources'][0]
             data={'action':'tool','tool':'propose_change','args':{'operation':'replace','target':block['blockId'],'before':block['markdown'],'after':'协助整理反馈。','reason':'梳理职责表达','source_refs':[{'source_id':source['sourceId'],'source_revision':source['sourceRevision'],'quote':'整理反馈'}],'gaps':[]}}
+            self.proposed=True
         return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)
 
 
@@ -78,7 +101,16 @@ class AgentIntegrationTests(unittest.TestCase):
         prompt=self.conversation(session)['messages'][-1]
         self.assertIn('岗位',prompt['content'])
         answer=self.send(session,'前端开发实习',request_id=key,replyToMessageId=prompt['messageId'])
-        return self.analyze(session,answer,key)
+        events=self.analyze(session,answer,key)
+        for attempt in range(3):
+            last=self.conversation(session)['messages'][-1]
+            if (last.get('assistant') or {}).get('kind')!='question':
+                break
+            text='老师录入时间从半小时缩短到五分钟。' if '实际变化' in last['content'] else '这部分由我独立负责。'
+            request_id=f'{key}-segment-{attempt}'
+            reply=self.send(session,text,request_id=request_id,replyToMessageId=last['messageId'])
+            events=self.analyze(session,reply,request_id)
+        return events
 
     def test_suggestion_accepts_whitespace_only_before_difference(self):
         class Trimmed(FakeClient):
@@ -216,6 +248,20 @@ class AgentIntegrationTests(unittest.TestCase):
         self.assertFalse(created);self.assertEqual(row['status'],'interrupted')
         self.assertEqual(self.count('runs'),1)
 
+    def test_confirmed_goal_is_not_asked_again_after_accepting(self):
+        session,user=self.ready();self.analyze(session,user)
+        self.answer_goal(session)
+        prompt=self.conversation(session)['messages'][-1]
+        self.assertEqual(prompt['assistant']['kind'],'change_question',prompt)
+        answer=self.send(session,'采用这条。',request_id='accept-goal',replyToMessageId=prompt['messageId'])
+        self.analyze(session,answer,'accept-goal')
+        seen=len(self.conversation(session)['messages'])
+        follow=self.send(session,'继续。',request_id='after-accept')
+        self.analyze(session,follow,'after-accept')
+        value=self.conversation(session)
+        self.assertFalse(any('这次想投什么岗位' in m['content'] for m in value['messages'][seen:]))
+        self.assertEqual(value['session']['targetDirection'],'前端开发实习')
+
     def test_conflicting_request_or_spoofed_input_never_reaches_client(self):
         session,user=self.ready()
         self.analyze(session,user)
@@ -227,8 +273,10 @@ class AgentIntegrationTests(unittest.TestCase):
 
     def test_clarification_does_not_execute_and_new_answer_can_choose(self):
         session,user=self.ready();self.analyze(session,user)
+        self.answer_goal(session)
         prompt=self.conversation(session)['messages'][-1]
-        answer=self.send(session,'可以。',request_id='ambiguous',replyToMessageId=prompt['messageId'])
+        self.assertEqual(prompt['assistant']['kind'],'change_question',prompt)
+        answer=self.send(session,'就按这个来吧。',request_id='ambiguous',replyToMessageId=prompt['messageId'])
         self.host.client_factory=lambda runtime,budget:FakeClient(runtime,'clarify')
         self.analyze(session,answer,'clarify')
         self.assertEqual(self.count('suggestion_decisions'),0)

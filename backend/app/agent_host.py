@@ -195,6 +195,11 @@ class HostAdapter(ARepoAdapter):
     def tools(self, value):
         pass
 
+    def save_direction(self, session_id, direction):
+        # A confirmed goal outlives draft revisions; do not bump state_revision here.
+        with self.runtime.repo._operation(self.runtime.context, write=True) as (connection, _):
+            connection.execute("UPDATE sessions SET direction=?,direction_status='provided' WHERE session_id=?", (direction[:200], session_id))
+
     def apply_suggestion_decision(self, *args, **kwargs):
         raise RepositoryError('scope_violation', '修改决定须通过已保存询问的结构化校验，不能按当前经历的最后一条建议直接执行。', False)
 
@@ -383,7 +388,7 @@ class Runtime:
     async def _analyze_next(self, turn):
         from app.agent_goal import sync
         from app.agent_progress import CONTINUE, plain, plan, record, label, completion
-        from app.agent.memory import load_session, save_session
+        from app.agent.memory import _block_title, load_session, save_session
         sync(self)
         progress = plan(self)
         if not progress['blocks']:
@@ -398,6 +403,7 @@ class Runtime:
             return 'completed'
         store = GuardedStateStore(self)
         existing = load_session(store, self.sid)
+        awaiting_goal = bool(existing and existing[0].awaiting_goal)
         if forced and not progress['remaining']:
             self._reply(completion(progress))
             return 'completed'
@@ -413,6 +419,9 @@ class Runtime:
             doc, revision = existing
             doc.current_focus_id = focus['blockId']
             save_session(store, self.sid, doc, revision)
+        if awaiting_goal and focus in progress['blocks']:
+            index = progress['blocks'].index(focus) + 1
+            self._reply(f'现在进入第 {index} 段「{_block_title(focus["markdown"])}」的修改。')
         if self.budget.status()['remainingCents'] == 0:
             self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
             return 'completed'

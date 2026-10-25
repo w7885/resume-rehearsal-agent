@@ -18,7 +18,10 @@ from app.agent.ports import (
 )
 from app.agent.store import AgentStateStore
 
-Slot = Literal["responsibility", "action", "result", "evidence", "tech", "confirm"]
+Slot = Literal[
+    "responsibility", "context", "action", "result",
+    "effect", "evidence", "tech", "confirm",
+]
 FactStatus = Literal["active", "superseded"]
 
 
@@ -165,6 +168,24 @@ def save_session(
     return store.put(
         session_id, "session", session_id, doc.model_dump(mode="json"), expected_revision
     )
+
+
+def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
+    if any(
+        fact.slot == "effect" and fact.status == "active" for fact in doc.facts
+    ):
+        return "confirmed"
+    settled = [
+        question
+        for question in doc.questions
+        if question.slot == "effect"
+        and question.outcome in ("answered", "declined")
+    ]
+    if len(settled) >= 2:
+        return "absent"
+    if len(settled) == 1:
+        return "followup"
+    return "missing"
 
 
 def derive_phase(doc: ExperienceDoc, sug: Suggestion | None) -> Phase:
@@ -384,11 +405,15 @@ _DATE_PART = re.compile(r"^[\d.\-/年月日—–~～\s]+$")
 
 
 def _block_title(markdown: str) -> str:
-    from app.resume_structure import heading
+    from app.resume_structure import ENTRY_DATE, heading
     for line in markdown.splitlines():
         text = heading(line).lstrip("-* ").strip()
         if not text or _HEADER_LINE.match(text):
             continue
+        # Tabular PDFs put the date first, padded with spaces: drop it before naming.
+        columns = [part.strip() for part in re.split(r"\s{2,}", text) if part.strip()]
+        if len(columns) > 1 and ENTRY_DATE.match(columns[0]):
+            text = " ".join(columns[1:])
         parts = [part.strip() for part in re.split(r"[｜|]", text) if part.strip()]
         parts = [part for part in parts if not _DATE_PART.match(part)] or parts
         return (parts[0] if parts else text)[:20]

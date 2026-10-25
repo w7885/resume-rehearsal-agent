@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import unittest
 
 from app.agent.guard import GuardState, check
-from app.agent.memory import ExperienceDoc, Fact
+from app.agent.memory import ExperienceDoc, Fact, Question
 from app.agent.ports import SessionContext, SessionInfo, DraftBlock
 from app.agent.schemas import StepDecisionAdapter
 import test_goal_and_confirmation as integration
@@ -22,6 +22,8 @@ class PersonalEvidenceTests(unittest.TestCase):
             if quote_supplement:
                 refs.append({'source_id': 'supplement', 'source_revision': 1, 'quote': supplement})
         doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', title='构造项目', raw_text=before, block_id='p1', block_revision=1)
+        doc.questions.append(Question(id='q1', slot='responsibility', text='你负责哪部分？', fingerprint='f', outcome='answered'))
+        doc.facts.append(Fact(id='effect-fact', slot='effect', statement='接口测试效率提高'))
         if memory:
             doc.facts.append(Fact(id='unbacked-fact', slot='result', statement='效率提升30%。'))
         state = GuardState(session=SessionContext(session=SessionInfo(session_id='test', experience_order=['p1']),

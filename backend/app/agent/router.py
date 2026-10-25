@@ -37,6 +37,24 @@ _DECLINE_WORDS = (
     "没做过", "不会", "没有", "不记得", "记不清", "忘记", "忘了",
     "不确定", "不清楚", "应该吧", "大概吧", "可能吧", "好像", "跳过", "算了",
 )
+_EFFECT_MARKERS = (
+    "但", "不过", "可是", "然而",
+    "反馈", "提升", "减少", "降低", "节省", "加快",
+    "方便", "替代", "避免", "变成", "原来", "现在",
+)
+_DELIVERY_MARKERS = (
+    "没有上线", "没上线", "未上线", "没有部署", "没部署",
+    "只在本地", "本地运行", "单机",
+)
+
+
+def _is_decline(text: str) -> bool:
+    value = text.strip()
+    if len(value) > 30:
+        return False
+    if any(marker in value for marker in _EFFECT_MARKERS + _DELIVERY_MARKERS):
+        return False
+    return any(word in value for word in _DECLINE_WORDS)
 
 
 def _asked_question(doc: ExperienceDoc):
@@ -236,6 +254,9 @@ async def _execute(
         if goal_reply:
             session_doc.goal = text.strip()[:200]
             session_doc.awaiting_goal = False
+            save_direction = getattr(repo, "save_direction", None)
+            if callable(save_direction):
+                save_direction(session_id, session_doc.goal)
             decision = RouteResult(
                 action="answer",
                 target_experience_id=focus_id,
@@ -416,7 +437,7 @@ async def _execute(
     if action == "answer":
         question = _asked_question(focus_doc)
         if question is not None:
-            declined = any(word in text for word in _DECLINE_WORDS)
+            declined = _is_decline(text)
             record_answer(
                 focus_doc, question.id, message_id, declined=declined
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,7 @@ from app.agent.memory import (
     ExperienceDoc,
     StepTrace,
     derive_phase,
+    effect_state,
     load_experience,
     reconcile,
     record_question,
@@ -40,12 +42,15 @@ from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_tex
 
 _PHRASES = {
     "responsibility": "这段经历中，你本人负责哪部分",
+    "context": "这段经历要解决的业务问题或目标是什么",
     "action": "这段经历中，你具体做了哪些步骤",
-    "result": "这段经历取得了哪些可以确认的结果",
+    "effect": "这段经历上线或交付后，带来了哪些实际变化",
     "evidence": "有没有材料能支持这段经历的描述",
-    "tech": "这段经历用到了哪些技术",
+    "tech": "这段经历用到了哪些工具、方法或资源",
 }
-_SLOT_ORDER = ("responsibility", "action", "result", "evidence", "tech")
+_EFFECT_FOLLOWUP = "除了使用情况，实际带来了什么变化"
+_SLOT_ORDER = ("responsibility", "context", "action", "effect", "evidence", "tech")
+_DIRECT_REWRITE = re.compile(r"直接改|别问|不用问|你决定|随便改|开始改写")
 
 
 def _normalize_action(raw) -> Any:
@@ -91,8 +96,13 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         return None, None
     if doc.round >= MAX_ROUNDS:
         return None, None
+    effect = effect_state(doc)
+    if effect == "followup":
+        return f"{_EFFECT_FOLLOWUP}？", "effect"
     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
     for slot in _SLOT_ORDER:
+        if slot == "effect" and effect == "absent":
+            continue
         if slot in doc.declined or slot in active_slots:
             continue
         text = f"{_PHRASES[slot]}？"
@@ -211,6 +221,11 @@ async def run_loop(
         texts = [m.text for m in ctx.messages if m.role == "user"][-2:]
         return "\n".join(texts)
 
+    def current_user_text() -> str:
+        return next(
+            (m.text for m in reversed(ctx.messages) if m.role == "user"), ""
+        )
+
     def guard_state() -> GuardState:
         focus_block = ""
         if focus_doc is not None:
@@ -234,6 +249,7 @@ async def run_loop(
             source_kinds=source_kinds,
             focus_block_markdown=focus_block,
             state_revision_changed=state_revision_changed,
+            direct_rewrite=bool(_DIRECT_REWRITE.search(current_user_text())),
             recent_calls=[
                 call_signature(trace.tool or "", trace.args)
                 for trace in traces

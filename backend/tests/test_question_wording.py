@@ -2,7 +2,7 @@
 import unittest
 from app.agent.guard import GuardState, check
 from app.agent.loop import _fallback_question
-from app.agent.memory import ExperienceDoc
+from app.agent.memory import ExperienceDoc, Fact
 from app.agent.ports import SessionContext, SessionInfo
 from app.agent.schemas import AskStep
 
@@ -19,6 +19,13 @@ class QuestionWordingTests(unittest.TestCase):
             self.assertEqual(question, '这段经历中，你本人负责哪部分？')
             self.assertEqual(slot, 'responsibility')
             self.assertIsNone(check(AskStep(action='ask_user', message=question, slot=slot), state).violation)
+
+    def test_fallback_asks_business_context_after_responsibility_is_confirmed(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', title='校园平台', raw_text='参与接口测试。')
+        doc.facts.append(Fact(id='f1', slot='responsibility', statement='负责接口测试', created_at='2026-01-01T00:00:00Z'))
+        question, slot = _fallback_question(doc)
+        self.assertEqual(slot, 'context')
+        self.assertEqual(question, '这段经历要解决的业务问题或目标是什么？')
 
     def test_natural_question_needs_no_verbatim_excerpt(self):
         result = check(AskStep(action='ask_user', message='你具体负责哪部分工作？', slot='responsibility'), self.state())

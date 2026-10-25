@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from app.agent.memory import ExperienceDoc, Slot
+from app.agent.memory import ExperienceDoc, Slot, effect_state
 from app.agent.ports import Phase, SessionContext
 
 _SLOT_ORDER: list[Slot] = [
     "responsibility",
+    "context",
     "action",
     "result",
+    "effect",
     "evidence",
     "tech",
 ]
@@ -55,6 +57,22 @@ def _questions_block(doc: ExperienceDoc) -> str:
     if doc.declined:
         lines.append(f"- 已拒绝的维度：{', '.join(doc.declined)}")
     return "\n".join(lines) if lines else "（暂无）"
+
+
+def _effect_block(doc: ExperienceDoc) -> str:
+    state = effect_state(doc)
+    if state == "confirmed":
+        statement = next(
+            fact.statement
+            for fact in doc.facts
+            if fact.slot == "effect" and fact.status == "active"
+        )
+        return f"已确认：{_clip(statement, 200)}"
+    if state == "followup":
+        return "已追问 1 次，仍待具体变化（最多再问 1 次）"
+    if state == "absent":
+        return "用户已说明没有可确认的实际效果：照实改写，不写效果类结论"
+    return "尚未询问"
 
 
 def _sources_block(ctx: SessionContext, doc: ExperienceDoc) -> str:
@@ -135,6 +153,7 @@ def assemble_context(
             f"## 当前焦点\n{_focus_block(focus)}\n\n"
             f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n\n"
             f"## 已确认事实\n{_facts_block(focus)}\n\n"
+            f"## 实际效果\n{_effect_block(focus)}\n\n"
             f"## 问题与缺口\n{_questions_block(focus)}\n\n"
             f"## 最近对话\n{_messages_block(ctx)}\n\n"
             f"## 当前稿\n{draft_block}{brake}"
