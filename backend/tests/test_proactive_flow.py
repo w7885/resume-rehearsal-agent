@@ -1,4 +1,5 @@
 """One-section chat continuation with isolated SQLite and scripted clients; no API spend."""
+import json
 import re
 from types import SimpleNamespace
 import unittest
@@ -11,7 +12,7 @@ from app.agent_host import HostAdapter
 from app.agent_budget import ProjectBudget
 from app.main import create_app
 from app.repository import RepositoryError, RequestContext
-from app.resume_structure import structure_blocks
+from app.resume_structure import block_kinds, structure_blocks
 import test_agent_integration as integration
 
 BODY = '项目经历1\n参与项目一测试。\n项目经历2\n参与项目二测试。\n项目经历3\n参与项目三测试。\n'
@@ -57,19 +58,19 @@ class ProactiveFlowTests(unittest.TestCase):
     conversation = integration.AgentIntegrationTests.conversation
     count = integration.AgentIntegrationTests.count
 
-    def ready(self):
+    def ready(self, body=BODY, expected=3):
         session = self.chat()
         repo = self.app.state.business_service.repository
         context = RequestContext(session['sessionId'])
-        material = repo.save_material(context, name='构造简历.txt', media_type='text/plain', original_data=BODY.encode(), role='resume', parse_status='parsed', use_status='active')
-        source = repo.save_source(context, text=BODY, role='resume', origin={'kind': 'material', 'materialId': material['materialId']}, use_status='active')
-        repo.create_initial_draft(context, structure_blocks([{'markdown': BODY, 'sourceRefs': [{'sourceId': source['sourceId'], 'sourceRevision': source['sourceRevision'], 'quote': BODY}]}]))
+        material = repo.save_material(context, name='构造简历.txt', media_type='text/plain', original_data=body.encode(), role='resume', parse_status='parsed', use_status='active')
+        source = repo.save_source(context, text=body, role='resume', origin={'kind': 'material', 'materialId': material['materialId']}, use_status='active')
+        repo.create_initial_draft(context, structure_blocks([{'markdown': body, 'sourceRefs': [{'sourceId': source['sourceId'], 'sourceRevision': source['sourceRevision'], 'quote': body}]}]))
         self.material(session, text='测试工程师JD\n岗位职责：参与测试。', role='jd', request_id='jd')
         host = self.app.state.agent_host
         host.phases, host.modes = [], {}
         host.client_factory = lambda runtime, budget: ProactiveClient(runtime)
         blocks = self.conversation(session)['draft']['blocks']
-        self.assertEqual(len(blocks), 3)
+        self.assertEqual(len(blocks), expected)
         return session, host, [b['blockId'] for b in blocks]
 
     def turn(self, session, text, key):
@@ -94,6 +95,35 @@ class ProactiveFlowTests(unittest.TestCase):
         self.analyze(session, answer, 'replay')
         self.assertEqual(host.phases, ids[:2])
         self.assertEqual(self.count('suggestion_decisions'), 1)
+
+    def test_frozen_sections_are_not_interviewed(self):
+        body = '李明轩\n13800000000\n教育经历\n示例大学 本科\n项目经历1\n参与项目一测试。\n专业技能\nPython\n'
+        session, host, ids = self.ready(body, expected=4)
+        kinds = block_kinds([b['markdown'] for b in self.conversation(session)['draft']['blocks']])
+        self.assertEqual(kinds, [None, None, 'project', None])
+        self.turn(session, '继续', 'first')
+        with db.database(self.path) as c:
+            docs = [json.loads(row[0]) for row in c.execute("SELECT doc_json FROM agent_state WHERE scope='experience'")]
+        self.assertEqual([(d['kind'], d['title']) for d in docs], [('project', '参与项目一测试。')])
+        self.assertEqual(host.phases, [ids[2]])
+        self.turn(session, '是', 'yes')
+        self.assertEqual(host.phases, [ids[2]])
+        self.assertIn('已处理 1 段', self.conversation(session)['messages'][-1]['content'])
+
+    def test_scoped_project_list_excludes_internship_entries(self):
+        from app.agent_edit_scope import project_blocks
+        body = '实习经历\n2024.06—2024.09｜字节跳动｜后端\n- 接口\n项目经历1\n参与项目一测试。\n'
+        session, host, ids = self.ready(body, expected=3)
+        repo = self.app.state.business_service.repository
+        blocks = project_blocks(repo, RequestContext(session['sessionId']))
+        self.assertEqual([b['blockId'] for b in blocks], [ids[2]])
+
+    def test_resume_without_experience_gets_a_targeted_prompt(self):
+        body = '李明轩\n13800000000\n教育经历\n示例大学 本科\n专业技能\nPython\n'
+        session, host, ids = self.ready(body, expected=3)
+        self.turn(session, '继续', 'first')
+        self.assertIn('还没识别到项目或实习经历', self.conversation(session)['messages'][-1]['content'])
+        self.assertEqual(host.phases, [])
 
     def test_each_accept_moves_forward_then_summarizes_without_extra_call(self):
         session, host, ids = self.ready()
