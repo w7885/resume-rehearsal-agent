@@ -34,6 +34,18 @@ def paragraph(text):
     return f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>'
 
 
+def positioned_box(text, y, x=0, width=3000, height=300, vertical='page'):
+    return ('<w:r><w:drawing><wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" simplePos="0">'
+            f'<wp:positionH relativeFrom="column"><wp:posOffset>{x}</wp:posOffset></wp:positionH>'
+            f'<wp:positionV relativeFrom="{vertical}"><wp:posOffset>{y}</wp:posOffset></wp:positionV>'
+            f'<wp:extent cx="{width}" cy="{height}"/><w:txbxContent>{paragraph(text)}</w:txbxContent>'
+            '</wp:anchor></w:drawing></w:r>')
+
+
+def page_section(columns=1):
+    return f'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:cols w:num="{columns}"/></w:sectPr>'
+
+
 def pdf(pages, encrypted=False):
     writer = PdfWriter()
     for text in pages:
@@ -56,6 +68,57 @@ def pdf(pages, encrypted=False):
 
 
 class ParserTests(unittest.TestCase):
+    def test_positioned_boxes_restore_heading_before_body_without_changing_text(self):
+        body = '<w:p>' + positioned_box('学生信息管理系统', 3000) + positioned_box('项目经历', 1000) + '</w:p>'
+        value = extract_document(DOCX, word(body + page_section()))
+        self.assertEqual([b['text'] for b in value['blocks']], ['项目经历', '学生信息管理系统'])
+        self.assertEqual(value['status'], 'partial')
+        self.assertIn('floating_order', [w['code'] for w in value['report']['warnings']])
+        self.assertEqual([b['origin']['paragraph'] for b in value['blocks']], [1, 2])
+
+    def test_positioned_boxes_keep_inner_paragraphs_and_identical_real_text(self):
+        first = positioned_box('重复职责', 3000)
+        second = positioned_box('项目经历', 1000).replace('</w:txbxContent>', paragraph('重复职责') + '</w:txbxContent>')
+        value = extract_document(DOCX, word('<w:p>' + first + second + '</w:p>' + page_section()))
+        self.assertEqual([b['text'] for b in value['blocks']], ['项目经历', '重复职责', '重复职责'])
+
+    def test_positioned_boxes_dont_mix_anchor_paragraphs_or_pages(self):
+        body = '<w:p>' + positioned_box('第一页较低位置', 3000) + '</w:p>'
+        body += '<w:p>' + positioned_box('第二页较高位置', 1000) + '</w:p>'
+        value = extract_document(DOCX, word(body + page_section()))
+        self.assertEqual([b['text'] for b in value['blocks']], ['第一页较低位置', '第二页较高位置'])
+
+    def test_positioned_boxes_fall_back_for_ambiguous_layouts(self):
+        original = positioned_box('正文先存', 3000) + positioned_box('标题后存', 1000)
+        variants = {
+            'relative paragraph': original.replace('relativeFrom="page"', 'relativeFrom="paragraph"'),
+            'missing offset': original.replace('<wp:posOffset>1000</wp:posOffset>', ''),
+            'different origin': original.replace('relativeFrom="column"', 'relativeFrom="page"', 1),
+            'out of page': original.replace('<wp:posOffset>1000</wp:posOffset>', '<wp:posOffset>999999999</wp:posOffset>'),
+            'normal text': '<w:r><w:t>普通正文</w:t></w:r>' + original,
+            'page break': '<w:r><w:br w:type="page"/></w:r>' + original,
+            'side columns': positioned_box('正文先存', 3000, x=4000) + positioned_box('标题后存', 1000),
+        }
+        for name, content in variants.items():
+            with self.subTest(name=name):
+                value = extract_document(DOCX, word('<w:p>' + content + '</w:p>' + page_section()))
+                texts = [b['text'] for b in value['blocks']]
+                self.assertLess(texts.index('正文先存'), texts.index('标题后存'))
+                self.assertIn('floating_order_unresolved', [w['code'] for w in value['report']['warnings']])
+        for section in (page_section(2), page_section() + page_section(), ''):
+            with self.subTest(section=section):
+                value = extract_document(DOCX, word('<w:p>' + original + '</w:p>' + section))
+                self.assertEqual([b['text'] for b in value['blocks']], ['正文先存', '标题后存'])
+
+    def test_rotated_text_shape_keeps_structure_order(self):
+        rotated = positioned_box('标题后存', 1000).replace(
+            '<w:txbxContent>', '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><wps:spPr><a:xfrm rot="5400000"/></wps:spPr><w:txbxContent>').replace(
+            '</w:txbxContent>', '</w:txbxContent></wps:wsp>')
+        raw = word('<w:p>' + positioned_box('正文先存', 3000) + rotated + '</w:p>' + page_section())
+        value = extract_document(DOCX, raw)
+        self.assertEqual([b['text'] for b in value['blocks']], ['正文先存', '标题后存'])
+        self.assertIn('floating_order_unresolved', [w['code'] for w in value['report']['warnings']])
+
     def test_word_fragmented_runs_table_and_paragraph_order(self):
         raw = word('<w:p><w:r><w:t>协助</w:t></w:r><w:r><w:t>接口测试 2025.06</w:t></w:r></w:p>'
                    '<w:tbl><w:tr><w:tc>' + paragraph('8 条反馈') + '</w:tc><w:tc>' + paragraph('5 项需求') + '</w:tc></w:tr></w:tbl>' + paragraph('无上线收益'))
@@ -72,8 +135,44 @@ class ParserTests(unittest.TestCase):
         value = extract_document(DOCX, raw)
         self.assertEqual(value['status'], 'partial')
         text = str([b['text'] for b in value['blocks']])
-        self.assertIn('插入内容', text); self.assertNotIn('删除内容', text); self.assertNotIn('浮动文字', text)
+        self.assertIn('插入内容', text); self.assertNotIn('删除内容', text); self.assertIn('浮动文字', text)
         self.assertTrue({'floating_text', 'images', 'revisions'} <= {w['code'] for w in value['report']['warnings']})
+
+    def test_word_alternate_textbox_is_extracted_once_with_paragraph_boundaries(self):
+        box = '<w:txbxContent>' + paragraph('项目经历') + paragraph('协助接口测试') + '</w:txbxContent>'
+        alternate = ('<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+                     '<mc:Choice Requires="wps"><w:drawing>' + box + '</w:drawing></mc:Choice>'
+                     '<mc:Fallback><w:pict>' + box + '</w:pict></mc:Fallback></mc:AlternateContent>')
+        raw = word('<w:p><w:r><w:t>前文</w:t>' + alternate + '<w:t>后文</w:t></w:r></w:p>')
+        value = extract_document(DOCX, raw)
+        self.assertEqual(value['status'], 'partial')
+        self.assertEqual([b['text'] for b in value['blocks']], ['前文', '项目经历', '协助接口测试', '后文'])
+        self.assertEqual([b['origin']['paragraph'] for b in value['blocks']], [1, 2, 3, 4])
+        self.assertTrue(all(b['origin']['part'] == 'word/document.xml' for b in value['blocks']))
+        self.assertIn('alternate_content', [w['code'] for w in value['report']['warnings']])
+
+    def test_word_real_repeated_textboxes_are_not_removed_and_deleted_boxes_stay_out(self):
+        box = '<w:p><w:r><w:pict><w:txbxContent>' + paragraph('相同但独立的职责') + '</w:txbxContent></w:pict></w:r></w:p>'
+        value = extract_document(DOCX, word(box + '<w:del>' + box + '</w:del>' + box))
+        self.assertEqual([b['text'] for b in value['blocks']], ['相同但独立的职责', '相同但独立的职责'])
+        self.assertEqual([b['origin']['paragraph'] for b in value['blocks']], [1, 2])
+
+    def test_word_textbox_table_locations_and_revisions_remain_traceable(self):
+        content = ('<w:tbl><w:tr><w:tc>' + paragraph('项目名称') +
+                   '<w:p><w:ins><w:r><w:t>保留动作</w:t></w:r></w:ins>'
+                   '<w:del><w:r><w:delText>旧动作</w:delText></w:r></w:del></w:p>'
+                   '</w:tc></w:tr></w:tbl>')
+        raw = word('<w:p><w:r><w:drawing><w:txbxContent>' + content + '</w:txbxContent></w:drawing></w:r></w:p>')
+        value = extract_document(DOCX, raw)
+        self.assertEqual([b['text'] for b in value['blocks']], ['项目名称', '保留动作'])
+        self.assertEqual(value['blocks'][1]['origin'], {'part': 'word/document.xml', 'paragraph': 2, 'table': 1, 'row': 1, 'column': 1})
+
+    def test_word_fallback_only_textbox_is_read_but_image_only_is_not_text(self):
+        raw = word('<w:p><w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+                   '<mc:Fallback><w:pict><w:txbxContent>' + paragraph('兼容文字') +
+                   '</w:txbxContent></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>')
+        self.assertEqual([b['text'] for b in extract_document(DOCX, raw)['blocks']], ['兼容文字'])
+        self.assertEqual(extract_document(DOCX, word('<w:p><w:r><w:drawing/></w:r></w:p>'))['status'], 'failed')
 
     def test_word_headers_are_retained_but_order_flagged_and_dtd_rejected(self):
         value = extract_document(DOCX, word(paragraph('正文'), {'word/header1.xml': f'<w:hdr xmlns:w="{NS}">{paragraph("联系方式")}</w:hdr>'}))
@@ -160,6 +259,19 @@ class ParsingApiTests(unittest.TestCase):
         self.assertEqual(value['material']['useStatus'], 'pending')
         self.assertFalse(value['draftCreated'])
         self.assertEqual([s['origin']['page'] for s in self.detail(session, value['material'])['sources']], [1, 3])
+
+    def test_textbox_upload_keeps_partial_sources_pending_and_original_bytes(self):
+        session = self.new_session()
+        raw = word('<w:p><w:r><w:pict><w:txbxContent>' + paragraph('项目经历') + paragraph('协助接口测试') + '</w:txbxContent></w:pict></w:r></w:p>')
+        value = self.upload(session, raw, '文本框.docx', DOCX)['json']['data']
+        self.assertEqual(value['material']['parseStatus'], 'partial')
+        self.assertEqual(value['material']['useStatus'], 'pending')
+        self.assertFalse(value['draftCreated'])
+        restored = self.detail(session, value['material'])
+        self.assertEqual([s['text'] for s in restored['sources']], ['项目经历', '协助接口测试'])
+        self.assertEqual([s['origin']['paragraph'] for s in restored['sources']], [1, 2])
+        download = self.request('GET', f"/api/sessions/{session['sessionId']}/materials/{value['material']['materialId']}/file")
+        self.assertEqual(download['body'], raw)
 
     def test_failed_pdf_retains_original_and_retry_does_not_duplicate(self):
         session = self.new_session()
