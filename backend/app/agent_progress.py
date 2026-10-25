@@ -9,6 +9,7 @@ from app.resume_structure import block_kinds, heading, section_kind
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
+KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段'}
 
 
 def plain(text):
@@ -71,10 +72,11 @@ def plan(runtime):
         if waiting:
             remaining.sort(key=lambda b: b['blockId'] != waiting)
         return {'blocks': blocks, 'done': done, 'remaining': remaining, 'review': review,
+                'waiting': waiting, 'blocked': progress.get('blocked'),
                 'pending': pending, 'limitedScope': allowed is not None, 'sources': context['sources']}
 
 
-def record(runtime, block_id, *, completed=False):
+def record(runtime, block_id, *, completed=False, blocked=False):
     context = runtime.repo.get_session_context(runtime.context)
     block = next((b for b in context['draft']['blocks'] if b['blockId'] == block_id), None)
     if block is None:
@@ -82,6 +84,7 @@ def record(runtime, block_id, *, completed=False):
     with runtime.repo._operation(runtime.context, write=True) as (connection, session):
         progress = _load(connection, session)
         progress['waiting'] = None if completed else block_id
+        progress['blocked'] = block_id if blocked else None
         if completed:
             progress['reviewed'][block_id] = {'signature': _signature(block, context['sources'])}
         connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json,revision) VALUES (?,'session',?,?,1) ON CONFLICT(session_id,scope,key) DO UPDATE SET doc_json=excluded.doc_json,revision=agent_state.revision+1",

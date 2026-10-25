@@ -156,6 +156,12 @@ class ARepoAdapter:
             suggestions=[_suggestion(row) for row in data.get("suggestions", [])],
             issues=[_issue(row) for row in data.get("issues", [])],
             sources=sources,
+            revision_feedback=[{
+                'experience_id': row['target']['blockId'],
+                'block_revision': row['target']['expectedBlockRevision'],
+                'suggestion_id': row['suggestionId'],
+                'feedback': row['decision']['feedback'], 'after': row['after'],
+            } for row in data.get('decisionFeedback', []) if row.get('decision', {}).get('decision') == 'revise'],
         )
 
     def search_evidence(

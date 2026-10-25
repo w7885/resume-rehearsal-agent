@@ -16,6 +16,7 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.tools import TOOL_SPECS, parse_args
+from app.agent.questions import MAX_QUESTION_LENGTH
 
 MAX_STEPS = 8
 MAX_ROUNDS = 6
@@ -119,8 +120,8 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     marks = text.count("？") + text.count("?")
     if marks != 1:
         return Violation("question_shape", "问题必须恰好一个问号")
-    if len(text) > 60:
-        return Violation("question_too_long", "问题不能超过 60 字")
+    if len(text) > MAX_QUESTION_LENGTH:
+        return Violation("question_too_long", f"问题与回答提示合计不能超过 {MAX_QUESTION_LENGTH} 字")
     if any(word in text for word in _CONJUNCTIONS):
         return Violation("question_multi", "一次只能问一个点")
     if len(_QUESTION_WORDS.findall(text)) > 1:

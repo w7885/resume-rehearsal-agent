@@ -38,6 +38,7 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.store import AgentStateStore
+from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_text
 
 _PHRASES = {
@@ -49,7 +50,7 @@ _PHRASES = {
     "tech": "这段经历用到了哪些工具、方法或资源",
 }
 _EFFECT_FOLLOWUP = "除了使用情况，实际带来了什么变化"
-_SLOT_ORDER = ("responsibility", "context", "action", "effect", "evidence", "tech")
+_SLOT_ORDER = ("responsibility", "action", "effect", "context", "evidence", "tech")
 _DIRECT_REWRITE = re.compile(r"直接改|别问|不用问|你决定|随便改|开始改写")
 
 
@@ -98,16 +99,15 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         return None, None
     effect = effect_state(doc)
     if effect == "followup":
-        return f"{_EFFECT_FOLLOWUP}？", "effect"
+        return guided_question(doc, 'effect', effect_followup=True), "effect"
     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
+    answered_slots = {q.slot for q in doc.questions if q.outcome in {'answered', 'declined'}}
     for slot in _SLOT_ORDER:
         if slot == "effect" and effect == "absent":
             continue
-        if slot in doc.declined or slot in active_slots:
+        if slot in doc.declined or slot in active_slots or slot in answered_slots:
             continue
-        text = f"{_PHRASES[slot]}？"
-        if len(text) > 60:
-            text = text[:59] + "？"
+        text = guided_question(doc, slot)
         return text, slot
     return None, None
 
@@ -358,6 +358,11 @@ async def run_loop(
         if focus_doc is None:
             return finish_result("limited")
         text, slot = _fallback_question(focus_doc)
+        if text is not None:
+            checked = check(AskStep(action='ask_user', message=text, slot=slot), guard_state())
+            if checked.violation is not None:
+                sink.emit('warning', code=checked.violation.code, message=checked.violation.message)
+                text = None
         if text is None:
             focus_doc.last_run_outcome = "limited"
             persist(focus_doc)
@@ -448,6 +453,9 @@ async def run_loop(
 
             load_ref_sources(decision)
             result = check(decision, guard_state())
+            if result.violation is None and isinstance(decision, AskStep) and focus_doc is not None:
+                decision = decision.model_copy(update={'message': with_answer_guidance(decision.message, focus_doc, decision.slot)})
+                result = check(decision, guard_state())
             if result.violation is None:
                 gaps = result.gaps
                 break

@@ -260,6 +260,7 @@ class NewFact(BaseModel):
     statement: str
     source_refs: list[SourceRef] = Field(default_factory=list)
     message_id: str | None = None
+    supersedes_fact_ids: list[str] = Field(default_factory=list)
 
 
 _FILLER_PREFIXES = ("我觉得", "我认为", "我感觉", "大概", "应该是", "可能", "其实")
@@ -298,20 +299,19 @@ def merge_facts(
             continue
 
         active = [fact for fact in doc.facts if fact.status == "active"]
-        if any(
+        if not incoming.supersedes_fact_ids and any(
             fact.slot == incoming.slot and _similar(fact.statement, statement) >= 0.9
             for fact in active
         ):
             continue
 
-        # ponytail: negation-marker heuristic for corrections; replace with
-        # model-provided supersedes ids if conflicts get more complex.
+        # Facts sharing a slot need not contradict each other. Replacement
+        # IDs are checked against an explicit correction in the trusted tool.
         supersedes = [
             fact
             for fact in active
             if fact.slot == incoming.slot
-            and any(marker in statement for marker in _NEGATION_MARKERS)
-            and not any(marker in fact.statement for marker in _NEGATION_MARKERS)
+            and fact.id in incoming.supersedes_fact_ids
         ]
 
         fact = Fact(
@@ -334,6 +334,8 @@ _QUESTION_NOISE = ("请问", "那么", "所以", "呢", "吗", "吧", "啊", "�
 
 
 def normalize_question(text: str) -> str:
+    # Compare the actual question, so optional guidance cannot hide a repeat.
+    text = re.split(r'[？?]', text, maxsplit=1)[0]
     value = re.sub(r"[\s，。！？、,.!?;；:：\"'“”‘’（）()]+", "", text)
     for word in _QUESTION_NOISE:
         value = value.replace(word, "")

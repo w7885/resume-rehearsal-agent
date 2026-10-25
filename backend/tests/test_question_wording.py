@@ -16,16 +16,18 @@ class QuestionWordingTests(unittest.TestCase):
         for title in ('张明', '无', '', '校园平台'):
             state = self.state(title)
             question, slot = _fallback_question(state.focus_doc)
-            self.assertEqual(question, '这段经历中，你本人负责哪部分？')
+            self.assertIn('接口测试', question)
+            self.assertIn('没参与的不用补充', question)
             self.assertEqual(slot, 'responsibility')
             self.assertIsNone(check(AskStep(action='ask_user', message=question, slot=slot), state).violation)
 
-    def test_fallback_asks_business_context_after_responsibility_is_confirmed(self):
+    def test_fallback_prioritizes_a_concrete_action_after_responsibility(self):
         doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', title='校园平台', raw_text='参与接口测试。')
         doc.facts.append(Fact(id='f1', slot='responsibility', statement='负责接口测试', created_at='2026-01-01T00:00:00Z'))
         question, slot = _fallback_question(doc)
-        self.assertEqual(slot, 'context')
-        self.assertEqual(question, '这段经历要解决的业务问题或目标是什么？')
+        self.assertEqual(slot, 'action')
+        self.assertIn('小任务', question)
+        self.assertIn('遇到的情况→采取的做法', question)
 
     def test_natural_question_needs_no_verbatim_excerpt(self):
         result = check(AskStep(action='ask_user', message='你具体负责哪部分工作？', slot='responsibility'), self.state())

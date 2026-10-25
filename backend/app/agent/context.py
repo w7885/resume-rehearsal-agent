@@ -42,7 +42,9 @@ def _facts_block(doc: ExperienceDoc) -> str:
         slot_facts = [fact for fact in active if fact.slot == slot]
         slot_facts.sort(key=lambda fact: fact.created_at)
         for fact in slot_facts[-8:]:
-            lines.append(f"- [{slot}] {fact.statement}")
+            lines.append(f"- [{slot}] fact_id={fact.id}：{fact.statement}")
+            if fact.source_refs:
+                lines.append('  原始依据：' + '、'.join(f'[{r.source_id}，版本 {r.source_revision}]' for r in fact.source_refs[:2]))
     return "\n".join(lines) if lines else "（暂无）"
 
 
@@ -84,9 +86,14 @@ def _sources_block(ctx: SessionContext, doc: ExperienceDoc) -> str:
     ]
     if not rows:
         return "（暂无）"
+    needed = {r.source_id for f in doc.facts if f.status == 'active' for r in f.source_refs}
+    important = [s for s in rows if s.source_id in needed]
+    originals = [s for s in rows if s.kind == 'resume' and s.source_id not in needed]
+    supplements = [s for s in rows if s.kind == 'supplement' and s.source_id not in needed]
+    selected = [*important, *originals[:6], *supplements[-6:]][:12]
     return "\n\n".join(
-        f"[{source.source_id}]（{source.kind}）\n{_clip(source.text, 800)}"
-        for source in rows[:6]
+        f"[{source.source_id}]（{source.kind}，版本 {source.source_revision}）\n{_clip(source.text, 800)}"
+        for source in selected
     )
 
 
@@ -149,9 +156,18 @@ def assemble_context(
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:
+        feedback = [r for r in ctx.revision_feedback if r.get('experience_id') == focus.experience_id
+                    and r.get('block_revision') == focus.block_revision]
+        if feedback:
+            latest = feedback[-1]
+            sections.append('## 当前段修改反馈（表达要求，不是新增事实）\n'
+                            + '用户原话：' + _clip(latest['feedback'], 1000)
+                            + '\n待调整的旧建议（不作为事实依据）：\n' + _clip(latest['after'], 4000)
+                            + '\n请直接生成符合反馈的完整新版建议；before 仍取当前稿，采用前不写入正文。')
         sections.append(
             f"## 当前焦点\n{_focus_block(focus)}\n\n"
-            f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n\n"
+            f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n"
+            '未完整展示的依据可按 source_id 调用 read_material；不能用事实记忆拼造引用。\n\n'
             f"## 已确认事实\n{_facts_block(focus)}\n\n"
             f"## 实际效果\n{_effect_block(focus)}\n\n"
             f"## 问题与缺口\n{_questions_block(focus)}\n\n"

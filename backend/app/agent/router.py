@@ -444,6 +444,10 @@ async def _execute(
             _persist_doc(store, session_id, focus_doc)
             answered = True
 
+    binder = getattr(repo, 'bind_answer_sources', None)
+    if callable(binder):
+        binder(session_id, focus_doc)
+
     # ponytail: every interview-style turn runs the single-segment loop; other
     # actions were handled above and need no model call.
     result = await run_loop(

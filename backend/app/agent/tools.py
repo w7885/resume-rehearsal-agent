@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from pydantic import BaseModel
@@ -13,6 +14,7 @@ from app.agent.memory import (
     save_experience,
 )
 from app.agent.ports import RepoPort, RepoError
+from app.agent.ports import SourceRef
 from app.agent.schemas import (
     GetExperienceMemoryArgs,
     ListExperiencesArgs,
@@ -62,7 +64,7 @@ TOOL_SPECS: dict[ToolName, ToolSpec] = {
     ),
     "save_facts": ToolSpec(
         "save_facts",
-        "把用户刚说的事实写入记忆；会自动去重与覆盖旧说法。",
+        "把用户刚说的事实写入记忆；默认追加去重。明确更正时用 supersedes_fact_ids 指定同维度旧事实。",
         SaveFactsArgs,
         '{"experience_id": "exp_01", "facts": [{"slot": "action", "statement": "合并 8 条反馈为 5 项需求"}, {"slot": "effect", "statement": "老师录入时间从半小时缩短到五分钟"}]}',
     ),
@@ -192,6 +194,20 @@ async def _get_experience_memory(
 
 async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
     doc, revision = _require_experience(ctx, args.experience_id)
+    current = ctx.repo.get_session_context(ctx.session_id)
+    message = next((m for m in current.messages if m.message_id == ctx.message_id and m.role == 'user'), None)
+    correction = bool(message and re.search(r'更正|纠正|说错|不对|不是.{0,40}而是|应为|应改为', message.text))
+    active = {f.id: f for f in doc.facts if f.status == 'active'}
+    for fact in args.facts:
+        if fact.supersedes_fact_ids and (not correction or any(
+                fid not in active or active[fid].slot != fact.slot for fid in fact.supersedes_fact_ids)):
+            raise RepoError('invalid_input', '替代事实必须对应用户明确纠正的同一维度事实编号。')
+        # Link the actual saved answer, never model-generated memory, to its
+        # admitted primary source. Uncertain answers have no admitted source.
+        if message and fact.message_id in (None, ctx.message_id):
+            matches = [s for s in current.sources if s.kind == 'supplement' and s.text == message.text]
+            if matches:
+                fact.source_refs = [SourceRef(source_id=s.source_id, source_revision=s.source_revision, quote=s.text) for s in matches[:1]]
     added = merge_facts(doc, args.facts, ctx.message_id)
     if added:
         save_experience(ctx.store, ctx.session_id, doc, revision)
