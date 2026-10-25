@@ -24,6 +24,51 @@ def explicit_replacement(text, quote):
     return bool(re.search(r'替换|以.{0,30}(?:为准|为主)|用.{0,30}(?:取代|代替)|replace', quote, re.I))
 
 
+ROLE_WORDS = (
+    ('resume', re.compile(r'(?:这是|这份|这个是|这一份|该文件|附件|文件|它)[^，。；;]{0,8}(?:简历|履历|CV|resume)|^(?:简历|履历|CV|resume)$', re.I)),
+    ('jd', re.compile(r'(?:这是|这份|这个是|这一份|该文件|附件|文件|它)[^，。；;]{0,8}(?:岗位描述|职位描述|招聘|JD)|^(?:岗位描述|职位描述|招聘|JD)$', re.I)),
+    ('supplement', re.compile(r'(?:这是|这份|这个是|这一份|该文件|附件|文件|它)[^，。；;]{0,8}(?:补充|参考)|^(?:补充|参考)$')),
+)
+ROLE_LABELS = {'resume': '简历', 'jd': '岗位描述', 'supplement': '补充材料'}
+
+
+def user_role(text):
+    """A passing mention ("帮我优化简历") does not say what the file is."""
+    hits = [role for role, pattern in ROLE_WORDS if pattern.search(text.strip())]
+    return hits[0] if len(hits) == 1 else None
+
+
+_LAYOUT = re.compile(r'[\uf000-\uf8ff\s]+')
+
+
+def evidence(text):
+    """Ignore icon-font glyphs and layout whitespace; the words must still be the source's."""
+    return _LAYOUT.sub(' ', text).strip()
+
+
+def classifiable(material):
+    """Partial documents still classify by their text; partial image transcripts do not."""
+    return material['hasText'] and (
+        material['parseStatus'] == 'parsed'
+        or not material['mediaType'].startswith('image/')
+    )
+
+
+def record_role(runtime, material_id, role):
+    """Persist a user-stated role without activating a source-less attachment."""
+    with runtime.repo._operation(runtime.context, write=True) as (connection, session):
+        row = connection.execute('SELECT use_status, resume_generation FROM attachments WHERE session_id=? AND attachment_id=?',
+                                 (runtime.sid, material_id)).fetchone()
+        if row is None or row['use_status'] != 'pending' or row['resume_generation'] != session['current_resume_generation']:
+            raise RepositoryError('stale_state', '待识别附件已经变化。')
+        connection.execute('UPDATE attachments SET role=? WHERE session_id=? AND attachment_id=?', (role, runtime.sid, material_id))
+        bound = Repository(runtime.repo.path, _connection=connection)
+        bound._touch(connection, runtime.sid)
+        current = bound.get_session(RequestContext(runtime.sid))
+        connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+                           (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
+
+
 def snapshot(runtime, candidates):
     """Only send scoped, current source snapshots, never originals or arbitrary paths."""
     values = []
@@ -42,7 +87,8 @@ def snapshot(runtime, candidates):
                 sources.append(source['text'])
             text = '\n\n'.join(sources)
             values.append({'materialId': item['materialId'], 'name': item['name'], 'text': text[:12000],
-                           'complete': row['parse_status'] == 'parsed' and len(text) <= 12000})
+                           'hasText': bool(text.strip()), 'parseStatus': row['parse_status'],
+                           'mediaType': row['media_type']})
     return values
 
 
@@ -106,31 +152,66 @@ async def handle(runtime, turn):
     if not candidates:
         return False
     materials = snapshot(runtime, candidates)
+    content = turn['userMessage']['content']
+    textual = [m for m in materials if m['hasText']]
+    unreadable = [m for m in materials if not m['hasText']]
+    if not textual:
+        requested = user_role(content)
+        if requested and len(materials) == 1:
+            record_role(runtime, materials[0]['materialId'], requested)
+            runtime._continue()
+            runtime._reply(
+                f'已记为「{ROLE_LABELS[requested]}」，但「{materials[0]["name"]}」仍没有可读正文，'
+                '请粘贴文字或重新上传清晰版本。'
+            )
+            return True
+        elif any(not m['mediaType'].startswith('image/') for m in unreadable):
+            names = '、'.join(m['name'] for m in unreadable)
+            runtime._reply(
+                f'没能从「{names}」提取到文字。请粘贴文字，或上传清晰图片／文本型 PDF；'
+                '也可以直接告诉我它是简历、岗位描述还是补充资料。',
+                'question', materials=candidates,
+            )
+            return True
+        # Source-less images keep the old path: text intake or the generic missing-draft reply.
+        return False
+    classifiable_materials = [m for m in textual if classifiable(m)]
     has_draft = runtime.repo.has_draft_history(runtime.context)
-    choice = await runtime._json(CLASSIFY, {'userContent': turn['userMessage']['content'],
-                                          'hasCurrentDraft': has_draft, 'materials': materials})
-    decisions = choice.get('materials')
-    if not isinstance(decisions, list):
+    if classifiable_materials:
+        choice = await runtime._json(CLASSIFY, {'userContent': content,
+                                                'hasCurrentDraft': has_draft,
+                                                'materials': classifiable_materials})
+        decisions = choice.get('materials')
+        if not isinstance(decisions, list):
+            decisions = []
+    else:
         decisions = []
-    by_id = {m['materialId']: m for m in materials}
+    by_id = {m['materialId']: m for m in classifiable_materials}
     known, unresolved, seen = [], [], set()
     for item in decisions:
         if not isinstance(item, dict) or item.get('materialId') not in by_id or item['materialId'] in seen:
             raise RepositoryError('scope_violation', '材料分类返回了重复或越界编号。')
         mid = item['materialId']; seen.add(mid); material = by_id[mid]
         role = item.get('role'); quote = item.get('quote')
-        if role not in {'resume', 'jd', 'supplement'} or item.get('use') not in {'current', 'reference', 'replace', 'unknown'} or not isinstance(quote, str) or not quote.strip() or quote not in material['text'] or not material['complete']:
+        if role not in {'resume', 'jd', 'supplement'} or item.get('use') not in {'current', 'reference', 'replace', 'unknown'} or not isinstance(quote, str) or not quote.strip() or evidence(quote) not in evidence(material['text']):
             unresolved.append(mid)
         else:
             known.append(item)
     unresolved.extend(mid for mid in by_id if mid not in seen)
+    unresolved.extend(m['materialId'] for m in textual if not classifiable(m))
+    requested = user_role(content)
+    if requested and len(materials) == 1 and materials[0]['materialId'] in unresolved and materials[0]['materialId'] in by_id:
+        mid = materials[0]['materialId']
+        unresolved = [item for item in unresolved if item != mid]
+        known.append({'materialId': mid, 'role': requested, 'use': 'current',
+                      'quote': by_id[mid]['text'], 'authorizationQuote': ''})
     resumes = [item for item in known if item['role'] == 'resume' and item.get('use') != 'reference']
     # More than one candidate resume is inherently ambiguous, even if one is labeled replace.
     if len(resumes) > 1:
         unresolved.extend(item['materialId'] for item in resumes)
     if has_draft and resumes and not unresolved:
         item = resumes[0]
-        if item.get('use') == 'replace' and explicit_replacement(turn['userMessage']['content'], item.get('authorizationQuote')):
+        if item.get('use') == 'replace' and by_id[item['materialId']]['parseStatus'] == 'parsed' and explicit_replacement(turn['userMessage']['content'], item.get('authorizationQuote')):
             # JD survives replacement. Personal reference material needs its own later use decision.
             accompanying = [other for other in known if other is not item]
             if all(other['role'] == 'jd' for other in accompanying):
@@ -155,5 +236,13 @@ async def handle(runtime, turn):
     runtime._continue()
     labels = {'resume': '待修改简历', 'jd': '岗位描述', 'supplement': '个人补充材料', 'unknown': '仅供参考的材料，不作为个人事实'}
     names = {m['materialId']: m['name'] for m in materials}
-    runtime._reply('已识别：' + '；'.join(f"{names[item['materialId']]}为{labels[item['role']]}" for item in selected) + '。如分类有误，请指出；我会按这些材料继续处理。')
+    selected_ids = {item['materialId'] for item in selected}
+    partial_names = [m['name'] for m in materials if m['materialId'] in selected_ids and m['parseStatus'] == 'partial']
+    text = '已识别：' + '；'.join(f"{names[item['materialId']]}为{labels[item['role']]}" for item in selected)
+    if partial_names:
+        text += f'（{"、".join(partial_names)} 仅提取部分内容，请核对原件）'
+    text += '。如分类有误，请指出；我会按这些材料继续处理。'
+    if unreadable:
+        text += '另外' + '、'.join(f'「{m["name"]}」' for m in unreadable) + '没有可读正文，请粘贴文字或重新上传清晰版本。'
+    runtime._reply(text)
     return False

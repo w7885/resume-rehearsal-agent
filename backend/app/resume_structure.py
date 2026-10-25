@@ -1,21 +1,111 @@
 """Lossless resume boundaries. Never ask a model to regenerate imported text."""
 import re
+import unicodedata
 
 from app.draft_actions import join_markdown
 from app.repository import RepositoryError
 
-SECTION = re.compile(r'^(?:教育(?:经历|背景)|项目(?:经历|经验)|工作(?:经历|经验)|实习经历|校园经历|实践经历|技能(?:证书|清单)?|专业技能|个人技能|获奖(?:经历|情况)|荣誉奖项|自我评价|个人总结|求职意向|个人信息|联系方式|Education|Projects?|Experience|Skills|Summary)\s*[:：]?$', re.I)
+SECTION = re.compile(r'^(?:教育(?:经历|背景)|项目(?:经历|经验)|个人项目|个人经历|工作(?:经历|经验)|实习(?:经历|经验)|校园经历|实践经历|技能(?:证书|清单)?|专业技能|个人技能|获奖(?:经历|情况)|荣誉奖项|自我评价|个人总结|求职意向|个人信息|联系方式|Education|Projects?|Experience|Skills|Summary)\s*[:：]?$', re.I)
 PROJECT = re.compile(r'^(?:项目(?:经历|经验)?\s*[一二三四五六七八九十0-9]+|第[一二三四五六七八九十0-9]+个项目)(?:\s*[:：、.．｜|—-].*|\s+.*)?$')
 DATE = re.compile(r'^\d{4}[.年/-]\d{1,2}.{0,20}[—–~～-].{0,20}[｜|]')
 
+# Section label -> interview kind. None means frozen: parsed, editable, never interviewed.
+_SECTION_KIND = {
+    '项目': 'project', '项目经历': 'project', '项目经验': 'project',
+    'projects': 'project', 'project': 'project', '个人项目': 'project',
+    '个人经历': 'project', '校园经历': 'project', '实践经历': 'project',
+    '工作': 'work', '工作经历': 'work', '工作经验': 'work',
+    '实习经历': 'work', '实习经验': 'work', 'experience': 'work',
+    '教育经历': None, '教育背景': None, 'education': None,
+    '技能': None, '技能证书': None, '技能清单': None, '专业技能': None,
+    '个人技能': None, 'skills': None,
+    '获奖': None, '获奖经历': None, '获奖情况': None, '荣誉奖项': None,
+    '自我评价': None, '个人总结': None, 'summary': None,
+    '求职意向': None, '个人信息': None, '联系方式': None,
+}
+_EXPERIENCE_PREFIX = re.compile(
+    r'^(?:项目经历|项目经验|项目|个人项目|个人经历|校园经历|实践经历|'
+    r'工作经历|工作经验|工作|实习经历|实习经验|Projects?|Experience)\s*[:：]',
+    re.I,
+)
+_NAMED_ENTRY = re.compile(r'系统|平台|工具|助手|App|应用')
+# PDF extracts often prefix headings with icon-font glyphs from the private use area.
+_ICONS = re.compile(r'^[\s\uf000-\uf8ff\u2022\u00b7\u25aa\u25b8\u25cf\u25c6\u25c7\u25a0\u25a1\u25b6\u25ba\u2605\u2606]+|[\s\uf000-\uf8ff\u2022\u00b7\u25aa\u25b8\u25cf\u25c6\u25c7\u25a0\u25a1\u25b6\u25ba\u2605\u2606]+$')
+
 
 def heading(line):
-    return re.sub(r'^\s{0,3}#{1,6}\s+', '', line.strip()).strip()
+    label = re.sub(r'^\s{0,3}#{1,6}\s+', '', line.strip()).strip()
+    # NFKC folds Kangxi radicals (⼈⽬) and full-width punctuation back to normal text.
+    return _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
+
+
+def section_kind(label):
+    """Return (recognized, kind) for a section heading; kind may be None (frozen)."""
+    text = re.sub(r'[:：]\s*$', '', heading(label)).strip()
+    key = text.lower()
+    if key in _SECTION_KIND:
+        return True, _SECTION_KIND[key]
+    return False, None
+
+
+def inline_kind(label):
+    """A one-block section such as '项目经历：整理反馈' is itself an entry."""
+    match = _EXPERIENCE_PREFIX.match(heading(label))
+    if match is None:
+        return None
+    key = match.group(0).rstrip(' :：').lower()
+    return _SECTION_KIND.get(key)
+
+
+def block_kinds(markdowns):
+    """Classify draft blocks in order: 'project'/'work' or None (frozen).
+
+    When a resume carries no recognizable structure at all, every non-empty
+    block stays an experience so pasted project text keeps working.
+    """
+    kinds, section, seen = [], None, False
+    for markdown in markdowns:
+        lines = [line for line in markdown.splitlines() if line.strip()]
+        if not lines:
+            kinds.append(None)
+            continue
+        first, label = lines[0], heading(lines[0])
+        recognized, kind = section_kind(label)
+        if recognized:
+            seen = True
+            section = kind
+            kinds.append(kind if kind is not None and len(lines) > 1 else None)
+            continue
+        prefix = inline_kind(label)
+        if prefix is not None:
+            seen = True
+            section = prefix
+            kinds.append(prefix)
+            continue
+        if PROJECT.fullmatch(label):
+            seen = True
+            section = 'project'
+            kinds.append('project' if len(lines) > 1 else None)
+            continue
+        if section is not None:
+            kinds.append(section)
+            continue
+        if (DATE.match(label) or (
+            re.match(r'^\s{0,3}#{1,6}\s+', first) and _NAMED_ENTRY.search(label)
+        )) and len(lines) > 1:
+            seen = True
+            section = 'project'
+            kinds.append('project')
+            continue
+        kinds.append(None)
+    if not seen:
+        return ['project' if markdown.strip() else None for markdown in markdowns]
+    return kinds
 
 
 def split_resume(text):
     """Keep each heading with its content; preserve every byte-equivalent character."""
-    starts, offset, fence, in_projects = [0], 0, None, False
+    starts, offset, fence, in_experience = [0], 0, None, False
     for line in text.splitlines(keepends=True):
         token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
         if token:
@@ -28,12 +118,12 @@ def split_resume(text):
             label = heading(line)
             section = bool(SECTION.fullmatch(label))
             project = bool(PROJECT.fullmatch(label))
-            dated_project = in_projects and bool(DATE.match(label))
-            named_project = in_projects and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(re.search(r'系统|平台|工具|助手|App|应用', label))
-            if (section or project or dated_project or named_project) and offset and text[starts[-1]:offset].strip():
+            dated_entry = in_experience and bool(DATE.match(label))
+            named_entry = in_experience and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(_NAMED_ENTRY.search(label))
+            if (section or project or dated_entry or named_entry) and offset and text[starts[-1]:offset].strip():
                 starts.append(offset)
             if section:
-                in_projects = label.lower().startswith(('项目', 'project'))
+                in_experience = section_kind(label)[1] is not None
         offset += len(line)
     starts.append(len(text))
     return [text[a:b] for a, b in zip(starts, starts[1:]) if text[a:b].strip()]

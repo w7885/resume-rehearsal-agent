@@ -207,6 +207,85 @@ class MaterialIntakeTests(unittest.TestCase):
         self.assertEqual(self.conversation(session)['draft']['markdown'], RESUME)
         self.assertEqual(self.count('draft_replacements'), 0)
 
+    def unreadable(self):
+        with db.database(self.path) as c:
+            mid = c.execute('SELECT attachment_id FROM attachments').fetchone()[0]
+            c.execute('DELETE FROM source_blocks WHERE attachment_id=?', (mid,))
+            c.execute("UPDATE attachments SET parse_status='failed' WHERE attachment_id=?", (mid,))
+
+    def test_partial_document_with_text_is_classified_and_activated(self):
+        session, host = self.setup_case()
+        with db.database(self.path) as c:
+            c.execute("UPDATE attachments SET parse_status='partial', media_type='application/pdf'")
+        self.turn(session)
+        value = self.conversation(session)
+        self.assertEqual(value['draft']['markdown'], RESUME)
+        self.assertEqual(value['materials'][0]['role'], 'resume')
+        self.assertEqual(value['materials'][0]['useStatus'], 'active')
+        self.assertTrue(any('仅提取部分内容' in m['content'] for m in value['messages']))
+
+    def test_classifier_quote_may_drop_icon_font_glyphs(self):
+        text = ' 实习经历\n 13812345678\n 个人项目\n开发检索工具。'
+        session, host = self.setup_case(texts=(text,))
+        def real_model(v):
+            items = classified(v)
+            items[0]['quote'] = '实习经历 13812345678 个人项目'
+            return items
+        host.classify_output = real_model
+        self.turn(session)
+        value = self.conversation(session)
+        self.assertEqual(value['draft']['markdown'], text)
+        self.assertEqual(value['materials'][0]['role'], 'resume')
+
+    def test_no_text_attachment_gets_targeted_prompt_without_model_call(self):
+        session, host = self.setup_case()
+        self.unreadable()
+        self.turn(session)
+        value = self.conversation(session)
+        self.assertEqual(value['draft']['markdown'], '')
+        self.assertEqual(host.classify_inputs, [])
+        self.assertIn('没能从', value['messages'][-1]['content'])
+        self.assertIn('附件0.md', value['messages'][-1]['content'])
+
+    def test_user_can_name_the_role_of_an_unreadable_attachment(self):
+        session, host = self.setup_case()
+        self.unreadable()
+        self.turn(session)
+        prompt = self.conversation(session)['messages'][-1]
+        reply = self.send(session, '这是待修改的简历', request_id='role', replyToMessageId=prompt['messageId'])
+        self.analyze(session, reply, 'role')
+        value = self.conversation(session)
+        self.assertEqual(value['materials'][0]['role'], 'resume')
+        self.assertEqual(value['materials'][0]['useStatus'], 'pending')
+        self.assertEqual(value['draft']['markdown'], '')
+        self.assertIn('仍没有可读正文', value['messages'][-1]['content'])
+        self.assertEqual(host.classify_inputs, [])
+
+    def test_user_role_resolves_partial_document_when_model_is_unsure(self):
+        session, host = self.setup_case()
+        host.classify_output = []
+        with db.database(self.path) as c:
+            c.execute("UPDATE attachments SET parse_status='partial', media_type='application/pdf'")
+        self.turn(session)
+        prompt = self.conversation(session)['messages'][-1]
+        reply = self.send(session, '这是待修改的简历', request_id='role', replyToMessageId=prompt['messageId'])
+        self.analyze(session, reply, 'role')
+        self.assertEqual(self.conversation(session)['draft']['markdown'], RESUME)
+
+    def test_mixed_readable_and_unreadable_materials_activate_the_readable_one(self):
+        session, host = self.setup_case(texts=(RESUME, JD))
+        with db.database(self.path) as c:
+            mid = c.execute("SELECT attachment_id FROM attachments WHERE name='附件1.md'").fetchone()[0]
+            c.execute('DELETE FROM source_blocks WHERE attachment_id=?', (mid,))
+            c.execute("UPDATE attachments SET parse_status='failed' WHERE attachment_id=?", (mid,))
+        self.turn(session)
+        value = self.conversation(session)
+        self.assertEqual(value['draft']['markdown'], RESUME)
+        text = '\n'.join(m['content'] for m in value['messages'])
+        self.assertIn('已识别', text)
+        self.assertIn('附件1.md', text)
+        self.assertIn('没有可读正文', text)
+
     def test_edit_during_classification_invalidates_late_output(self):
         session, host = self.setup_case()
         def concurrent_edit(v):

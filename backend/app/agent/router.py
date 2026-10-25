@@ -86,9 +86,7 @@ def _load_session_doc(
             direction=info.direction,
             primary_material_id=info.primary_material_id,
             jd_keywords=list(info.jd_keywords),
-            experience_order=list(info.experience_order),
-            current_focus_id=info.current_focus_id
-            or (info.experience_order[0] if info.experience_order else None),
+            current_focus_id=info.current_focus_id,
             pending_clarification=info.pending_clarification,
             summary=info.summary,
         )

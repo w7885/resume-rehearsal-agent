@@ -274,9 +274,8 @@ class Runtime:
             items=[]
             for material in connection.execute("SELECT * FROM attachments WHERE session_id=? AND resume_generation=? AND use_status='pending' ORDER BY original_order",(self.sid,session['current_resume_generation'])):
                 sources=connection.execute('SELECT source_id,source_revision FROM source_blocks b WHERE session_id=? AND attachment_id=? AND source_revision=(SELECT max(source_revision) FROM source_blocks WHERE source_id=b.source_id) ORDER BY rowid',(self.sid,material['attachment_id'])).fetchall()
-                if sources:
-                    items.append({'materialId':material['attachment_id'],'name':material['name'],'contentHash':material['content_hash'],
-                                  'sources':[dict(s) for s in sources]})
+                items.append({'materialId':material['attachment_id'],'name':material['name'],'contentHash':material['content_hash'],
+                              'sources':[dict(s) for s in sources]})
             return items[:10]
 
     async def _materials(self, turn):
@@ -387,6 +386,9 @@ class Runtime:
         from app.agent.memory import load_session, save_session
         sync(self)
         progress = plan(self)
+        if not progress['blocks']:
+            self._reply('简历里还没识别到项目或实习经历，请上传或粘贴一段项目/实习。', 'question')
+            return 'completed'
         if progress['pending']:
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'

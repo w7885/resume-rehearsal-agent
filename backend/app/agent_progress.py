@@ -5,6 +5,7 @@ import re
 
 from app.agent_edit_scope import resolve_scope
 from app.repository import RepositoryError
+from app.resume_structure import block_kinds, heading
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
@@ -15,7 +16,7 @@ def plain(text):
 
 
 def label(block):
-    lines = [line.strip().lstrip('#').strip() for line in block['markdown'].splitlines() if line.strip()]
+    lines = [heading(line) for line in block['markdown'].splitlines() if line.strip()]
     first = lines[0] if lines else '当前段落'
     if re.search(r'姓名|求职意向|电话|邮箱', '\n'.join(lines[:2])):
         return '基本信息与求职意向'
@@ -42,6 +43,8 @@ def plan(runtime):
     if allowed == set():
         raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目，请明确要修改的项目。')
     blocks = [b for b in context['draft']['blocks'] if allowed is None or b['blockId'] in allowed]
+    kinds = block_kinds([b['markdown'] for b in blocks])
+    blocks = [b for b, kind in zip(blocks, kinds) if kind is not None]
     with runtime.repo._operation(runtime.context) as (connection, session):
         progress = _load(connection, session)
         done, remaining, review = [], [], []

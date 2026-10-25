@@ -2,7 +2,7 @@
 import re
 
 from app.repository import RepositoryError
-from app.resume_structure import DATE, PROJECT, heading
+from app.resume_structure import DATE, PROJECT, block_kinds, heading
 
 NUMBERS = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 ORDINAL = r'(?:第\s*([0-9一二两三四五六七八九十]+)\s*(?:个|项)?\s*项目|项目\s*([0-9一二两三四五六七八九十]+))'
@@ -13,9 +13,14 @@ def project_blocks(repo, context):
     draft = repo.get_draft(context)
     result = []
     with repo._operation(context) as (connection, _):
+        texts = []
         for block in draft['blocks']:
             original = connection.execute('SELECT markdown FROM draft_blocks WHERE session_id=? AND block_id=? ORDER BY block_revision LIMIT 1', (context.session_id, block['blockId'])).fetchone()
-            text = original[0] if original else block['markdown']
+            texts.append(original[0] if original else block['markdown'])
+        for block, text, kind in zip(draft['blocks'], texts, block_kinds(texts)):
+            # Dated entries in 实习/工作 are work, not projects.
+            if kind == 'work':
+                continue
             lines = [heading(line) for line in text.splitlines() if line.strip()]
             if lines and (PROJECT.fullmatch(lines[0]) or DATE.match(lines[0]) or
                           (lines[0] in {'项目经历', '项目经验', 'Projects', '项目'} and len(lines) > 1) or

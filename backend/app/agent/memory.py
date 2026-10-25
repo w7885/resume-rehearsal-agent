@@ -384,8 +384,9 @@ _DATE_PART = re.compile(r"^[\d.\-/年月日—–~～\s]+$")
 
 
 def _block_title(markdown: str) -> str:
+    from app.resume_structure import heading
     for line in markdown.splitlines():
-        text = line.strip().lstrip("#-* ").strip()
+        text = heading(line).lstrip("-* ").strip()
         if not text or _HEADER_LINE.match(text):
             continue
         parts = [part.strip() for part in re.split(r"[｜|]", text) if part.strip()]
@@ -402,22 +403,28 @@ def sync_experiences(
     revision: int | None,
 ) -> tuple[SessionDoc, int]:
     if doc is None:
-        doc = SessionDoc(
-            experience_order=list(ctx.session.experience_order),
-            current_focus_id=ctx.session.current_focus_id,
-        )
+        doc = SessionDoc(current_focus_id=ctx.session.current_focus_id)
         revision = None
+    from app.resume_structure import block_kinds
+    kinds = block_kinds([block.markdown for block in ctx.draft_blocks])
     order = list(doc.experience_order)
     changed = False
-    for position, block in enumerate(ctx.draft_blocks):
-        if load_experience(store, session_id, block.block_id) is None:
+    for block, kind in zip(ctx.draft_blocks, kinds):
+        if kind is None:
+            # Frozen sections are parsed and editable but never interviewed.
+            if block.block_id in order:
+                order.remove(block.block_id)
+                changed = True
+            continue
+        existing = load_experience(store, session_id, block.block_id)
+        if existing is None:
             save_experience(
                 store,
                 session_id,
                 ExperienceDoc(
                     experience_id=block.block_id,
-                    seq=position + 1,
-                    kind="project",
+                    seq=len(order) + 1,
+                    kind=kind,
                     title=_block_title(block.markdown),
                     raw_text=block.markdown,
                     source_ids=[ref.source_id for ref in block.source_refs],
@@ -426,6 +433,9 @@ def sync_experiences(
                 ),
                 None,
             )
+        elif existing[0].kind != kind:
+            existing[0].kind = kind
+            save_experience(store, session_id, existing[0], existing[1])
         if block.block_id not in order:
             order.append(block.block_id)
             changed = True

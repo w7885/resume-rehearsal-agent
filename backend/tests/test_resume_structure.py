@@ -9,7 +9,7 @@ from app.agent_edit_scope import project_blocks, resolve_scope
 from app.agent_host import HostAdapter
 from app.agent.ports import SourceRef
 from app.repository import Repository, RepositoryError, RequestContext
-from app.resume_structure import body_span, split_resume, structure_blocks
+from app.resume_structure import block_kinds, body_span, heading, split_resume, structure_blocks
 from app.business_service import BusinessService
 import test_agent_integration as integration
 import test_agent_text_intake as intake
@@ -65,6 +65,26 @@ class StructureUnitTests(unittest.TestCase):
         parts = split_resume(body)
         self.assertEqual(''.join(parts), body)
         self.assertEqual(body_span(body, '# 简历', 'Python'), (0, len(body)))
+
+    def test_icon_glyph_and_kangxi_headings_split_and_classify(self):
+        body = (' 实习经历\n字节跳动｜后端开发\n- 负责接口\n'
+                ' 个⼈项⽬\n简历助手\n- 负责检索\n'
+                ' 专业技能\nPython\n'
+                ' 校园经历\n学生会\n- 负责活动\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 4)
+        self.assertEqual(heading(' 个⼈项⽬'), '个人项目')
+        self.assertEqual(block_kinds(parts), ['work', 'project', None, 'project'])
+
+    def test_dated_entries_inside_internship_section_are_separate(self):
+        body = ('实习经历\n2024.06—2024.09｜字节跳动｜后端开发\n- 接口甲\n'
+                '2023.06—2023.09｜腾讯｜后端开发\n- 服务乙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 3)
+        self.assertFalse(any('接口甲' in p and '服务乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work'])
 
     def test_project_dates_under_general_header_are_separate(self):
         body = '项目经历\n2025.01—2025.03｜项目甲｜开发\n- 动作甲\n2025.04—2025.06｜项目乙｜开发\n- 动作乙\n技能证书\nPython'
