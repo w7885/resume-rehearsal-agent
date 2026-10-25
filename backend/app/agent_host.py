@@ -160,6 +160,13 @@ class HostAdapter(ARepoAdapter):
         ctx = super().get_session_context(session_id)
         if self.focus_id:
             ctx.session.current_focus_id = self.focus_id
+            # Interview answers belong to their associated experience. Generic
+            # uploaded supplements keep their existing session-wide semantics.
+            memory = GuardedStateStore(self.runtime).get(session_id, 'experience', self.focus_id)
+            allowed_answers = set(memory.doc.get('source_ids', [])) if memory else set()
+            with self.runtime.repo._operation(self.runtime.context) as (connection, _):
+                chat_sources = {row[0] for row in connection.execute("SELECT b.source_id FROM source_blocks b JOIN messages m ON m.session_id=b.session_id AND m.message_id=b.message_id WHERE b.session_id=? AND b.role='supplement' AND m.input_channel='chat'", (session_id,))}
+            ctx.sources = [s for s in ctx.sources if s.source_id not in chat_sources or s.source_id in allowed_answers]
         if self.allowed is not None:
             ctx.draft_blocks = [block for block in ctx.draft_blocks if block.block_id in self.allowed]
             ctx.session.experience_order = [block.block_id for block in ctx.draft_blocks]
@@ -200,6 +207,10 @@ class HostAdapter(ARepoAdapter):
         with self.runtime.repo._operation(self.runtime.context, write=True) as (connection, _):
             connection.execute("UPDATE sessions SET direction=?,direction_status='provided' WHERE session_id=?", (direction[:200], session_id))
 
+    def bind_answer_sources(self, session_id, doc):
+        from app.agent_answer_sources import bind_answers
+        return bind_answers(self, session_id, doc)
+
     def apply_suggestion_decision(self, *args, **kwargs):
         raise RepositoryError('scope_violation', '修改决定须通过已保存询问的结构化校验，不能按当前经历的最后一条建议直接执行。', False)
 
@@ -220,6 +231,7 @@ class Runtime:
         self.initial_import = False
         self.accepted_this_turn = False
         self.advance_after_accept = False
+        self.revision_target = None
 
     def _emit(self, kind, payload, connection=None):
         if connection is None:
@@ -347,19 +359,33 @@ class Runtime:
             self._reply('当前还有待确认的改写。请先采用、拒绝或说明调整要求；“继续”不会替你采用它。', 'change_question', ids)
             return True
         positive = turn['userMessage']['content'].strip().rstrip('。！!').strip() in {'是', '是的', '采用', '采纳', '接受', '确认', '同意', '好', '好的', '可以', '就这样'}
+        from app.agent_revision import wording_feedback
+        targets = {s['suggestionId'] for p in candidates for s in p['suggestions']}
+        # Repeated confirmations of the same suggestion are one target. An
+        # unrelated ordinary question still makes an implicit reply ambiguous.
+        unique = len(targets) == 1 and len(active_prompts) == len(candidates)
+        if unique:
+            candidates = [candidates[-1]]
         if positive:
-            if len(active_prompts) == 1 and len(candidates) == 1 and len(candidates[0]['suggestions']) == 1:
+            if unique:
                 prompt = candidates[0]
                 data = {'status': 'resolved', 'decisions': [{'promptMessageId': prompt['promptMessageId'],
                         'suggestionId': prompt['suggestions'][0]['suggestionId'], 'decision': 'accept', 'feedback': ''}]}
             else:
                 data = {'status': 'clarify', 'decisions': []}
+        elif unique and wording_feedback(turn['userMessage']['content']):
+            prompt = candidates[0]
+            data = {'status': 'resolved', 'decisions': [{'promptMessageId': prompt['promptMessageId'],
+                    'suggestionId': prompt['suggestions'][0]['suggestionId'], 'decision': 'revise',
+                    'feedback': turn['userMessage']['content']}]}
         else:
-            data=await self._json('解析用户对改写询问的决定。返回 status=none/clarify/resolved 和 decisions 数组。明确时每项只有 promptMessageId,suggestionId,decision(accept/reject/revise),feedback。feedback 必须逐字摘自用户原话；要求调整必须非空。否定、条件、引用、假设及范围不明确时先 clarify，不默认最后一条或全部。不要输出新的目标或版本。',{'userContent':turn['userMessage']['content'],'replyToMessageId':turn['replyToMessageId'],'candidatePrompts':candidates})
+            data=await self._json('解析用户对改写询问的决定。返回 status=none/clarify/resolved 和 decisions 数组。明确时每项只有 promptMessageId,suggestionId,decision(accept/reject/revise),feedback。feedback 必须逐字摘自用户原话；要求调整必须非空。唯一有效建议下，“太冗余、太口语、精简些”等明确评价表示 revise，不因否定语气要求重复指认目标；多候选、条件、引用、假设及范围不明确时先 clarify，不默认最后一条或全部。不要输出新的目标或版本。',{'userContent':turn['userMessage']['content'],'replyToMessageId':turn['replyToMessageId'],'candidatePrompts':candidates})
         result=self.service.apply_resolved_user_decision(self.context,{'requestId':fresh_id('decision'),'userMessageId':self.user_id,'userContent':turn['userMessage']['content'],'status':data.get('status'),'decisions':data.get('decisions')},synthetic=self.host.client_factory is not None)['data']
         if result['status']=='clarify':
             ids=list(dict.fromkeys(s['suggestionId'] for p in candidates for s in p['suggestions']))
-            self._reply('请说明要采用、拒绝或调整哪一条改写；也可以直接指出需要保留的内容。','change_question',ids[:10])
+            text = ('当前只有这条待确认建议。你希望采用它，还是继续调整？也可以说明具体修改要求。'
+                    if unique else '请说明要采用、拒绝或调整哪一条改写；也可以直接指出需要保留的内容。')
+            self._reply(text,'change_question',ids[:10])
             return True
         if result['status']=='resolved':
             actions={d['decision'] for d in result['decisions']}
@@ -374,8 +400,11 @@ class Runtime:
                     record(self, offered[item['suggestionId']]['target']['blockId'], completed=True)
             text='已按你明确选择的建议更新当前稿。' if 'accept' in actions else '已记录你的决定，当前正文保持不变。'
             if 'revise' in actions:
-                text+='调整要求已保留，可以继续说明希望怎样修改。'
+                text+='调整要求已保留。'
             self._reply(text)
+            if actions == {'revise'} and len(result['decisions']) == 1:
+                self.revision_target = offered[result['decisions'][0]['suggestionId']]['target']['blockId']
+                return False
             if 'accept' in actions:
                 paused = any(word in turn['userMessage']['content'] for word in ('先停', '先暂停', '不继续', '不要继续', '先到这里'))
                 if not paused:
@@ -387,7 +416,7 @@ class Runtime:
 
     async def _analyze_next(self, turn):
         from app.agent_goal import sync
-        from app.agent_progress import CONTINUE, plain, plan, record, label, completion
+        from app.agent_progress import CONTINUE, KEEP_NEXT, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
         sync(self)
         progress = plan(self)
@@ -397,7 +426,16 @@ class Runtime:
         if progress['pending']:
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
-        forced = self.advance_after_accept or self.initial_import or plain(turn['userMessage']['content']) in CONTINUE
+        command = plain(turn['userMessage']['content'])
+        keep_next = command in KEEP_NEXT
+        if keep_next and progress['waiting']:
+            record(self, progress['waiting'], completed=True)
+            self._reply('已按你的要求保留本段原文，继续检查下一段。')
+            progress = plan(self)
+        elif command in CONTINUE and progress['blocked']:
+            self._reply('上一段改写尚未通过校验，当前稿没有改变。要保留这一段并接着处理，请回复“保留原文，继续下一段”；也可以补充或纠正具体事实。')
+            return 'completed'
+        forced = bool(self.revision_target) or keep_next or self.advance_after_accept or self.initial_import or command in CONTINUE
         if progress['review']:
             self._reply('继续前需要核对当前段落的来源：原文或引用版本已变化，请先核对材料；已保存内容保留。', 'question')
             return 'completed'
@@ -412,9 +450,16 @@ class Runtime:
             self._reply('当前稿没有可处理的正文，请先提供简历。', 'question')
             return 'completed'
         focus = choices[0]
+        if self.revision_target:
+            focus = next((b for b in progress['blocks'] if b['blockId'] == self.revision_target), None)
+            if focus is None:
+                raise RepositoryError('stale_state', '待调整的段落已变化，请重新核对当前稿。')
         if not forced and existing:
             focus = next((b for b in progress['blocks'] if b['blockId'] == existing[0].current_focus_id), focus)
         adapter = HostAdapter(self, focus['blockId'], enforce_focus=forced)
+        # A has already resolved an initial explicit scope against the complete
+        # draft; B must not interpret its ordinal again inside a filtered list.
+        forced = forced or (adapter.allowed is not None and existing is None)
         if existing and existing[0].current_focus_id != focus['blockId']:
             doc, revision = existing
             doc.current_focus_id = focus['blockId']
@@ -442,10 +487,12 @@ class Runtime:
                 active_focus = next((b for b in progress['blocks'] if b['blockId'] == target), active_focus)
             elif event.type == 'question':
                 questions.append(event.payload.get('text', ''))
+            elif event.type == 'clarification':
+                questions.append(event.payload.get('question', '请明确要处理的段落。'))
             elif event.type == 'notice' and event.payload.get('text'):
                 notices.append(event.payload['text'])
             elif event.type == 'warning':
-                warnings.append(event.payload.get('code', ''))
+                warnings.append(event.payload)
             elif event.type == 'section_finished':
                 section = event.payload
             elif event.type == 'error':
@@ -471,17 +518,19 @@ class Runtime:
             text = '本段本轮保留原文。' + (reason + '\n' if reason else '\n')
             text += ('下一步检查' + label(following['remaining'][0]) + '，回复“继续”即可接着处理。') if following['remaining'] else completion(following)
             self._reply(text)
-        elif 'budget_exhausted' in warnings:
+        elif any(w.get('code') == 'budget_exhausted' for w in warnings):
             self._reply('剩余额度不足以生成下一条建议。已采用的内容已保存；当前稿仍可预览或导出。')
         elif outcome == 'focused':
             record(self, active_focus['blockId'])
             self._reply('已定位到指定段落。下一步会检查这段与 JD 的对应表达，回复“继续”即可处理。')
         else:
-            record(self, active_focus['blockId'])
+            record(self, active_focus['blockId'], blocked=True)
             issues = self.repo.get_session_context(self.context)['issues']
-            issue = next((item['summary'] for item in reversed(issues) if active_focus['blockId'] in item.get('affectedBlockIds', [])), '')
-            self._reply('本段暂未生成可采用的改写。' + (issue + '。' if issue else '') + '请核对这一段的原文依据，或指出希望调整的具体一句；已保存内容保留。', 'question')
-        return 'completed'
+            issue = next((w.get('message') for w in reversed(warnings) if w.get('message')), '')
+            issue = issue or next((item['summary'] for item in reversed(issues) if active_focus['blockId'] in item.get('affectedBlockIds', [])), '')
+            self._reply('本段暂未生成可采用的改写。' + ('原因：' + issue.rstrip('。') + '。' if issue else '')
+                        + '当前稿与已保存回答保留。可以补充或纠正具体事实，或回复“保留原文，继续下一段”。')
+        return 'limited' if outcome == 'limited' and not saved and not questions else 'completed'
 
     async def run(self):
         try:

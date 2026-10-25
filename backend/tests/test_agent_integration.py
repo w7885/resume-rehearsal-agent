@@ -215,7 +215,9 @@ class AgentIntegrationTests(unittest.TestCase):
         self.assertEqual(value['materials'][0]['role'],'resume')
         self.assertTrue(value['draft']['markdown'])
         self.assertEqual(value['messages'][-1]['assistant']['kind'],'change_question',value)
-        self.assertEqual(self.count('source_blocks'),2)
+        with db.database(self.path, read_only=True) as connection:
+            self.assertEqual(connection.execute('SELECT count(*) FROM source_blocks WHERE attachment_id IS NOT NULL').fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement' AND message_id IS NOT NULL").fetchone()[0], 2)
         self.assertEqual(self.count('suggestion_decisions'),0)
 
     def test_material_prompt_is_not_authority_after_another_upload(self):

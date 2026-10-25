@@ -105,6 +105,7 @@ class SessionContext(BaseModel):
     suggestions: list[Suggestion] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
     sources: list[SourceText] = Field(default_factory=list)
+    revision_feedback: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RepoPort(Protocol):

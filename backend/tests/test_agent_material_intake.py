@@ -66,6 +66,43 @@ class MaterialIntakeTests(unittest.TestCase):
         self.assertNotIn(events[-1]['payload']['outcome'], {'agent_failed', 'invalid_input', 'scope_violation', 'stale_state', 'source_not_found'}, events)
         return user, events
 
+    def test_positioned_docx_intake_finds_two_projects_and_keeps_non_experience_out(self):
+        from urllib.parse import urlencode
+        from app.resume_structure import block_kinds
+        from test_document_parser import word, positioned_box, page_section
+        session = self.chat()
+        host = self.app.state.agent_host
+        host.client_factory = lambda runtime, budget: Classifier(runtime)
+        host.classify_inputs, host.classify_output = [], classified
+        project = ('2025.10—2025.12  学生信息管理系统  开发成员\n使用Python编写查询功能。\n'
+                   '2026.03—2026.04  个人博客网站  个人开发者\n实现文章发布。')
+        raw = word('<w:p>' + positioned_box(project, 3000) + positioned_box('项目经历', 2000)
+                   + positioned_box('教育背景\n测试大学', 1000) + positioned_box('技能证书\n了解Python', 4000)
+                   + '</w:p>' + page_section())
+        query = urlencode({'name': '坐标简历.docx', 'role': 'unknown', 'requestId': 'upload', 'expectedStateRevision': self.version(session['sessionId'])})
+        response = self.request('POST', f"/api/sessions/{session['sessionId']}/materials?{query}", body=raw,
+                                headers={'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})
+        self.assertEqual(response['status'], 201, response)
+        self.assertFalse(response['json']['data']['draftCreated'])
+        self.turn(session)
+        value = self.conversation(session)
+        blocks = value['draft']['blocks']
+        kinds = block_kinds([b['markdown'] for b in blocks])
+        projects = [b for b, kind in zip(blocks, kinds) if kind == 'project']
+        self.assertEqual(len(projects), 2)
+        self.assertIn('学生信息管理系统', projects[0]['markdown'])
+        self.assertIn('个人博客网站', projects[1]['markdown'])
+        self.assertNotIn('测试大学', ''.join(b['markdown'] for b in projects))
+        self.assertNotIn('了解Python', ''.join(b['markdown'] for b in projects))
+        repo = Repository(self.path)
+        for block in blocks:
+            for ref in block['sourceRefs']:
+                source = repo.read_source_snapshot(RequestContext(session['sessionId']), ref['sourceId'], ref['sourceRevision'])
+                self.assertIn(ref['quote'], source['source']['text'])
+        material = value['materials'][0]
+        self.assertEqual(material['parseStatus'], 'partial')
+        self.assertEqual(repo.read_material_file(RequestContext(session['sessionId']), material['materialId'])['originalData'], raw)
+
     def test_clear_resume_and_jd_are_classified_from_text_without_type_question(self):
         session, host = self.setup_case(texts=(RESUME, JD))
         self.turn(session)

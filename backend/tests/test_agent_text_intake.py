@@ -73,14 +73,17 @@ class TextIntakeTests(unittest.TestCase):
         self.assertEqual(value['messages'][0]['content'], RESUME)
         self.assertEqual(value['messages'][-1]['assistant']['kind'], 'change_question')
         with db.database(self.path, read_only=True) as connection:
-            row = connection.execute('SELECT * FROM source_blocks').fetchone()
+            row = connection.execute("SELECT * FROM source_blocks WHERE role='resume'").fetchone()
             self.assertEqual(row['message_id'], user['messageId'])
             self.assertEqual(row['text'], RESUME)
+            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='resume'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement'").fetchone()[0], 2)
+        source_count = self.count('source_blocks')
         calls = len(self.host.test_calls)
         answer = next(m for m in value['messages'] if m['content'] == '将刚才那段文字作为待修改简历。')
         self.analyze(session, answer, 'replay-confirm')
         self.assertEqual(len(self.host.test_calls), calls)
-        self.assertEqual(self.count('source_blocks'), 1)
+        self.assertEqual(self.count('source_blocks'), source_count)
 
     def test_pending_image_does_not_hide_pasted_resume(self):
         session, user = self.prepared()

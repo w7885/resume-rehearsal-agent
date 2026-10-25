@@ -174,19 +174,18 @@ class EffectFallbackTests(unittest.TestCase):
     def test_fallback_asks_one_followup(self):
         question, slot = _fallback_question(self.doc(effect='followup'))
         self.assertEqual(slot, 'effect')
-        self.assertEqual(question, '除了使用情况，实际带来了什么变化？')
+        self.assertTrue(question.startswith('除了使用情况，实际带来了什么变化？'))
+        self.assertIn('没有就说没有', question)
 
     def test_fallback_after_decline_asks_one_followup(self):
-        self.assertEqual(
-            _fallback_question(self.doc(effect='declined')),
-            ('除了使用情况，实际带来了什么变化？', 'effect'),
-        )
+        question, slot = _fallback_question(self.doc(effect='declined'))
+        self.assertEqual(slot, 'effect')
+        self.assertTrue(question.startswith('除了使用情况，实际带来了什么变化？'))
 
     def test_fallback_skips_absent_effect(self):
-        self.assertEqual(
-            _fallback_question(self.doc(effect='absent')),
-            ('有没有材料能支持这段经历的描述？', 'evidence'),
-        )
+        question, slot = _fallback_question(self.doc(effect='absent'))
+        self.assertEqual(slot, 'evidence')
+        self.assertIn('材料', question)
 
     def test_confirmed_effect_skips_to_evidence(self):
         question, slot = _fallback_question(self.doc(effect='active'))

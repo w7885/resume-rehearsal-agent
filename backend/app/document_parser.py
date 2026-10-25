@@ -14,6 +14,7 @@ MAX_BLOCKS = 1000
 MAX_PAGES = 40
 MAX_XML = 8 * 1024 * 1024
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+WP = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}'
 
 
 def result(status, blocks=(), warnings=(), page_count=None):
@@ -76,7 +77,7 @@ def extract_docx(raw):
             for tag, code, message in [
                 ('drawing', 'images', '文档含图片或绘图，其中的文字尚未识别。'),
                 ('pict', 'images', '文档含图片或绘图，其中的文字尚未识别。'),
-                ('txbxContent', 'floating_text', '存在浮动文本框，未自动合并进正文，请核对原件。'),
+                ('txbxContent', 'floating_text', '文本框文字已提取；仅在坐标可靠时局部排序，复杂布局仍请核对原件。'),
                 ('ins', 'revisions', '文档含修订；提取插入文字并略去删除文字，请核对最终稿。'),
                 ('del', 'revisions', '文档含修订；提取插入文字并略去删除文字，请核对最终稿。'),
                 ('numPr', 'numbering', '自动列表编号未还原，段落文字保留，请核对编号。'),
@@ -89,30 +90,125 @@ def extract_docx(raw):
                 if int(columns.get(W + 'num', '1')) > 1:
                     c.warn('columns', '文档存在分栏，采用文档结构顺序，请核对阅读顺序。')
 
-            def paragraph_text(element):
-                if element.tag in {W + 'del', W + 'txbxContent', W + 'drawing', W + 'pict'}:
-                    return ''
+            def selected_children(element):
+                if element.tag.endswith('}AlternateContent'):
+                    c.warn('alternate_content', '文档含兼容性替代内容，只提取首个分支，请核对原件。')
+                    return list(element)[:1]
+                return element
+
+            sections = list(root.iter(W + 'sectPr'))
+            page_size = sections[0].find(W + 'pgSz') if len(sections) == 1 else None
+            page_height = int(page_size.get(W + 'h', '0')) * 635 if page_size is not None else 0
+            single_column = all(int(n.get(W + 'num', '1')) == 1 for n in root.iter(W + 'cols'))
+
+            def ordered_events(events, element, location):
+                boxes = [event for event in events if not isinstance(event, str)]
+                if len(boxes) < 2:
+                    return events
+                # A text-free anchoring paragraph belongs to one page. Never
+                # compare page-relative coordinates across separate paragraphs,
+                # sections, table cells, or normal flowing body text.
+                groups = {}
+                try:
+                    if (part != 'word/document.xml' or location or not single_column or not page_height
+                            or any(isinstance(e, str) and e.strip() for e in events)
+                            or any(n.tag in {W + 'br', W + 'lastRenderedPageBreak', W + 'pageBreakBefore', W + 'sectPr'} for n in element.iter())):
+                        raise ValueError('ambiguous page or flow')
+                    for box, anchor in boxes:
+                        if anchor is None:
+                            raise ValueError('unpositioned box')
+                        groups.setdefault(anchor, []).append((box, anchor))
+                    positioned = []
+                    horizontal_reference = None
+                    for anchor, members in groups.items():
+                        text_boxes = [box for box, _ in members if any((n.text or '').strip() for n in box.iter(W + 't'))]
+                        if not text_boxes:
+                            # Empty decorative boxes carry no text or ordering.
+                            continue
+                        if len(text_boxes) != 1 or anchor.get('simplePos', '0') not in {'0', 'false'}:
+                            raise ValueError('group needs internal layout')
+                        parents = {child: node for node in anchor.iter() for child in node}
+                        for node in anchor.iter():
+                            if node.get('rot', '0') != '0' or node.get('flipH') in {'1', 'true'} or node.get('flipV') in {'1', 'true'}:
+                                # xfrm belongs to spPr/grpSpPr; its owning shape
+                                # carries the text, while decorative siblings
+                                # may be rotated without rotating that text.
+                                owner = parents.get(parents.get(node, node), node)
+                                if any((t.text or '').strip() for t in owner.iter(W + 't')):
+                                    raise ValueError('rotated text')
+                        vertical, horizontal, extent = (anchor.find(WP + name) for name in ('positionV', 'positionH', 'extent'))
+                        if vertical is None or horizontal is None or extent is None:
+                            raise ValueError('missing position')
+                        reference = horizontal.get('relativeFrom')
+                        if vertical.get('relativeFrom') != 'page' or reference not in {'page', 'margin', 'column'}:
+                            raise ValueError('incomparable position')
+                        if horizontal_reference is not None and reference != horizontal_reference:
+                            raise ValueError('different horizontal origins')
+                        horizontal_reference = reference
+                        y = int(vertical.findtext(WP + 'posOffset'))
+                        x = int(horizontal.findtext(WP + 'posOffset'))
+                        width, height = int(extent.get('cx')), int(extent.get('cy'))
+                        if not (width > 0 and height > 0 and 0 <= y < y + height <= page_height):
+                            raise ValueError('outside page')
+                        positioned.append((y, x, width, members))
+                    # A shared horizontal lane excludes separate text columns.
+                    # It still permits a short left/right personal-info area.
+                    if len(positioned) < 2 or max(p[1] for p in positioned) >= min(p[1] + p[2] for p in positioned):
+                        raise ValueError('separate columns or insufficient positions')
+                except (ValueError, TypeError):
+                    c.warn('floating_order_unresolved', '文本框坐标、分页或分栏无法可靠比较，保留结构顺序；标题与正文归属需核对。')
+                    return events
+                c.warn('floating_order', '同一锚定段落的文本框已按页面纵坐标排序；框内顺序保留，仍请核对原件。')
+                return [event for _, _, _, members in sorted(positioned, key=lambda p: (p[0], p[1])) for event in members]
+
+            def paragraph_events(element, graphic=False, anchor=None):
+                # Text boxes are separate paragraphs, never concatenated into
+                # their anchoring paragraph. Only one compatibility branch is
+                # visited; identical real paragraphs must not be deduplicated.
+                if element.tag == W + 'del':
+                    return
+                if element.tag == W + 'txbxContent':
+                    yield (element, anchor)
+                    return
+                if element.tag == WP + 'anchor':
+                    anchor = element
+                graphic = graphic or element.tag in {W + 'drawing', W + 'pict'}
                 if element.tag == W + 't':
-                    return element.text or ''
+                    if not graphic:
+                        yield element.text or ''
+                    return
                 if element.tag in {W + 'br', W + 'cr'}:
-                    return '\n'
+                    if not graphic:
+                        yield '\n'
+                    return
                 if element.tag == W + 'tab':
-                    return '\t'
-                return ''.join(paragraph_text(child) for child in element)
+                    if not graphic:
+                        yield '\t'
+                    return
+                for child in selected_children(element):
+                    yield from paragraph_events(child, graphic, anchor)
 
             def walk(element, location=None):
                 nonlocal paragraph, table
-                if element.tag.endswith('}AlternateContent'):
-                    c.warn('alternate_content', '文档含兼容性替代内容，只提取首个分支，请核对原件。')
-                    if len(element):
-                        walk(element[0], location)
-                    return
-                if element.tag in {W + 'del', W + 'txbxContent', W + 'drawing', W + 'pict'}:
+                if element.tag == W + 'del':
                     return
                 if element.tag == W + 'p':
-                    paragraph += 1
-                    text = paragraph_text(element)
-                    c.add(text, {'paragraph': paragraph, 'part': part, **(location or {})})
+                    text = []
+                    def flush():
+                        nonlocal paragraph
+                        value = ''.join(text)
+                        text.clear()
+                        if value.strip():
+                            paragraph += 1
+                            c.add(value, {'paragraph': paragraph, 'part': part, **(location or {})})
+                    events = ordered_events(list(paragraph_events(element)), element, location)
+                    for event in events:
+                        if isinstance(event, str):
+                            text.append(event)
+                        else:
+                            flush()
+                            walk(event[0], location)
+                    flush()
                     return
                 if element.tag == W + 'tbl':
                     table += 1
@@ -121,7 +217,7 @@ def extract_docx(raw):
                         for column_index, cell in enumerate(row.findall(W + 'tc'), 1):
                             walk(cell, {'table': table_id, 'row': row_index, 'column': column_index})
                     return
-                for child in element:
+                for child in selected_children(element):
                     walk(child, location)
             walk(root)
     return c.finish()
