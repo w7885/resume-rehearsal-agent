@@ -1,0 +1,78 @@
+{
+  "fixtureVersion": "0.1",
+  "contractVersion": "0.2",
+  "synthetic": true,
+  "description": "A-T02 接口预期示例，结合 minimal-resume-case.json 核对；未调用实际服务、数据库、模型或 MCP。context 由 Host 绑定，不是模型输入。",
+  "cases": [
+    {
+      "caseId": "exchange-search-hit",
+      "modelToolName": "search_evidence",
+      "serviceMethod": "searchEvidence",
+      "context": {"sessionId": "session-demo-001"},
+      "input": {"query": "8 条同学反馈", "limit": 5},
+      "expectedResponse": {
+        "ok": true,
+        "data": [
+          {
+            "sourceId": "source-supplement-001",
+            "sessionId": "session-demo-001",
+            "sourceRevision": 1,
+            "role": "supplement",
+            "origin": {"kind": "message", "messageId": "message-user-001"},
+            "text": "我整理了 8 条同学反馈，把重复意见合并成 5 项需求；未做 API 集成，没有上线数据。"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "exchange-search-empty",
+      "modelToolName": "search_evidence",
+      "serviceMethod": "searchEvidence",
+      "context": {"sessionId": "session-demo-001"},
+      "input": {"query": "客户交付"},
+      "expectedResponse": {"ok": true, "data": []}
+    },
+    {
+      "caseId": "exchange-search-invalid",
+      "modelToolName": "search_evidence",
+      "serviceMethod": "searchEvidence",
+      "context": {"sessionId": "session-demo-001"},
+      "input": {"query": "   "},
+      "expectedResponse": {
+        "ok": false,
+        "error": {"code": "invalid_input", "message": "查询关键词不能为空。", "recoverable": true}
+      }
+    },
+    {
+      "caseId": "exchange-read-one",
+      "modelToolName": "read_material",
+      "serviceMethod": "readMaterial",
+      "context": {"sessionId": "session-demo-001"},
+      "input": {"sourceIds": ["source-resume-001"]},
+      "expectedResponse": {
+        "ok": true,
+        "data": [
+          {
+            "sourceId": "source-resume-001",
+            "sessionId": "session-demo-001",
+            "sourceRevision": 1,
+            "role": "resume",
+            "origin": {"kind": "material", "materialId": "material-resume-001", "lineStart": 1, "lineEnd": 1},
+            "text": "三人团队开发校园报名工具，我负责需求整理，协助页面开发。"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "exchange-read-missing",
+      "modelToolName": "read_material",
+      "serviceMethod": "readMaterial",
+      "context": {"sessionId": "session-demo-001"},
+      "input": {"sourceIds": ["source-99"]},
+      "expectedResponse": {
+        "ok": false,
+        "error": {"code": "source_not_found", "message": "没有找到请求的来源。", "recoverable": true}
+      }
+    }
+  ]
+}

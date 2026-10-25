@@ -8,6 +8,12 @@ from app.repository import RepositoryError
 SECTION = re.compile(r'^(?:教育(?:经历|背景)|项目(?:经历|经验)|个人项目|个人经历|工作(?:经历|经验)|实习(?:经历|经验)|校园经历|实践经历|技能(?:证书|清单)?|专业技能|个人技能|获奖(?:经历|情况)|荣誉奖项|自我评价|个人总结|求职意向|个人信息|联系方式|Education|Projects?|Experience|Skills|Summary)\s*[:：]?$', re.I)
 PROJECT = re.compile(r'^(?:项目(?:经历|经验)?\s*[一二三四五六七八九十0-9]+|第[一二三四五六七八九十0-9]+个项目)(?:\s*[:：、.．｜|—-].*|\s+.*)?$')
 DATE = re.compile(r'^\d{4}[.年/-]\d{1,2}.{0,20}[—–~～-].{0,20}[｜|]')
+# Extracted PDFs often use whitespace instead of "｜": "2025.10—2025.12  项目名  角色".
+ENTRY_DATE = re.compile(
+    r'^\d{4}\s*[.年/-]\s*\d{1,2}\s*月?\s*(?:[—–~～-]|至)\s*'
+    r'(?:\d{4}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)',
+    re.I,
+)
 
 # Section label -> interview kind. None means frozen: parsed, editable, never interviewed.
 _SECTION_KIND = {
@@ -73,7 +79,8 @@ def block_kinds(markdowns):
         recognized, kind = section_kind(label)
         if recognized:
             seen = True
-            section = kind
+            # "frozen" keeps later blocks in 教育/技能 out of the interview order.
+            section = kind if kind is not None else 'frozen'
             kinds.append(kind if kind is not None and len(lines) > 1 else None)
             continue
         prefix = inline_kind(label)
@@ -88,9 +95,9 @@ def block_kinds(markdowns):
             kinds.append('project' if len(lines) > 1 else None)
             continue
         if section is not None:
-            kinds.append(section)
+            kinds.append(None if section == 'frozen' else section)
             continue
-        if (DATE.match(label) or (
+        if (ENTRY_DATE.match(label) or (
             re.match(r'^\s{0,3}#{1,6}\s+', first) and _NAMED_ENTRY.search(label)
         )) and len(lines) > 1:
             seen = True
@@ -118,7 +125,7 @@ def split_resume(text):
             label = heading(line)
             section = bool(SECTION.fullmatch(label))
             project = bool(PROJECT.fullmatch(label))
-            dated_entry = in_experience and bool(DATE.match(label))
+            dated_entry = in_experience and bool(ENTRY_DATE.match(label))
             named_entry = in_experience and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(_NAMED_ENTRY.search(label))
             if (section or project or dated_entry or named_entry) and offset and text[starts[-1]:offset].strip():
                 starts.append(offset)

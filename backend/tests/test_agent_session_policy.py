@@ -4,6 +4,7 @@ import unittest
 from app.agent.loop import run_loop
 from app.agent.memory import (
     ExperienceDoc,
+    Fact,
     Question,
     SessionDoc,
     load_experience,
@@ -48,7 +49,7 @@ def make_repo(
     )
 
 
-def seed_experience(store, *, streak=0, asked=None, slot="result") -> None:
+def seed_experience(store, *, streak=0, asked=None, slot="result", answered=False, effect=False) -> None:
     doc = ExperienceDoc(
         experience_id="exp_01",
         seq=1,
@@ -68,6 +69,16 @@ def seed_experience(store, *, streak=0, asked=None, slot="result") -> None:
                 text=asked,
                 fingerprint=question_fingerprint(asked),
                 round=1,
+                outcome="answered" if answered else "asked",
+            )
+        )
+    if effect:
+        doc.facts.append(
+            Fact(
+                id="f-effect",
+                slot="effect",
+                statement="老师录入时间从半小时缩短到五分钟",
+                created_at="2026-01-01T00:00:00Z",
             )
         )
     save_experience(store, SESSION, doc, None)
@@ -212,6 +223,7 @@ class GoalTests(unittest.TestCase):
     def test_goal_answer_is_captured_and_run_continues(self):
         repo, store = make_repo(direction=""), InMemoryStateStore()
         seed_session(store, goal_asked=True, awaiting_goal=True)
+        seed_experience(store, asked="你负责哪部分？", slot="responsibility", answered=True, effect=True)
         propose = {
             "action": "tool",
             "tool": "propose_change",
@@ -307,6 +319,35 @@ class BrakeTests(unittest.TestCase):
         self.assertIn("## 追问刹车", text)
         self.assertIn("禁止 ask_user", text)
 
+    def test_context_explains_absent_effect(self):
+        from app.agent.context import assemble_context
+
+        repo = make_repo()
+        ctx = repo.get_session_context(SESSION)
+        doc = ExperienceDoc(
+            experience_id="exp_01",
+            seq=1,
+            kind="project",
+            title="校园二手交易平台",
+            raw_text=MARKDOWN,
+            block_id="exp_01",
+            block_revision=1,
+        )
+        doc.questions.extend([
+            Question(
+                id='q1', slot='effect', text='带来了哪些实际变化？',
+                fingerprint='f1', outcome='answered',
+            ),
+            Question(
+                id='q2', slot='effect', text='还有别的变化吗？',
+                fingerprint='f2', outcome='declined',
+            ),
+        ])
+        text = assemble_context(
+            ctx, [doc], {"exp_01": "interviewing"}, "exp_01"
+        )
+        self.assertIn("用户已说明没有可确认的实际效果", text)
+
 
 class DuplicateToolTests(unittest.TestCase):
     def test_duplicate_tool_call_is_rejected(self):
@@ -342,7 +383,7 @@ class DuplicateToolTests(unittest.TestCase):
 class NormalizeTests(unittest.TestCase):
     def test_flat_propose_change_is_normalized(self):
         repo, store = make_repo(), InMemoryStateStore()
-        seed_experience(store)
+        seed_experience(store, asked="你负责哪部分？", slot="responsibility", answered=True, effect=True)
         flat = {
             "action": "propose_change",
             "operation": "replace",

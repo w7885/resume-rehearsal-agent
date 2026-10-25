@@ -1,0 +1,84 @@
+{
+  "fixtureVersion": "0.1",
+  "synthetic": true,
+  "description": "预设模拟事件，未调用模型、未执行真实工具，仅供界面与事件结构联调。对应 minimal-resume-case.json 的已分类状态。",
+  "events": [
+    {
+      "schemaVersion": "0.1",
+      "sessionId": "session-demo-001",
+      "runId": "run-mock-001",
+      "generation": 1,
+      "sequence": 1,
+      "type": "progress",
+      "mode": "mock",
+      "payload": {
+        "stage": "analyzing",
+        "message": "模拟：检查已提供的项目经历与用户补充。"
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "sessionId": "session-demo-001",
+      "runId": "run-mock-001",
+      "generation": 1,
+      "sequence": 2,
+      "type": "diagnosis",
+      "mode": "mock",
+      "payload": {
+        "issues": [
+          {
+            "summary": "项目描述未体现已提供的反馈整理行动。",
+            "reason": "补充信息足以进行有限改写，保留辅助开发职责。",
+            "sourceIds": ["source-resume-001", "source-supplement-001"]
+          },
+          {
+            "summary": "目标 JD 提到的 API 集成目前缺少实际经历。",
+            "reason": "用户明确未做，不能通过润色补齐。",
+            "sourceIds": ["source-jd-001", "source-supplement-001"]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "sessionId": "session-demo-001",
+      "runId": "run-mock-001",
+      "generation": 1,
+      "sequence": 3,
+      "type": "tool_progress",
+      "mode": "mock",
+      "payload": {
+        "toolName": "search_evidence",
+        "phase": "completed",
+        "message": "模拟检索返回用户补充；此事件不是实际工具调用证据。",
+        "sourceIds": ["source-supplement-001"]
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "sessionId": "session-demo-001",
+      "runId": "run-mock-001",
+      "generation": 1,
+      "sequence": 4,
+      "type": "suggestion",
+      "mode": "mock",
+      "payload": {
+        "suggestionId": "suggestion-demo-001"
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "sessionId": "session-demo-001",
+      "runId": "run-mock-001",
+      "generation": 1,
+      "sequence": 5,
+      "type": "done",
+      "mode": "mock",
+      "payload": {
+        "outcome": "waiting_user",
+        "summary": "模拟建议已备，等待用户接受、拒绝或要求调整；正式稿仍保持原文。",
+        "unresolvedIssueIds": ["issue-api-gap-001"]
+      }
+    }
+  ]
+}

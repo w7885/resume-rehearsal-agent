@@ -24,23 +24,47 @@ class ProactiveClient(integration.FakeClient):
 
     async def decide(self, **kwargs):
         self.steps += 1
-        if self.steps > 1:
-            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'})
         block_id = re.search(r'段落编号（blockId）：(\S+)', kwargs['user'])[1]
         host = self.runtime.host
-        host.phases.append(block_id)
+        fresh = not self.answered(kwargs['user'])
+        if fresh:
+            host.phases.append(block_id)
         mode = host.modes.get(block_id, 'change')
         if mode == 'fail':
             raise RuntimeError('scripted next-section failure')
         if mode == 'budget':
             raise LLMError('budget_exhausted', 'scripted insufficient budget', False)
-        if mode == 'question':
-            return SimpleNamespace(data={'action': 'ask_user', 'message': '你在项目二测试中具体执行了哪项测试？', 'slot': 'responsibility', 'related_source_ids': []})
-        if mode == 'nochange':
-            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '现有表达清楚，保留原文。'})
+        if fresh:
+            message = '你在项目二测试中具体执行了哪项测试？' if mode == 'question' else '这段经历中，你本人负责哪部分？'
+            return SimpleNamespace(data={'action': 'ask_user', 'message': message, 'slot': 'responsibility', 'related_source_ids': [], 'rationale': '先确认个人职责'})
+        if mode == 'noeffect':
+            if '这段经历上线或交付后' not in kwargs['user']:
+                return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+            if '没上线也可以' not in kwargs['user']:
+                return SimpleNamespace(data={'action': 'ask_user', 'message': '没上线也可以，这件事有没有让流程或结果发生变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认定性变化'})
+            if not self.proposed:
+                self.proposed = True
+                ctx = self.runtime.repo.get_session_context(self.runtime.context)
+                block = next(b for b in ctx['draft']['blocks'] if b['blockId'] == block_id)
+                ref = block['sourceRefs'][0]
+                return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
+                    'operation': 'replace', 'target': block_id, 'before': block['markdown'],
+                    'after': block['markdown'].replace('参与', '协助'), 'reason': '梳理原有职责', 'gaps': [],
+                    'source_refs': [{'source_id': ref['sourceId'], 'source_revision': ref['sourceRevision'], 'quote': ref['quote']}]}})
+            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'})
         ctx = self.runtime.repo.get_session_context(self.runtime.context)
         block = next(b for b in ctx['draft']['blocks'] if b['blockId'] == block_id)
+        if '[effect]' not in kwargs['user']:
+            if '这段经历上线或交付后' in kwargs['user']:
+                return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                    'experience_id': block_id, 'facts': [{'slot': 'effect', 'statement': '老师录入时间从半小时缩短到五分钟'}]}, 'rationale': '记录实际效果'})
+            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+        if self.proposed:
+            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'})
+        if mode == 'nochange':
+            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '现有表达清楚，保留原文。'})
         ref = block['sourceRefs'][0]
+        self.proposed = True
         return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
             'operation': 'replace', 'target': block_id, 'before': block['markdown'],
             'after': block['markdown'].replace('参与', '协助'), 'reason': '梳理原有测试职责', 'gaps': [],
@@ -77,15 +101,32 @@ class ProactiveFlowTests(unittest.TestCase):
         user = self.send(session, text, request_id=key)
         return user, self.analyze(session, user, key)
 
+    def drive(self, session, text, key):
+        user, events = self.turn(session, text, key)
+        for attempt in range(3):
+            last = self.conversation(session)['messages'][-1]
+            if (last.get('assistant') or {}).get('kind') != 'question':
+                break
+            reply = '老师录入时间从半小时缩短到五分钟。' if '实际变化' in last['content'] else '我负责测试用例执行与结果记录。'
+            user, events = self.turn(session, reply, f'{key}-{attempt}')
+        return user, events
+
+    def answer(self, session, key):
+        return self.drive(session, '我负责测试用例执行与结果记录。', key)
+
+    def start(self, session, key):
+        return self.drive(session, '继续', key)
+
     def pending(self, session):
         return self.app.state.business_service.repository.get_session_context(RequestContext(session['sessionId']))['suggestions']
 
     def test_accept_advances_once_without_implicitly_applying_next_and_replays_once(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.assertEqual(self.conversation(session)['draft']['markdown'], BODY)
         answer, events = self.turn(session, '是', 'yes')
         self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user', events)
+        self.answer(session, 'next-answer')
         self.assertEqual(host.phases, ids[:2])
         draft = self.conversation(session)['draft']['blocks']
         self.assertIn('协助项目一', draft[0]['markdown'])
@@ -101,7 +142,7 @@ class ProactiveFlowTests(unittest.TestCase):
         session, host, ids = self.ready(body, expected=4)
         kinds = block_kinds([b['markdown'] for b in self.conversation(session)['draft']['blocks']])
         self.assertEqual(kinds, [None, None, 'project', None])
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         with db.database(self.path) as c:
             docs = [json.loads(row[0]) for row in c.execute("SELECT doc_json FROM agent_state WHERE scope='experience'")]
         self.assertEqual([(d['kind'], d['title']) for d in docs], [('project', '参与项目一测试。')])
@@ -127,9 +168,11 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_each_accept_moves_forward_then_summarizes_without_extra_call(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         for i in range(3):
             self.turn(session, '是', f'yes-{i}')
+            if i < 2:
+                self.answer(session, f'answer-{i}')
         value = self.conversation(session)
         self.assertEqual(host.phases, ids)
         self.assertEqual(self.pending(session), [])
@@ -140,7 +183,7 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_pending_continue_and_pause_neither_accept_nor_generate(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.turn(session, '暂停', 'stop')
         self.assertIn('已暂停', self.conversation(session)['messages'][-1]['content'])
         self.turn(session, '继续', 'pending-continue')
@@ -153,19 +196,19 @@ class ProactiveFlowTests(unittest.TestCase):
     def test_specific_question_keeps_next_focus_until_answered(self):
         session, host, ids = self.ready()
         host.modes[ids[1]] = 'question'
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.turn(session, '是', 'yes')
         self.assertIn('具体执行了哪项测试', self.conversation(session)['messages'][-1]['content'])
         self.assertEqual(self.pending(session), [])
         host.modes[ids[1]] = 'change'
-        self.turn(session, '继续', 'resume-question')
-        self.assertEqual(host.phases, [ids[0], ids[1], ids[1]])
+        self.drive(session, '继续', 'resume-question')
+        self.assertEqual(host.phases, [ids[0], ids[1]])
         self.assertEqual(self.pending(session)[0]['target']['blockId'], ids[1])
 
     def test_nochange_preserves_original_and_names_next_section(self):
         session, host, ids = self.ready()
         host.modes[ids[0]] = 'nochange'
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.assertEqual(self.conversation(session)['draft']['markdown'], BODY)
         self.assertIn('项目经历2', self.conversation(session)['messages'][-1]['content'])
         self.turn(session, '继续', 'next')
@@ -175,7 +218,7 @@ class ProactiveFlowTests(unittest.TestCase):
         session, host, ids = self.ready()
         self.turn(session, '请只优化第二个项目，其他正文保持不变。', 'scoped')
         if not self.pending(session):
-            self.turn(session, '继续', 'scoped-analysis')
+            self.start(session, 'scoped-analysis')
         self.turn(session, '是', 'yes')
         self.assertEqual(host.phases, [ids[1]])
         self.assertIn('指定范围已处理完', self.conversation(session)['messages'][-1]['content'])
@@ -183,7 +226,7 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_next_failure_keeps_acceptance_and_retry_skips_saved_section(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         host.modes[ids[1]] = 'fail'
         self.turn(session, '是', 'yes')
         value = self.conversation(session)
@@ -196,7 +239,7 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_next_budget_failure_keeps_accepted_text(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         host.modes[ids[1]] = 'budget'
         self.turn(session, '是', 'yes')
         value = self.conversation(session)
@@ -207,7 +250,7 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_restart_keeps_accepted_progress_and_pending_next(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.turn(session, '是', 'yes')
         app = create_app(self.path)
         lifecycle = app.router.lifespan_context(app)
@@ -217,23 +260,27 @@ class ProactiveFlowTests(unittest.TestCase):
         new_host = app.state.agent_host
         new_host.phases, new_host.modes = [], {}
         new_host.client_factory = lambda runtime, budget: ProactiveClient(runtime)
+        self.answer(session, 'restart-answer')
         self.turn(session, '是', 'restart-yes')
         self.assertEqual(new_host.phases, ids[2:])
         self.assertEqual(self.count('suggestion_decisions'), 2)
 
     def test_legacy_acceptance_without_progress_is_not_rewritten(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         self.turn(session, '是', 'yes')
         with db.database(self.path) as connection:
             connection.execute("DELETE FROM agent_state WHERE key LIKE 'host-progress:%'")
-        self.turn(session, '是', 'legacy-next')
-        self.assertEqual(host.phases, ids)
-        self.assertEqual(self.count('suggestion_decisions'), 2)
+        self.start(session, 'legacy-next')
+        draft = self.conversation(session)['draft']['markdown']
+        self.assertIn('协助项目一', draft)
+        self.assertIn('参与项目二', draft)
+        self.assertEqual(host.phases, ids[:2])
+        self.assertEqual(self.count('suggestion_decisions'), 1)
 
     def test_reject_keeps_original_and_continue_moves_to_next(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         host.client_factory = lambda runtime, budget: ProactiveClient(runtime, answer='reject')
         self.turn(session, '拒绝', 'reject')
         self.assertEqual(self.conversation(session)['draft']['markdown'], BODY)
@@ -243,7 +290,7 @@ class ProactiveFlowTests(unittest.TestCase):
 
     def test_zero_budget_does_not_call_model_after_accepting(self):
         session, host, ids = self.ready()
-        self.turn(session, '继续', 'first')
+        self.start(session, 'first')
         original = ProjectBudget.status
         def exhausted(budget):
             return {**original(budget), 'remainingCents': 0}
@@ -282,6 +329,20 @@ class ProactiveFlowTests(unittest.TestCase):
         self.turn(session, '继续', 'changed-source')
         self.assertEqual(host.phases, ids[:1])
         self.assertIn('来源', self.conversation(session)['messages'][-1]['content'])
+
+    def test_no_effect_still_produces_an_honest_suggestion(self):
+        session, host, ids = self.ready()
+        host.modes[ids[0]] = 'noeffect'
+        self.turn(session, '继续', 'first')
+        self.turn(session, '我负责测试用例执行与结果记录。', 'resp')
+        self.turn(session, '没有上线，只在本地运行。', 'effect-1')
+        self.assertEqual(self.pending(session), [])
+        self.turn(session, '确实没有别的变化。', 'effect-2')
+        pending = self.pending(session)
+        self.assertEqual([p['target']['blockId'] for p in pending], ids[:1])
+        self.assertIn('协助项目一', pending[0]['after'])
+        self.assertNotIn('提升', pending[0]['after'])
+        self.assertNotIn('效率', pending[0]['after'])
 
 
 if __name__ == '__main__':

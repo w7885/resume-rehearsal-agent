@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+from app.agent.memory import ExperienceDoc, Slot
+from app.agent.ports import Phase, SessionContext
+
+_SLOT_ORDER: list[Slot] = [
+    "responsibility",
+    "context",
+    "action",
+    "result",
+    "effect",
+    "evidence",
+    "tech",
+]
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _focus_block(doc: ExperienceDoc) -> str:
+    lines = [
+        f"类型：{doc.kind}",
+        f"标题：{doc.title}",
+        f"角色：{doc.role or '未填写'}",
+        f"时间：{doc.period or '未填写'}",
+        f"段落编号（blockId）：{doc.block_id or doc.experience_id}",
+        f"段落版本（blockRevision）：{doc.block_revision}",
+        f"原文（整段，before 必须逐字复制；最多 4000 字）：\n{_clip(doc.raw_text, 4000)}",
+    ]
+    if doc.source_ids:
+        lines.append(f"来源编号：{', '.join(doc.source_ids)}")
+    return "\n".join(lines)
+
+
+def _facts_block(doc: ExperienceDoc) -> str:
+    active = [fact for fact in doc.facts if fact.status == "active"]
+    if not active:
+        return "（暂无）"
+    lines: list[str] = []
+    for slot in _SLOT_ORDER:
+        slot_facts = [fact for fact in active if fact.slot == slot]
+        slot_facts.sort(key=lambda fact: fact.created_at)
+        for fact in slot_facts[-8:]:
+            lines.append(f"- [{slot}] {fact.statement}")
+    return "\n".join(lines) if lines else "（暂无）"
+
+
+def _questions_block(doc: ExperienceDoc) -> str:
+    lines: list[str] = []
+    pending = [q for q in doc.questions if q.outcome == "asked"]
+    for question in pending[-3:]:
+        lines.append(f"- 未答：{question.text}")
+    recent = [q for q in doc.questions if q.outcome != "asked"][-3:]
+    for question in recent:
+        lines.append(f"- 已问（{question.outcome}）：{question.text}")
+    if doc.declined:
+        lines.append(f"- 已拒绝的维度：{', '.join(doc.declined)}")
+    return "\n".join(lines) if lines else "（暂无）"
+
+
+def _sources_block(ctx: SessionContext, doc: ExperienceDoc) -> str:
+    ids = set(doc.source_ids)
+    rows = [
+        source
+        for source in ctx.sources
+        if source.source_id in ids and source.kind in ("resume", "supplement")
+    ]
+    if not rows:
+        return "（暂无）"
+    return "\n\n".join(
+        f"[{source.source_id}]（{source.kind}）\n{_clip(source.text, 800)}"
+        for source in rows[:6]
+    )
+
+
+def _messages_block(ctx: SessionContext) -> str:
+    if not ctx.messages:
+        return "（暂无）"
+    lines = []
+    for message in ctx.messages[-3:]:
+        role = "用户" if message.role == "user" else "助手"
+        lines.append(f"{role}：{_clip(message.text, 400)}")
+    return "\n".join(lines)
+
+
+def assemble_context(
+    ctx: SessionContext,
+    experiences: list[ExperienceDoc],
+    phases: dict[str, Phase],
+    focus_experience_id: str | None,
+    session_goal: str = "",
+) -> str:
+    by_id = {doc.experience_id: doc for doc in experiences}
+    focus = by_id.get(focus_experience_id or "")
+
+    experience_lines = []
+    for experience_id in ctx.session.experience_order:
+        doc = by_id.get(experience_id)
+        if doc is None:
+            continue
+        phase = phases.get(experience_id, "pending")
+        experience_lines.append(
+            f"- {doc.seq}. {doc.kind}｜{doc.title}｜"
+            f"experience_id={doc.experience_id}｜{phase}｜round={doc.round}"
+        )
+    experience_block = "\n".join(experience_lines) or "（暂无）"
+
+    brake = ""
+    if focus is not None and focus.no_fact_streak >= 2:
+        brake = (
+            "\n\n## 追问刹车\n"
+            "连续 2 轮没有新增事实。本轮禁止 ask_user，只能 propose_change 或 finish。"
+        )
+
+    draft_block = "（暂无）"
+    if focus is not None:
+        for block in ctx.draft_blocks:
+            if block.experience_id == focus.experience_id:
+                draft_block = _clip(block.markdown, 4000)
+                break
+
+    sections = [
+        f"## 会话\n方向：{ctx.session.direction or '未填写'}\n"
+        f"目标：{session_goal or (ctx.session.direction if ctx.session.direction_confirmed else '未确认')}\n"
+        f"JD 关键词：{', '.join(ctx.session.jd_keywords) or '未填写'}\n"
+        f"摘要：{_clip(ctx.session.summary, 300) or '（暂无）'}",
+        f"## 经历清单\n{experience_block}",
+    ]
+    jd = [f'[{source.source_id}，版本 {source.source_revision}]\n{source.text}' for source in ctx.sources if source.kind == 'jd']
+    if jd:
+        sections.append('## 目标岗位描述（仅用于匹配要求，不能当作用户经历）\n' + _clip('\n\n'.join(jd), 6000))
+    if focus is None:
+        sections.append("## 当前焦点\n（未指定）")
+    else:
+        sections.append(
+            f"## 当前焦点\n{_focus_block(focus)}\n\n"
+            f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n\n"
+            f"## 已确认事实\n{_facts_block(focus)}\n\n"
+            f"## 问题与缺口\n{_questions_block(focus)}\n\n"
+            f"## 最近对话\n{_messages_block(ctx)}\n\n"
+            f"## 当前稿\n{draft_block}{brake}"
+        )
+    return "\n\n".join(sections)

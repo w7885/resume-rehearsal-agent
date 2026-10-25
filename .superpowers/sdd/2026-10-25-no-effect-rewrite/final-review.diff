@@ -1,0 +1,698 @@
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/context.py backend/app/agent/context.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/context.py	2026-10-25 13:18:57.860526500 +0800
++++ backend/app/agent/context.py	2026-10-25 13:23:41.874887600 +0800
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from app.agent.memory import ExperienceDoc, Slot
++from app.agent.memory import ExperienceDoc, Slot, effect_state
+ from app.agent.ports import Phase, SessionContext
+ 
+ _SLOT_ORDER: list[Slot] = [
+@@ -59,6 +59,22 @@
+     return "\n".join(lines) if lines else "（暂无）"
+ 
+ 
++def _effect_block(doc: ExperienceDoc) -> str:
++    state = effect_state(doc)
++    if state == "confirmed":
++        statement = next(
++            fact.statement
++            for fact in doc.facts
++            if fact.slot == "effect" and fact.status == "active"
++        )
++        return f"已确认：{_clip(statement, 200)}"
++    if state == "followup":
++        return "已追问 1 次，仍待具体变化（最多再问 1 次）"
++    if state == "absent":
++        return "用户已说明没有可确认的实际效果：照实改写，不写效果类结论"
++    return "尚未询问"
++
++
+ def _sources_block(ctx: SessionContext, doc: ExperienceDoc) -> str:
+     ids = set(doc.source_ids)
+     rows = [
+@@ -137,6 +153,7 @@
+             f"## 当前焦点\n{_focus_block(focus)}\n\n"
+             f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n\n"
+             f"## 已确认事实\n{_facts_block(focus)}\n\n"
++            f"## 实际效果\n{_effect_block(focus)}\n\n"
+             f"## 问题与缺口\n{_questions_block(focus)}\n\n"
+             f"## 最近对话\n{_messages_block(ctx)}\n\n"
+             f"## 当前稿\n{draft_block}{brake}"
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/guard.py backend/app/agent/guard.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/guard.py	2026-10-25 13:18:57.754991000 +0800
++++ backend/app/agent/guard.py	2026-10-25 13:21:14.798067700 +0800
+@@ -19,9 +19,10 @@
+ 
+ MAX_STEPS = 8
+ MAX_ROUNDS = 6
+-MISSING_EFFECT_TEXT = (
+-    "这段暂时缺少可确认的实际效果，先不改写。"
+-    "补充效果后直接发给我；要换段可以指出段落序号（如“第 2 段”）。"
++EFFECT_EXHAUSTED_TEXT = "效果已经问过两次，请基于职责、动作和方法照实改写。"
++_EFFECT_CLAIMS = (
++    "提升", "提高", "降低", "减少", "节省", "加快", "缩短",
++    "改善", "避免", "替代", "方便", "效率",
+ )
+ 
+ _QUESTION_WORDS = re.compile(
+@@ -47,6 +48,16 @@
+ _ROLE_WORDS = ("负责人", "主管", "主导", "架构师", "leader", "牵头", "经理")
+ _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
+ _CN_NUMBER = re.compile(r"[一二三四五六七八九十百千万两]+(?=[个项条次人页年月天%])")
++
++
++def _cn_numbers(text: str):
++    for match in _CN_NUMBER.finditer(text):
++        tail = text[match.end() : match.end() + 1]
++        if match.group() == "一" and tail in ("个", "次", "人"):
++            continue
++        yield match.group()
++
++
+ _PROPER_NOUN = re.compile(r"[A-Za-z][A-Za-z0-9+.#-]{2,}")
+ 
+ 
+@@ -130,7 +141,11 @@
+         if any(question_similarity(q.text, text) >= 0.6 for q in recent):
+             return Violation("question_repeat", "最近已经问过类似问题")
+         if step.slot is not None:
+-            if step.slot in state.focus_doc.declined:
++            exempt_effect_followup = (
++                step.slot == "effect"
++                and effect_state(state.focus_doc) == "followup"
++            )
++            if step.slot in state.focus_doc.declined and not exempt_effect_followup:
+                 return Violation("question_declined", "该维度已被用户拒绝")
+             if step.slot == "confirm":
+                 return None
+@@ -186,11 +201,11 @@
+ 
+     evidence = _personal_change_evidence(args, state)
+     compact = re.sub(r"\s+", "", evidence)
+-    for number in _NUMBER.findall(args.after) + _CN_NUMBER.findall(args.after):
++    for number in _NUMBER.findall(args.after) + list(_cn_numbers(args.after)):
+         if number not in compact:
+             return GuardResult(
+                 violation=Violation(
+-                    "unsupported_number", f"数字 {number} 没有依据", False
++                    "unsupported_number", f"数字 {number} 没有依据", True
+                 )
+             )
+ 
+@@ -246,7 +261,7 @@
+             if effect_questions >= 2:
+                 return GuardResult(
+                     violation=Violation(
+-                        "missing_effect", MISSING_EFFECT_TEXT, False
++                        "effect_exhausted", EFFECT_EXHAUSTED_TEXT, True
+                     )
+                 )
+         violation = _question_violation(decision, state)
+@@ -312,17 +327,11 @@
+                     )
+                 )
+             effect = effect_state(state.focus_doc)
+-            if effect == "blocked":
+-                return GuardResult(
+-                    violation=Violation(
+-                        "missing_effect", MISSING_EFFECT_TEXT, False
+-                    )
+-                )
+             if effect == "followup":
+                 return GuardResult(
+                     violation=Violation(
+                         "ask_effect_followup",
+-                        "用户只说明了使用情况，请再追问一次具体变化；仍没有就 finish(limited)。",
++                        "用户只说明了使用情况，请再追问一次具体变化；仍没有就照实改写。",
+                         True,
+                     )
+                 )
+@@ -334,6 +343,25 @@
+                         True,
+                     )
+                 )
++            if effect == "absent":
++                anchor = (
++                    args.before
++                    if args.before is not None
++                    else state.focus_block_markdown
++                )
++                claims = [
++                    word
++                    for word in _EFFECT_CLAIMS
++                    if word in args.after and word not in anchor
++                ]
++                if claims:
++                    return GuardResult(
++                        violation=Violation(
++                            "effect_claim_without_evidence",
++                            "用户已说明没有可确认的实际效果，改写只写职责、动作和方法，不要写效果结论。",
++                            True,
++                        )
++                    )
+         return _evidence_gate(args, state)
+ 
+     return GuardResult()
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/loop.py backend/app/agent/loop.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/loop.py	2026-10-25 13:18:57.862008700 +0800
++++ backend/app/agent/loop.py	2026-10-25 13:23:41.888065200 +0800
+@@ -13,7 +13,6 @@
+ from app.agent.guard import (
+     MAX_ROUNDS,
+     MAX_STEPS,
+-    MISSING_EFFECT_TEXT,
+     GuardState,
+     call_signature,
+     check,
+@@ -47,7 +46,7 @@
+     "action": "这段经历中，你具体做了哪些步骤",
+     "effect": "这段经历上线或交付后，带来了哪些实际变化",
+     "evidence": "有没有材料能支持这段经历的描述",
+-    "tech": "这段经历用到了哪些技术",
++    "tech": "这段经历用到了哪些工具、方法或资源",
+ }
+ _EFFECT_FOLLOWUP = "除了使用情况，实际带来了什么变化"
+ _SLOT_ORDER = ("responsibility", "context", "action", "effect", "evidence", "tech")
+@@ -98,12 +97,12 @@
+     if doc.round >= MAX_ROUNDS:
+         return None, None
+     effect = effect_state(doc)
+-    if effect == "blocked":
+-        return None, None
+     if effect == "followup":
+         return f"{_EFFECT_FOLLOWUP}？", "effect"
+     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
+     for slot in _SLOT_ORDER:
++        if slot == "effect" and effect == "absent":
++            continue
+         if slot in doc.declined or slot in active_slots:
+             continue
+         text = f"{_PHRASES[slot]}？"
+@@ -360,8 +359,6 @@
+             return finish_result("limited")
+         text, slot = _fallback_question(focus_doc)
+         if text is None:
+-            if effect_state(focus_doc) == "blocked":
+-                return limited("missing_effect", MISSING_EFFECT_TEXT)
+             focus_doc.last_run_outcome = "limited"
+             persist(focus_doc)
+             return finish_result("limited")
+@@ -583,21 +580,6 @@
+             outcome = decision.outcome
+             if outcome == "completed" and pending_suggestion():
+                 outcome = "waiting_user"
+-            if (
+-                outcome == "limited"
+-                and focus_doc is not None
+-                and effect_state(focus_doc) == "blocked"
+-            ):
+-                repo.save_issues(
+-                    session_id,
+-                    [
+-                        Issue(
+-                            kind="missing_effect",
+-                            summary=MISSING_EFFECT_TEXT,
+-                            experience_id=focus_id,
+-                        )
+-                    ],
+-                )
+             if focus_doc is not None:
+                 focus_doc.last_run_outcome = outcome
+                 persist(focus_doc)
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/memory.py backend/app/agent/memory.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/memory.py	2026-10-25 13:18:57.749689100 +0800
++++ backend/app/agent/memory.py	2026-10-25 13:19:29.863706000 +0800
+@@ -170,13 +170,11 @@
+     )
+ 
+ 
+-def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "blocked", "followup", "missing"]:
++def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
+     if any(
+         fact.slot == "effect" and fact.status == "active" for fact in doc.facts
+     ):
+         return "confirmed"
+-    if "effect" in doc.declined:
+-        return "blocked"
+     settled = [
+         question
+         for question in doc.questions
+@@ -184,7 +182,7 @@
+         and question.outcome in ("answered", "declined")
+     ]
+     if len(settled) >= 2:
+-        return "blocked"
++        return "absent"
+     if len(settled) == 1:
+         return "followup"
+     return "missing"
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/prompts/decide.md backend/app/agent/prompts/decide.md
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/prompts/decide.md	2026-10-25 13:18:57.730169200 +0800
++++ backend/app/agent/prompts/decide.md	2026-10-25 13:26:14.201542100 +0800
+@@ -15,39 +15,39 @@
+ 
+ ## 好经历的标准
+ 
+-一段改写后的项目/实习经历，应让读者看出：背景与问题（S）→ 个人职责与目标（T）→ 具体行动与技术决策（A）→ 可量化结果（R）。
++一段改写后的项目/实习经历，应让读者看出：背景与问题（S）→ 个人职责与目标（T）→ 具体行动与方法决策（A）→ 可量化结果（R）。
+ 
+ 改写前按以下清单校验，缺什么问什么：
+ 
+ 1. 个人贡献可辨认：能看出这件事分配给了用户本人，不是团队泛泛描述。
+ 2. 有业务背景或目标：为什么做、为谁解决什么问题，而不只是技术任务。
+-3. 动作具体可验证：「加索引」「拆分订单表」可以，「优化系统」「提升性能」不行。
+-4. 实际效果：优先业务指标（节省人力、降低报错、提升吞吐），其次技术指标（延迟、准确率、召回率、覆盖率）。没有数字时，定性效果也可以，但必须是变化：替代了什么、减少了哪一步、避免了什么错误、反馈中描述的改善。上线、被采用、被使用、通过验收、功能完成都不算效果。没有依据的数字不写。
++3. 动作具体可验证：「加索引」「拆分订单表」「重新拆分客户分组」「固定回访渠道」可以，「优化系统」「提升性能」不行。
++4. 实际效果：优先业务/结果指标。技术岗可写延迟、准确率、召回率、覆盖率；非技术岗写通过率、满意度、投诉率、复购率、排课或审批步骤等。没有数字时，定性效果也可以，但必须是变化：替代了什么、减少了哪一步、避免了什么错误、反馈中描述的改善。上线、被采用、被使用、通过验收、功能完成、只在本地运行都不算效果。没有依据的数字不写。
+ 5. 不夸大头衔：学生/实习生写「独立负责 XX 模块」「独立完成调优」，不写「架构师」「主导整个平台」。
+-6. 技术重点与目标岗位对齐：后端突出并发、存储、链路、稳定性；前端突出渲染、首屏、埋点、组件复用；算法突出数据集、评估指标、基线对比。
+-7. 不堆砌无关技术：只写真正用到的，不为了凑关键词塞技术栈。
++6. 方法与工具重点与目标岗位对齐：技术岗按技术栈突出关键点；非技术岗突出与岗位相关的方法、流程或工具（如教学中的分层练习、运营中的活动复盘）。
++7. 不堆砌无关内容：只写真正用到的工具和方法，不为了凑关键词塞技术栈。
+ 
+ ## 决策约束
+ 
+ - 会话目标为空且尚未询问时，本轮只问目标（岗位/方向）；目标确认后不再问。
+-- 目标确认后，按「职责 → 动作 → 实际效果」的顺序补齐当前段缺失的维度，一次只问一个；已答或已拒绝的维度跳过。原文分不清团队与个人贡献时，必须先问职责（`responsibility`）。业务背景（`context`）和技术深度（`tech`）只在原文完全看不出、且还有提问预算时作为加分项询问，不阻塞改写。收到回答后先用 `save_facts` 记录用户亲口说的内容，再判断继续追问还是 `propose_change`。只有用户明确说“直接改/别问/不用问/你决定/随便改/开始改写”时才可跳过首次职责提问，但不跳过实际效果。
+-- 生成 `propose_change` 前，必须已确认职责、至少一个具体动作，并且已有用户确认的实际效果（`slot="effect"`）。用户只回答使用、上线、验收、有人用、邀请同学使用、功能完成时，只能再追问一次实际变化；仍没有或用户明确说没有，`finish` 用 `limited`，不得 `propose_change`，也不得保守改写。使用/交付事实不是效果，不能记成 `effect`；需要记录时用 `result` 或 `context`。动作同样缺失且用户答不上来时，不要硬写，`finish` 用 `limited`。
++- 目标确认后，按「职责 → 动作 → 实际效果」的顺序补齐当前段缺失的维度，一次只问一个；已答或已拒绝的维度跳过。原文分不清团队与个人贡献时，必须先问职责（`responsibility`）。业务背景（`context`）和工具/方法细节（`tech`）只在原文完全看不出、且还有提问预算时作为加分项询问，不阻塞改写。收到回答后先用 `save_facts` 记录用户亲口说的内容，再判断继续追问还是 `propose_change`。只有用户明确说“直接改/别问/不用问/你决定/随便改/开始改写”时才可跳过首次职责提问，但不跳过实际效果。
++- 生成 `propose_change` 前，必须已确认职责、至少一个具体动作，并且效果状态是“已确认”或“已追问两次仍没有”。用户只回答使用、上线、验收、有人用、邀请同学使用、功能完成时，只能再追问一次实际变化；第二次仍没有或用户明确说没有，直接照实改写，不写效果结论、不编数字，不得再追问，也不得因缺效果 `finish(limited)`。使用/交付事实不是效果，不能记成 `effect`；需要记录时用 `result` 或 `context`。动作同样缺失且用户答不上来时，不要硬写，`finish` 用 `limited`。
+ - 必答三维处理完后，只要存在可改善的表达就写 `propose_change`，不要为加分项继续拖延。如果原文已清楚且没有实质改进，`finish` 用 `completed` 并在 `summary` 说明保留原因，不为制造差异硬改。
+   未确认的数字/细节保留原文表述，不新增数字，写进 `gaps`。
+-- 用户回答含"不记得/不确定/应该吧/大概/可能/不知道"，视为该维度 decline。效果维度 decline 时直接 `finish`，outcome 用 `limited`；其他维度 decline 不阻塞，继续按已有事实改写，并把缺失写入 `gaps`。此前的 effect decline 不阻止用户后续主动补充效果；一旦出现 active 的 `effect` 事实，按正常流程改写。
++- 用户回答含"不记得/不确定/应该吧/大概/可能/不知道"，视为该维度 decline；但“没有上线/没部署/只在本地运行”是交付状态，不算拒答。效果维度被拒答时也只再追问一次定性变化，之后照实改写；其他维度 decline 不阻塞，继续按已有事实改写，并把缺失写入 `gaps`。此前的 effect decline 不阻止用户后续主动补充效果；一旦出现 active 的 `effect` 事实，按正常流程改写。
+ - 上下文出现「追问刹车」时，禁止 ask_user，只能 propose_change 或 finish。
+ - 每一步必须改变状态；不得重复调用同一工具、同一参数。
+ - `propose_change` 后直接 `finish`，outcome 用 `completed`，不要用 `limited`。
+ - 追问前先看已有事实、已问问题和 declined，不要重复。
+-- 一次只问一件事，问题不超过 60 字，恰好一个问号，围绕当前段落自然提问。问效果时问“带来了哪些实际变化”，不要问“有没有人用”。不强制摘录原文，不在开头添加「人名」「标题」、[引用片段]等标签；需要区分项目时，把项目名称自然写进句子。不把人名或“无”“未填写”等占位内容当作经历内容。
++- 一次只问一件事，问题不超过 60 字，恰好一个问号，围绕当前段落自然提问。问效果时问“带来了哪些实际变化”；用户说没上线时问“没上线也可以，这件事有没有让流程或结果发生变化？”，不要问“有没有人用”。不强制摘录原文，不在开头添加「人名」「标题」、[引用片段]等标签；需要区分项目时，把项目名称自然写进句子。不把人名或“无”“未填写”等占位内容当作经历内容。
+ - 不要问用户需要去后台查的数据（如 DAU、代码行数）；允许用户回答“没有”。
+ - 个人经历只能依据原简历和可引用的个人补充原句；active 事实记忆须回到个人原文，不能自己充当凭据。JD 仅用于匹配岗位要求，不能证明用户已有对应经验或资质。
+ - 新增数字、业绩和职责等级须在 `source_refs` 中引用支持它们的个人原句；不得用 JD、聊天假设或未引用的材料支持新增内容。
+ - 数字、职级（负责人/主管/主导/架构师/leader）必须来自用户事实或原文角色，不能升级。
+-- 用户跳过、拒绝或催促时，不要硬凑追问；信息不足就 `finish`，outcome 用 `limited`。
++- 用户跳过、拒绝或催促时，不要硬凑追问；除实际效果外，信息不足就 `finish`，outcome 用 `limited`。实际效果缺失时按上述规则照实改写，不得以缺效果结束本段。
+ - `propose_change` 必须写成 `{"action":"tool","tool":"propose_change","args":{...}}`；不要把工具名直接写进 `action`。
+ - `propose_change` 的 `target` 必须是「当前段」的 blockId，不能改其他段落。
+ - `before` 必须逐字复制当前段的完整 markdown，不能只写要改的句子。
+-- `after` 是整段替换后的完整文本，不是替换片段；必须与 `before` 有可见差异（调整措辞或结构），不得照抄原文，也不得新增事实或数字。按「好经历的标准」组织：写清个人职责、具体动作与必要背景，实际效果放在后面并优先业务价值；技术重点按目标岗位倾斜，不堆砌无关技术。
++- `after` 是整段替换后的完整文本，不是替换片段；必须与 `before` 有可见差异（调整措辞或结构），不得照抄原文，也不得新增事实或数字。按「好经历的标准」组织：写清个人职责、具体动作与必要背景，实际效果放在后面并优先业务价值；方法与工具重点按目标岗位倾斜，不堆砌无关内容。没有确认实际效果时，只写职责、动作与必要背景，不写“提升了/减少了/更方便”等效果结论。
+ - `reason` 必填；`source_refs` 至少一条来自简历或用户补充，`quote` 必须逐字出现在来源原文里。
+ - 最多 8 步；没有新信息时尽早结束。
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/router.py backend/app/agent/router.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/router.py	2026-10-25 13:18:57.752982200 +0800
++++ backend/app/agent/router.py	2026-10-25 13:19:29.881216800 +0800
+@@ -42,13 +42,17 @@
+     "反馈", "提升", "减少", "降低", "节省", "加快",
+     "方便", "替代", "避免", "变成", "原来", "现在",
+ )
++_DELIVERY_MARKERS = (
++    "没有上线", "没上线", "未上线", "没有部署", "没部署",
++    "只在本地", "本地运行", "单机",
++)
+ 
+ 
+ def _is_decline(text: str) -> bool:
+     value = text.strip()
+     if len(value) > 30:
+         return False
+-    if any(marker in value for marker in _EFFECT_MARKERS):
++    if any(marker in value for marker in _EFFECT_MARKERS + _DELIVERY_MARKERS):
+         return False
+     return any(word in value for word in _DECLINE_WORDS)
+ 
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_agent_session_policy.py backend/tests/test_agent_session_policy.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_agent_session_policy.py	2026-10-25 13:18:58.067549700 +0800
++++ backend/tests/test_agent_session_policy.py	2026-10-25 13:23:34.591225900 +0800
+@@ -319,6 +319,35 @@
+         self.assertIn("## 追问刹车", text)
+         self.assertIn("禁止 ask_user", text)
+ 
++    def test_context_explains_absent_effect(self):
++        from app.agent.context import assemble_context
++
++        repo = make_repo()
++        ctx = repo.get_session_context(SESSION)
++        doc = ExperienceDoc(
++            experience_id="exp_01",
++            seq=1,
++            kind="project",
++            title="校园二手交易平台",
++            raw_text=MARKDOWN,
++            block_id="exp_01",
++            block_revision=1,
++        )
++        doc.questions.extend([
++            Question(
++                id='q1', slot='effect', text='带来了哪些实际变化？',
++                fingerprint='f1', outcome='answered',
++            ),
++            Question(
++                id='q2', slot='effect', text='还有别的变化吗？',
++                fingerprint='f2', outcome='declined',
++            ),
++        ])
++        text = assemble_context(
++            ctx, [doc], {"exp_01": "interviewing"}, "exp_01"
++        )
++        self.assertIn("用户已说明没有可确认的实际效果", text)
++
+ 
+ class DuplicateToolTests(unittest.TestCase):
+     def test_duplicate_tool_call_is_rejected(self):
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_effect_gate.py backend/tests/test_effect_gate.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_effect_gate.py	2026-10-25 13:18:58.073929000 +0800
++++ backend/tests/test_effect_gate.py	2026-10-25 13:20:57.503002500 +0800
+@@ -2,10 +2,10 @@
+ import asyncio
+ import unittest
+ 
+-from app.agent.guard import MISSING_EFFECT_TEXT, GuardState, check
++from app.agent.guard import EFFECT_EXHAUSTED_TEXT, GuardState, check
+ from app.agent.loop import _fallback_question, run_loop
+ from app.agent.memory import ExperienceDoc, Fact, Question, effect_state, save_experience
+-from app.agent.ports import DraftBlock, SessionContext, SessionInfo
++from app.agent.ports import DraftBlock, SessionContext, SessionInfo, SourceText
+ from app.agent.router import _is_decline
+ from app.agent.schemas import AskStep, StepDecisionAdapter
+ from app.agent.store import InMemoryStateStore
+@@ -15,9 +15,9 @@
+ BEFORE = '参与接口测试。'
+ 
+ 
+-def decision(target='p1'):
++def decision(target='p1', after='协助完成接口测试。', before=BEFORE):
+     return StepDecisionAdapter.validate_python({'action': 'tool', 'tool': 'propose_change', 'args': {
+-        'operation': 'replace', 'target': target, 'before': BEFORE, 'after': '协助完成接口测试。',
++        'operation': 'replace', 'target': target, 'before': before, 'after': after,
+         'reason': '梳理职责表达',
+         'source_refs': [{'source_id': 'resume', 'source_revision': 1, 'quote': '接口测试'}],
+         'gaps': []}})
+@@ -31,10 +31,10 @@
+     )
+ 
+ 
+-def state(*, effect_state_value=None, direct=False):
++def state(*, effect_state_value=None, direct=False, before=BEFORE):
+     doc = ExperienceDoc(
+         experience_id='p1', seq=1, kind='project', title='构造项目',
+-        raw_text=BEFORE, block_id='p1', block_revision=1,
++        raw_text=before, block_id='p1', block_revision=1,
+     )
+     doc.questions.append(Question(
+         id='q0', slot='responsibility', text='你负责哪部分？',
+@@ -42,7 +42,7 @@
+     ))
+     if effect_state_value == 'followup':
+         doc.questions.append(effect_question(1))
+-    elif effect_state_value == 'blocked':
++    elif effect_state_value == 'absent':
+         doc.questions.extend([effect_question(1), effect_question(2)])
+     elif effect_state_value == 'declined':
+         doc.questions.append(effect_question(1, 'declined'))
+@@ -60,10 +60,10 @@
+     return GuardState(
+         session=SessionContext(
+             session=SessionInfo(session_id='test', experience_order=['p1']),
+-            draft_blocks=[DraftBlock(block_id='p1', markdown=BEFORE)],
++            draft_blocks=[DraftBlock(block_id='p1', markdown=before)],
+         ),
+-        focus_doc=doc, anchor_text=BEFORE, focus_block_markdown=BEFORE,
+-        source_texts={'resume': BEFORE}, source_kinds={'resume': 'resume'},
++        focus_doc=doc, anchor_text=before, focus_block_markdown=before,
++        source_texts={'resume': before}, source_kinds={'resume': 'resume'},
+         direct_rewrite=direct,
+     )
+ 
+@@ -79,16 +79,30 @@
+         self.assertEqual(result.violation.code, 'ask_effect_followup')
+         self.assertTrue(result.violation.retryable)
+ 
+-    def test_two_answered_effect_questions_block(self):
+-        result = check(decision(), state(effect_state_value='blocked'))
+-        self.assertEqual(result.violation.code, 'missing_effect')
+-        self.assertFalse(result.violation.retryable)
+-        self.assertEqual(result.violation.message, MISSING_EFFECT_TEXT)
+-
+-    def test_declined_effect_blocks(self):
++    def test_one_declined_effect_question_also_asks_followup(self):
+         result = check(decision(), state(effect_state_value='declined'))
+-        self.assertEqual(result.violation.code, 'missing_effect')
+-        self.assertFalse(result.violation.retryable)
++        self.assertEqual(result.violation.code, 'ask_effect_followup')
++
++    def test_two_effect_questions_allow_honest_rewrite(self):
++        self.assertIsNone(
++            check(decision(), state(effect_state_value='absent')).violation
++        )
++
++    def test_absent_rewrite_cannot_add_effect_claim(self):
++        result = check(
++            decision(after='协助完成接口测试，提升了测试效率。'),
++            state(effect_state_value='absent'),
++        )
++        self.assertEqual(result.violation.code, 'effect_claim_without_evidence')
++        self.assertTrue(result.violation.retryable)
++
++    def test_absent_rewrite_keeps_effect_wording_from_the_original(self):
++        before = '方便记录信息，参与接口测试。'
++        result = check(
++            decision(before=before, after='方便记录信息，协助完成接口测试。'),
++            state(effect_state_value='absent', before=before),
++        )
++        self.assertIsNone(result.violation)
+ 
+     def test_active_effect_passes(self):
+         self.assertIsNone(check(decision(), state(effect_state_value='active')).violation)
+@@ -101,15 +115,30 @@
+         result = check(decision(), state(direct=True))
+         self.assertEqual(result.violation.code, 'ask_effect')
+ 
+-    def test_third_effect_question_is_blocked(self):
+-        guard = state(effect_state_value='blocked')
++    def test_third_effect_question_is_retryably_blocked(self):
++        guard = state(effect_state_value='absent')
+         step = AskStep(
+-            action='ask_user', message='除了使用情况，实际带来了什么变化？',
+-            slot='effect',
++            action='ask_user', message='还有没有别的实际变化？', slot='effect',
+         )
+         result = check(step, guard)
+-        self.assertEqual(result.violation.code, 'missing_effect')
+-        self.assertFalse(result.violation.retryable)
++        self.assertEqual(result.violation.code, 'effect_exhausted')
++        self.assertEqual(result.violation.message, EFFECT_EXHAUSTED_TEXT)
++        self.assertTrue(result.violation.retryable)
++
++    def test_cn_filler_one_is_not_a_number(self):
++        result = check(
++            decision(after='协助完成一个博客系统的接口测试。'),
++            state(effect_state_value='absent'),
++        )
++        self.assertIsNone(result.violation)
++
++    def test_added_cn_quantity_is_still_blocked(self):
++        result = check(
++            decision(after='协助三人完成接口测试。'),
++            state(effect_state_value='absent'),
++        )
++        self.assertEqual(result.violation.code, 'unsupported_number')
++        self.assertTrue(result.violation.retryable)
+ 
+ 
+ class EffectFallbackTests(unittest.TestCase):
+@@ -125,7 +154,7 @@
+             ))
+         if kwargs.get('effect') == 'followup':
+             doc.questions.append(effect_question(1))
+-        elif kwargs.get('effect') == 'blocked':
++        elif kwargs.get('effect') == 'absent':
+             doc.questions.extend([effect_question(1), effect_question(2)])
+         elif kwargs.get('effect') == 'declined':
+             doc.questions.append(effect_question(1, 'declined'))
+@@ -147,19 +176,30 @@
+         self.assertEqual(slot, 'effect')
+         self.assertEqual(question, '除了使用情况，实际带来了什么变化？')
+ 
+-    def test_fallback_stops_when_effect_is_blocked(self):
+-        self.assertEqual(_fallback_question(self.doc(effect='blocked')), (None, None))
+-        self.assertEqual(_fallback_question(self.doc(effect='declined')), (None, None))
++    def test_fallback_after_decline_asks_one_followup(self):
++        self.assertEqual(
++            _fallback_question(self.doc(effect='declined')),
++            ('除了使用情况，实际带来了什么变化？', 'effect'),
++        )
++
++    def test_fallback_skips_absent_effect(self):
++        self.assertEqual(
++            _fallback_question(self.doc(effect='absent')),
++            ('有没有材料能支持这段经历的描述？', 'evidence'),
++        )
+ 
+     def test_confirmed_effect_skips_to_evidence(self):
+         question, slot = _fallback_question(self.doc(effect='active'))
+         self.assertEqual(slot, 'evidence')
+         self.assertIn('材料', question)
+ 
+-    def test_fallback_limited_records_missing_effect_issue(self):
++    def test_absent_effect_still_produces_an_honest_suggestion(self):
+         repo = FakeRepo(
+             session_id=policy.SESSION,
+             direction='前端开发实习',
++            sources=[SourceText(
++                source_id='resume', kind='resume', text=BEFORE,
++            )],
+             experience_order=['p1'],
+             current_focus_id='p1',
+             draft_blocks=[DraftBlock(
+@@ -168,16 +208,27 @@
+             )],
+         )
+         store = InMemoryStateStore()
+-        doc = self.doc(effect='declined')
+-        save_experience(store, policy.SESSION, doc, None)
+-        llm = FakeLLM(decide_script=[{'action': 'bogus'}, {'action': 'bogus'}])
++        save_experience(store, policy.SESSION, self.doc(effect='absent'), None)
++        llm = FakeLLM(decide_script=[
++            {'action': 'tool', 'tool': 'propose_change', 'args': {
++                'operation': 'replace', 'target': 'p1', 'before': BEFORE,
++                'after': '协助完成接口测试与结果记录。',
++                'reason': '梳理职责与动作',
++                'source_refs': [{
++                    'source_id': 'resume', 'source_revision': 1,
++                    'quote': '接口测试',
++                }],
++                'gaps': [],
++            }},
++            {'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'},
++        ])
+         result = asyncio.run(run_loop(
+-            run_id='r_effect', session_id=policy.SESSION, repo=repo,
++            run_id='r_absent', session_id=policy.SESSION, repo=repo,
+             store=store, llm=llm, focus_experience_id='p1',
+         ))
+-        self.assertEqual(result.outcome, 'limited')
+-        self.assertTrue(any(issue.kind == 'missing_effect' for issue in repo.issues))
+-        self.assertFalse(any(event.type == 'suggestion' for event in result.events))
++        self.assertEqual(result.outcome, 'waiting_user')
++        self.assertEqual(len(repo.suggestions), 1)
++        self.assertFalse(any(issue.kind == 'missing_effect' for issue in repo.issues))
+ 
+ 
+ class EffectDeclineTests(unittest.TestCase):
+@@ -193,5 +244,66 @@
+         self.assertFalse(_is_decline('不是没有效果，' + '老师说录入流程比原来方便很多' * 3))
+ 
+ 
++class EffectStateTests(unittest.TestCase):
++    def doc(self, *outcomes, status='active'):
++        doc = ExperienceDoc(
++            experience_id='p1', seq=1, kind='project', title='构造项目',
++            raw_text=BEFORE, block_id='p1', block_revision=1,
++        )
++        for index, outcome in enumerate(outcomes, start=1):
++            doc.questions.append(Question(
++                id=f'q{index}', slot='effect', text='带来了哪些实际变化？',
++                fingerprint=f'f{index}', outcome=outcome,
++            ))
++        if status is not None:
++            doc.facts.append(Fact(
++                id='f1', slot='effect', statement='接口测试效率提高',
++                status=status, created_at='2026-01-01T00:00:00Z',
++            ))
++        return doc
++
++    def test_no_effect_question_is_missing(self):
++        self.assertEqual(effect_state(self.doc(status=None)), 'missing')
++
++    def test_one_answer_is_followup(self):
++        self.assertEqual(effect_state(self.doc('answered', status=None)), 'followup')
++
++    def test_one_decline_is_followup(self):
++        self.assertEqual(effect_state(self.doc('declined', status=None)), 'followup')
++
++    def test_two_answers_are_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'answered', status=None)), 'absent'
++        )
++
++    def test_answer_plus_decline_is_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'declined', status=None)), 'absent'
++        )
++
++    def test_active_fact_is_confirmed(self):
++        self.assertEqual(effect_state(self.doc()), 'confirmed')
++
++    def test_superseded_fact_without_questions_is_missing(self):
++        self.assertEqual(effect_state(self.doc(status='superseded')), 'missing')
++
++    def test_superseded_fact_with_two_questions_is_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'answered', status='superseded')),
++            'absent',
++        )
++
++
++class DeliveryDeclineTests(unittest.TestCase):
++    def test_no_deployment_is_not_a_decline(self):
++        self.assertFalse(_is_decline('没有上线，只在本地运行'))
++
++    def test_local_only_is_not_a_decline(self):
++        self.assertFalse(_is_decline('只在本地跑过'))
++
++    def test_no_effect_is_still_a_decline(self):
++        self.assertTrue(_is_decline('没有实际效果'))
++
++
+ if __name__ == '__main__':
+     unittest.main()
+diff -ru -x __pycache__ .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_proactive_flow.py backend/tests/test_proactive_flow.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_proactive_flow.py	2026-10-25 13:18:58.084254900 +0800
++++ backend/tests/test_proactive_flow.py	2026-10-25 13:27:16.823105200 +0800
+@@ -37,6 +37,21 @@
+         if fresh:
+             message = '你在项目二测试中具体执行了哪项测试？' if mode == 'question' else '这段经历中，你本人负责哪部分？'
+             return SimpleNamespace(data={'action': 'ask_user', 'message': message, 'slot': 'responsibility', 'related_source_ids': [], 'rationale': '先确认个人职责'})
++        if mode == 'noeffect':
++            if '这段经历上线或交付后' not in kwargs['user']:
++                return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
++            if '没上线也可以' not in kwargs['user']:
++                return SimpleNamespace(data={'action': 'ask_user', 'message': '没上线也可以，这件事有没有让流程或结果发生变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认定性变化'})
++            if not self.proposed:
++                self.proposed = True
++                ctx = self.runtime.repo.get_session_context(self.runtime.context)
++                block = next(b for b in ctx['draft']['blocks'] if b['blockId'] == block_id)
++                ref = block['sourceRefs'][0]
++                return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
++                    'operation': 'replace', 'target': block_id, 'before': block['markdown'],
++                    'after': block['markdown'].replace('参与', '协助'), 'reason': '梳理原有职责', 'gaps': [],
++                    'source_refs': [{'source_id': ref['sourceId'], 'source_revision': ref['sourceRevision'], 'quote': ref['quote']}]}})
++            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'})
+         ctx = self.runtime.repo.get_session_context(self.runtime.context)
+         block = next(b for b in ctx['draft']['blocks'] if b['blockId'] == block_id)
+         if '[effect]' not in kwargs['user']:
+@@ -315,6 +330,20 @@
+         self.assertEqual(host.phases, ids[:1])
+         self.assertIn('来源', self.conversation(session)['messages'][-1]['content'])
+ 
++    def test_no_effect_still_produces_an_honest_suggestion(self):
++        session, host, ids = self.ready()
++        host.modes[ids[0]] = 'noeffect'
++        self.turn(session, '继续', 'first')
++        self.turn(session, '我负责测试用例执行与结果记录。', 'resp')
++        self.turn(session, '没有上线，只在本地运行。', 'effect-1')
++        self.assertEqual(self.pending(session), [])
++        self.turn(session, '确实没有别的变化。', 'effect-2')
++        pending = self.pending(session)
++        self.assertEqual([p['target']['blockId'] for p in pending], ids[:1])
++        self.assertIn('协助项目一', pending[0]['after'])
++        self.assertNotIn('提升', pending[0]['after'])
++        self.assertNotIn('效率', pending[0]['after'])
++
+ 
+ if __name__ == '__main__':
+     unittest.main()

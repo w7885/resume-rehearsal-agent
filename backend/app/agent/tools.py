@@ -64,7 +64,7 @@ TOOL_SPECS: dict[ToolName, ToolSpec] = {
         "save_facts",
         "把用户刚说的事实写入记忆；会自动去重与覆盖旧说法。",
         SaveFactsArgs,
-        '{"experience_id": "exp_01", "facts": [{"slot": "action", "statement": "合并 8 条反馈为 5 项需求"}]}',
+        '{"experience_id": "exp_01", "facts": [{"slot": "action", "statement": "合并 8 条反馈为 5 项需求"}, {"slot": "effect", "statement": "老师录入时间从半小时缩短到五分钟"}]}',
     ),
     "record_issues": ToolSpec(
         "record_issues",

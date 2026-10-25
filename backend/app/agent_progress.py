@@ -5,7 +5,7 @@ import re
 
 from app.agent_edit_scope import resolve_scope
 from app.repository import RepositoryError
-from app.resume_structure import block_kinds, heading
+from app.resume_structure import block_kinds, heading, section_kind
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
@@ -17,9 +17,10 @@ def plain(text):
 
 def label(block):
     lines = [heading(line) for line in block['markdown'].splitlines() if line.strip()]
-    first = lines[0] if lines else '当前段落'
     if re.search(r'姓名|求职意向|电话|邮箱', '\n'.join(lines[:2])):
         return '基本信息与求职意向'
+    content = [line for line in lines if not section_kind(line)[0]]
+    first = (content or lines or ['当前段落'])[0]
     return first[:32]
 
 

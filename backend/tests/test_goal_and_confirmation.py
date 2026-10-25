@@ -25,16 +25,7 @@ class TargetClient(integration.FakeClient):
 
     async def decide(self, **kwargs):
         self.runtime.host.decision_contexts.append(kwargs['user'])
-        self.steps += 1
-        if self.steps > 1:
-            return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
-        ctx = self.runtime.repo.get_session_context(self.runtime.context)
-        block = ctx['draft']['blocks'][0]
-        source = next(s for s in ctx['sources'] if s['role'] == 'resume')
-        return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
-            'operation': 'replace', 'target': block['blockId'], 'before': block['markdown'],
-            'after': '协助整理反馈。', 'reason': '梳理已提供的职责表达', 'gaps': [],
-            'source_refs': [{'source_id': source['sourceId'], 'source_revision': source['sourceRevision'], 'quote': '整理反馈'}]}})
+        return await super().decide(**kwargs)
 
 
 class GoalAndConfirmationTests(unittest.TestCase):
@@ -59,14 +50,23 @@ class GoalAndConfirmationTests(unittest.TestCase):
         host.decision_calls, host.decision_contexts = 0, []
         user = self.send(session, '请根据已上传的JD优化简历。')
         events = self.analyze(session, user)
+        if with_jd:
+            for attempt in range(3):
+                last = self.conversation(session)['messages'][-1]
+                if (last.get('assistant') or {}).get('kind') != 'question':
+                    break
+                text = '老师录入时间从半小时缩短到五分钟。' if '实际变化' in last['content'] else '这部分由我独立负责。'
+                answer = self.send(session, text, request_id=f'segment-{attempt}', replyToMessageId=last['messageId'])
+                events = self.analyze(session, answer, f'segment-{attempt}')
         return session, user, host, events
 
     def proposal(self):
-        session, trigger, host, events = self.ready()
+        session, _, host, events = self.ready()
         value = self.conversation(session)
         self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user', events)
         prompt = value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'], 'change_question', value)
+        trigger = next(m for m in reversed(value['messages']) if m['role'] == 'user')
         return session, trigger, host, prompt
 
     def test_single_jd_fills_target_and_reaches_decision_with_jd_text(self):
@@ -88,6 +88,15 @@ class GoalAndConfirmationTests(unittest.TestCase):
         self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user')
         self.assertIn('这次想投什么岗位', self.conversation(session)['messages'][-1]['content'])
         self.assertEqual(host.decision_contexts, [])
+
+    def test_goal_answer_announces_first_segment_before_its_question(self):
+        session, _, host, _ = self.ready(False)
+        goal = self.send(session, '临床内科医师', request_id='goal-answer')
+        self.analyze(session, goal, 'goal-answer')
+        messages = self.conversation(session)['messages']
+        self.assertEqual(messages[-2]['role'], 'assistant')
+        self.assertIn('现在进入第 1 段', messages[-2]['content'])
+        self.assertEqual(messages[-1]['assistant']['kind'], 'question')
 
     def test_yes_accepts_unique_suggestion_without_model_parsing_and_replays_once(self):
         for word, explicit in [('是', False), ('是的！', True), ('可以。', True)]:

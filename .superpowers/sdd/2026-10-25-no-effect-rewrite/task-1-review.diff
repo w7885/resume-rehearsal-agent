@@ -1,0 +1,122 @@
+Binary files .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/__pycache__/memory.cpython-313.pyc and backend/app/agent/__pycache__/memory.cpython-313.pyc differ
+Binary files .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/__pycache__/router.cpython-313.pyc and backend/app/agent/__pycache__/router.cpython-313.pyc differ
+diff -ru .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/memory.py backend/app/agent/memory.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/memory.py	2026-10-25 13:18:57.749689100 +0800
++++ backend/app/agent/memory.py	2026-10-25 13:19:29.863706000 +0800
+@@ -170,13 +170,11 @@
+     )
+ 
+ 
+-def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "blocked", "followup", "missing"]:
++def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
+     if any(
+         fact.slot == "effect" and fact.status == "active" for fact in doc.facts
+     ):
+         return "confirmed"
+-    if "effect" in doc.declined:
+-        return "blocked"
+     settled = [
+         question
+         for question in doc.questions
+@@ -184,7 +182,7 @@
+         and question.outcome in ("answered", "declined")
+     ]
+     if len(settled) >= 2:
+-        return "blocked"
++        return "absent"
+     if len(settled) == 1:
+         return "followup"
+     return "missing"
+diff -ru .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/router.py backend/app/agent/router.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/agent/router.py	2026-10-25 13:18:57.752982200 +0800
++++ backend/app/agent/router.py	2026-10-25 13:19:29.881216800 +0800
+@@ -42,13 +42,17 @@
+     "反馈", "提升", "减少", "降低", "节省", "加快",
+     "方便", "替代", "避免", "变成", "原来", "现在",
+ )
++_DELIVERY_MARKERS = (
++    "没有上线", "没上线", "未上线", "没有部署", "没部署",
++    "只在本地", "本地运行", "单机",
++)
+ 
+ 
+ def _is_decline(text: str) -> bool:
+     value = text.strip()
+     if len(value) > 30:
+         return False
+-    if any(marker in value for marker in _EFFECT_MARKERS):
++    if any(marker in value for marker in _EFFECT_MARKERS + _DELIVERY_MARKERS):
+         return False
+     return any(word in value for word in _DECLINE_WORDS)
+ 
+Binary files .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/__pycache__/test_effect_gate.cpython-313.pyc and backend/tests/__pycache__/test_effect_gate.cpython-313.pyc differ
+diff -ru .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_effect_gate.py backend/tests/test_effect_gate.py
+--- .superpowers/sdd/2026-10-25-no-effect-rewrite/base/tests/test_effect_gate.py	2026-10-25 13:18:58.073929000 +0800
++++ backend/tests/test_effect_gate.py	2026-10-25 13:19:22.860796100 +0800
+@@ -193,5 +193,66 @@
+         self.assertFalse(_is_decline('不是没有效果，' + '老师说录入流程比原来方便很多' * 3))
+ 
+ 
++class EffectStateTests(unittest.TestCase):
++    def doc(self, *outcomes, status='active'):
++        doc = ExperienceDoc(
++            experience_id='p1', seq=1, kind='project', title='构造项目',
++            raw_text=BEFORE, block_id='p1', block_revision=1,
++        )
++        for index, outcome in enumerate(outcomes, start=1):
++            doc.questions.append(Question(
++                id=f'q{index}', slot='effect', text='带来了哪些实际变化？',
++                fingerprint=f'f{index}', outcome=outcome,
++            ))
++        if status is not None:
++            doc.facts.append(Fact(
++                id='f1', slot='effect', statement='接口测试效率提高',
++                status=status, created_at='2026-01-01T00:00:00Z',
++            ))
++        return doc
++
++    def test_no_effect_question_is_missing(self):
++        self.assertEqual(effect_state(self.doc(status=None)), 'missing')
++
++    def test_one_answer_is_followup(self):
++        self.assertEqual(effect_state(self.doc('answered', status=None)), 'followup')
++
++    def test_one_decline_is_followup(self):
++        self.assertEqual(effect_state(self.doc('declined', status=None)), 'followup')
++
++    def test_two_answers_are_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'answered', status=None)), 'absent'
++        )
++
++    def test_answer_plus_decline_is_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'declined', status=None)), 'absent'
++        )
++
++    def test_active_fact_is_confirmed(self):
++        self.assertEqual(effect_state(self.doc()), 'confirmed')
++
++    def test_superseded_fact_without_questions_is_missing(self):
++        self.assertEqual(effect_state(self.doc(status='superseded')), 'missing')
++
++    def test_superseded_fact_with_two_questions_is_absent(self):
++        self.assertEqual(
++            effect_state(self.doc('answered', 'answered', status='superseded')),
++            'absent',
++        )
++
++
++class DeliveryDeclineTests(unittest.TestCase):
++    def test_no_deployment_is_not_a_decline(self):
++        self.assertFalse(_is_decline('没有上线，只在本地运行'))
++
++    def test_local_only_is_not_a_decline(self):
++        self.assertFalse(_is_decline('只在本地跑过'))
++
++    def test_no_effect_is_still_a_decline(self):
++        self.assertTrue(_is_decline('没有实际效果'))
++
++
+ if __name__ == '__main__':
+     unittest.main()
