@@ -50,6 +50,9 @@ class Question(BaseModel):
     fingerprint: str
     round: int = 0
     outcome: Literal["asked", "answered", "declined"] = "asked"
+    # Kept separately from outcome: uncertainty allows one recall prompt, while
+    # an explicit absence or refusal must stop that interview dimension.
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy"
     answer_message_id: str | None = None
     asked_at: str = ""
     answered_at: str | None = None
@@ -172,17 +175,80 @@ def save_session(
     )
 
 
+def _last_effect_denial(doc: ExperienceDoc) -> Question | None:
+    return next((q for q in reversed(doc.questions)
+                 if q.slot == 'effect' and q.outcome != 'asked'
+                 and q.answer_kind == 'absent'), None)
+
+
+def _fact_after_stop(fact: Fact, question: Question) -> bool:
+    # Unknown historical timestamps cannot silently revive a denied outcome.
+    if not fact.created_at or not question.answered_at or not fact.source_refs:
+        return False
+    try:
+        return (datetime.fromisoformat(fact.created_at.replace('Z', '+00:00'))
+                > datetime.fromisoformat(question.answered_at.replace('Z', '+00:00')))
+    except (ValueError, TypeError):
+        return False
+
+
+def supported_experience_slots(
+    doc: ExperienceDoc, *, source_texts: dict[str, str] | None = None,
+    source_kinds: dict[str, str] | None = None,
+) -> set[str]:
+    """Conservative hints from original wording, never unbacked model memory.
+
+    This is not a semantic truth checker. Supplement quotes must be located in
+    an admitted personal source before they can suppress a question.
+    """
+    stop = _last_effect_denial(doc)
+    texts = [(doc.raw_text, stop is None)]
+    for fact in doc.facts:
+        if fact.status != 'active':
+            continue
+        for ref in fact.source_refs:
+            source = (source_texts or {}).get(ref.source_id)
+            if ((source_kinds or {}).get(ref.source_id) in {'resume', 'supplement'}
+                    and source is not None and ref.quote and ref.quote in source):
+                texts.append((ref.quote, stop is None or _fact_after_stop(fact, stop)))
+    slots: set[str] = set()
+    for text, allow_effect in texts:
+        for clause in re.split(r'[。；;\n]', text):
+            if re.search(r'如果|假如|假设|可能|不确定|记不清|尚未|未曾|没有|没做|并未|不是|未参与|未负责', clause):
+                continue
+            collective_only = (re.search(r'团队|小组|项目组|我们|全组', clause)
+                               and not re.search(r'本人|我(?!们)|独立(?:负责|完成|实现|开发)', clause))
+            if not collective_only and re.search(r'(?:我|本人)?(?:独立)?负责\s*[^，,。；;\s]{2,}|(?:我|本人)独立(?:完成|实现|开发)', clause):
+                slots.add('responsibility')
+            if re.search(r'(?:实现|完成|整理|编写|接入|排查|增加|归纳|合并|设计|开发|测试)\s*[^，,。；;\s]{2,}', clause):
+                slots.add('action')
+            if (allow_effect and not re.search(r'目标|目的|旨在|希望|计划|预计|预期|有望|以便|用于|为了|以期|试图|尝试|期望|(?:以|为|来)(?:提升|提高|缩短|减少|降低|节省|避免|改善)', clause)
+                    and re.search(r'(?:提升|提高|缩短|减少|降低|节省|避免|替代|改善)\s*[^，,。；;\s]{2,}', clause)):
+                slots.add('effect')
+    return slots
+
+
 def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
+    stop = _last_effect_denial(doc)
+    if stop is not None:
+        if any(f.slot == 'effect' and f.status == 'active' and _fact_after_stop(f, stop)
+               for f in doc.facts):
+            return 'confirmed'
+        return 'absent'
     if any(
         fact.slot == "effect" and fact.status == "active" for fact in doc.facts
     ):
         return "confirmed"
+    if 'effect' in supported_experience_slots(doc):
+        return 'confirmed'
     settled = [
         question
         for question in doc.questions
         if question.slot == "effect"
         and question.outcome in ("answered", "declined")
     ]
+    if any(question.answer_kind in {'absent', 'refused'} for question in settled):
+        return 'absent'
     if len(settled) >= 2:
         return "absent"
     if len(settled) == 1:
@@ -374,11 +440,13 @@ def record_answer(
     message_id: str | None = None,
     *,
     declined: bool = False,
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy",
 ) -> Question:
     for question in doc.questions:
         if question.id != question_id:
             continue
         question.outcome = "declined" if declined else "answered"
+        question.answer_kind = answer_kind
         question.answer_message_id = message_id
         question.answered_at = now_iso()
         if declined and question.slot and question.slot != "confirm":

@@ -21,6 +21,8 @@ ToolName = Literal[
 
 class ReadMaterialArgs(BaseModel):
     source_ids: list[str] = Field(min_length=1)
+    offset: int = Field(default=0, ge=0, strict=True)
+    limit: int = Field(default=2000, ge=1, le=2000, strict=True)
 
 
 class SearchEvidenceArgs(BaseModel):

@@ -40,9 +40,9 @@ class ToolSpec:
 TOOL_SPECS: dict[ToolName, ToolSpec] = {
     "read_material": ToolSpec(
         "read_material",
-        "读取本会话来源的原文。",
+        "按字符位置补读本会话来源原文，每份每次最多2000字符。优先一次读一个来源；有后文时按next_offset继续，引用须使用返回的原句和来源版本。",
         ReadMaterialArgs,
-        '{"source_ids": ["src_1"]}',
+        '{"source_ids": ["src_1"], "offset": 0, "limit": 2000}',
     ),
     "search_evidence": ToolSpec(
         "search_evidence",
@@ -112,16 +112,22 @@ def _require_experience(ctx: ToolContext, experience_id: str) -> tuple[Experienc
 
 async def _read_material(args: ReadMaterialArgs, ctx: ToolContext) -> dict[str, Any]:
     sources = ctx.repo.read_material(ctx.session_id, args.source_ids)
-    return {
-        "sources": [
-            {
-                "source_id": source.source_id,
-                "kind": source.kind,
-                "text": source.text[:2000],
-            }
-            for source in sources
-        ]
-    }
+    pages = []
+    for source in sources:
+        total = len(source.text)
+        start = min(args.offset, total)
+        end = min(start + args.limit, total)
+        pages.append({
+            "source_id": source.source_id,
+            "kind": source.kind,
+            "source_revision": source.source_revision,
+            "offset": start,
+            "total_chars": total,
+            "has_more": end < total,
+            "next_offset": end if end < total else None,
+            "text": source.text[start:end],
+        })
+    return {"sources": pages}
 
 
 async def _search_evidence(

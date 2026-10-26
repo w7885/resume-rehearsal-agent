@@ -45,7 +45,9 @@ class SegmentedClient(integration.FakeClient):
         ctx = HostAdapter(self.runtime).get_session_context(self.runtime.sid)
         self.runtime.host.test_visible_blocks = [b.block_id for b in ctx.draft_blocks]
         block = next(b for b in ctx.draft_blocks if OLD in b.markdown)
-        if '[effect]' not in user:
+        # The current context can confirm an effect from the original itself;
+        # a scripted client must not demand a newly saved effect fact first.
+        if '[effect]' not in user and '## 实际效果\n已确认：' not in user:
             if '这段经历上线或交付后' in user:
                 return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
                     'experience_id': block.block_id,
@@ -205,6 +207,8 @@ class ScopedChatTests(unittest.TestCase):
         self.assertEqual(host.test_visible_blocks, [projects[1]['blockId']])
         prompt = value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'], 'change_question', value)
+        self.assertFalse(any('这段经历上线或交付后' in m['content']
+                             for m in value['messages'] if m['role'] == 'assistant'))
         answer = self.send(session, '采用这条改写。', request_id='accept', replyToMessageId=prompt['messageId'])
         events = self.analyze(session, answer, 'accept')
         self.assertEqual(events[-1]['payload']['outcome'], 'completed', events)

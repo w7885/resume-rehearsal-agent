@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from app.agent.memory import ExperienceDoc, effect_state, question_similarity
+from app.agent.memory import ExperienceDoc, effect_state, question_similarity, supported_experience_slots
 from app.agent.ports import SessionContext
 from app.agent.schemas import (
     AskStep,
@@ -61,6 +61,81 @@ def _cn_numbers(text: str):
 
 
 _PROPER_NOUN = re.compile(r"[A-Za-z][A-Za-z0-9+.#-]{2,}")
+
+
+# These checks cover identifiable credential/level claims, not arbitrary truth.
+_CLAUSE = re.compile(r"[\n，,。；;！？!?]+")
+_UNASSERTED = re.compile(
+    r"如果|假如|假设|假定|是否|能否|可否|计划|打算|希望|想写|想要|备考|正在准备|"
+    r"尚未|尚无|暂无|并未|并非|没有|不具备|不具有|不持有|不拥有|不熟|不精通|不擅长|谈不上|(?:^|\s)无|"
+    r"未(?:取得|获得|通过|具备|具有|持有|拥有|掌握|熟练|精通|熟悉)|"
+    r"没(?:有|拿到|获得|取得|通过|掌握)"
+)
+_CREDENTIAL = re.compile(r"[A-Za-z0-9+#.\-\u4e00-\u9fff ]{1,40}?(?:资格证书|资格证|证书|驾驶证)")
+_CREDENTIAL_PREFIX = re.compile(r".*(?:已取得|取得|已获得|获得|持有|拥有|通过|考取|拿到|包括|以及|和|及)")
+_LEVEL = re.compile(r"熟练掌握|熟练使用|熟练运用|熟练|精通|熟悉|擅长|了解")
+_SECTION_CLAIMS = ('本科', '专科', '硕士', '博士', '专家', '资深', '卓越', '极强',
+                   '领导能力强', '沟通能力强', '学习能力强', '组织能力强')
+
+
+def _asserted_clauses(text: str) -> list[str]:
+    # A question/hypothesis cannot prove a credential, even if quoted exactly.
+    return [part.strip() for part in re.findall(r'[^\n，,。；;！？!?]+[！？!?]?', text)
+            if part.strip() and not part.endswith(('?', '？', '吗', '么')) and not _UNASSERTED.search(part)]
+
+
+def _claim_normalize(text: str) -> str:
+    value = re.sub(r"\s+", "", text).lower()
+    return re.sub(r"熟练(?:掌握|使用|运用)", "熟练", value)
+
+
+def _credential_claims(clause: str):
+    for match in _CREDENTIAL.finditer(clause):
+        name = _CREDENTIAL_PREFIX.sub('', match.group()).strip()
+        if name:
+            yield name
+
+
+def _level_claims(clause: str):
+    levels = list(_LEVEL.finditer(clause))
+    for index, match in enumerate(levels):
+        # A lower level terminates the previous list but is not an upgrade claim.
+        if match.group() == '了解':
+            continue
+        end = levels[index + 1].start() if index + 1 < len(levels) else len(clause)
+        subject = clause[match.end():end]
+        subject = re.split(r"并且|并|同时|用于|完成|实现|负责", subject, maxsplit=1)[0]
+        # Only distribute one explicit level across its own list. A following
+        # “了解SQL” never inherits the preceding “熟练Python”.
+        for skill in re.split(r"、|以及|和|与|及|/|\band\b", subject):
+            skill = skill.strip(' ：:，,。；;.!！?？')
+            if skill:
+                yield match.group() + skill
+
+
+def _claim_violation(args: ProposeChangeArgs, state: GuardState) -> Violation | None:
+    evidence = _personal_change_evidence(args, state)
+    evidence_clauses = _asserted_clauses(evidence)
+    known = [_claim_normalize(part) for part in evidence_clauses]
+    known_levels = {_claim_normalize(claim) for part in evidence_clauses for claim in _level_claims(part)}
+    for clause in _asserted_clauses(args.after):
+        for claim in _level_claims(clause):
+            if _claim_normalize(claim) not in known_levels:
+                return Violation('unsupported_section_claim',
+                                 f'新增表述“{claim}”缺少该技能对应等级的个人原文依据。', True)
+        claims = [*_credential_claims(clause)]
+        claims.extend(word for word in _SECTION_CLAIMS if word in clause)
+        for claim in claims:
+            if not any(_claim_normalize(claim) in part for part in known):
+                return Violation('unsupported_section_claim',
+                                 f'新增表述“{claim}”缺少肯定的个人原文依据，不能新增资质或升级能力等级。', True)
+    # Contact facts require the same protection wherever the model puts them.
+    for pattern in (r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', r'(?<!\d)1[3-9](?:[ -]?\d){9}(?!\d)'):
+        normalize = lambda value: re.sub(r'[ -]', '', value).lower()
+        known_contacts = {normalize(value) for value in re.findall(pattern, evidence)}
+        if any(normalize(value) not in known_contacts for value in re.findall(pattern, args.after)):
+            return Violation('profile_identity_changed', '新联系方式须引用用户明确提供的个人原句。', True)
+    return None
 
 
 @dataclass(frozen=True)
@@ -143,6 +218,12 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         if any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
+            supported = supported_experience_slots(state.focus_doc,
+                source_texts=state.source_texts, source_kinds=state.source_kinds)
+            if step.slot in supported and step.slot in {'responsibility', 'action', 'effect'}:
+                return Violation('question_answered', '个人材料已明确支持该维度，不要重复询问。', True)
+            if step.slot == 'effect' and effect_state(state.focus_doc) == 'absent':
+                return Violation('question_declined', '效果已明确没有、拒答或达到追问上限，按已有事实处理。', True)
             exempt_effect_followup = (
                 step.slot == "effect"
                 and effect_state(state.focus_doc) == "followup"
@@ -201,6 +282,9 @@ def _evidence_gate(
             violation=Violation("source_role", "必须引用简历或用户补充", True)
         )
 
+    claim_violation = _claim_violation(args, state)
+    if claim_violation is not None:
+        return GuardResult(violation=claim_violation)
     evidence = _personal_change_evidence(args, state)
     compact = re.sub(r"\s+", "", evidence)
     for number in _NUMBER.findall(args.after) + list(_cn_numbers(args.after)):
@@ -223,7 +307,8 @@ def _evidence_gate(
     gaps = list(args.gaps)
     # ponytail: proper nouns only warn; a glossary check can replace this later.
     for noun in _PROPER_NOUN.findall(args.after):
-        if noun not in evidence and f"缺少依据：{noun}" not in gaps:
+        alias_known = noun.lower() == "sqlite" and bool(re.search(r"\bsqlite3\b", evidence, re.I))
+        if noun.lower() not in evidence.lower() and not alias_known and f"缺少依据：{noun}" not in gaps:
             gaps.append(f"缺少依据：{noun}")
     return GuardResult(gaps=gaps)
 
@@ -321,29 +406,23 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                     )
                 )
             if state.focus_doc.kind not in EXPERIENCE_KINDS:
-                evidence = _personal_change_evidence(args, state)
-                for word in ('本科', '专科', '硕士', '博士', '精通', '熟练掌握', '专家', '资深', '卓越', '极强', '执业医师资格证', '教师资格证', '领导能力强', '沟通能力强', '学习能力强', '组织能力强'):
-                    if word in args.after and word not in evidence:
-                        return GuardResult(violation=Violation('unsupported_section_claim', f'新增表述“{word}”缺少个人原文依据，不能用语言升级改变事实或能力等级。', True))
-                if state.focus_doc.kind == 'profile':
-                    for pattern in (r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', r'(?<!\d)1[3-9](?:[ -]?\d){9}(?!\d)'):
-                        normalize = lambda s: re.sub(r'[ -]', '', s).lower()
-                        known = {normalize(s) for s in re.findall(pattern, evidence)}
-                        if any(normalize(s) not in known for s in re.findall(pattern, args.after)):
-                            return GuardResult(violation=Violation('profile_identity_changed', '排版不能改写邮箱或电话号码；新联系方式须引用用户明确提供的原句。', True))
                 return _evidence_gate(args, state)
             answered = any(
                 question.outcome in ("answered", "declined")
                 and question.slot != "confirm"
                 for question in state.focus_doc.questions
             )
-            if not answered and not state.direct_rewrite:
+            supported = supported_experience_slots(state.focus_doc,
+                source_texts=state.source_texts, source_kinds=state.source_kinds)
+            if not answered and not state.direct_rewrite and not {'responsibility', 'action'}.issubset(supported):
                 return GuardResult(
                     violation=Violation(
                         "ask_first", "当前段还没有问过用户，先问一个具体的职责问题。", True
                     )
                 )
             effect = effect_state(state.focus_doc)
+            if effect == 'missing' and 'effect' in supported:
+                effect = 'confirmed'
             if effect == "followup":
                 return GuardResult(
                     violation=Violation(
@@ -366,10 +445,13 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                     if args.before is not None
                     else state.focus_block_markdown
                 )
+                explicitly_stopped = any(q.slot == 'effect' and q.answer_kind == 'absent'
+                                         and q.outcome in {'answered', 'declined'}
+                                         for q in state.focus_doc.questions)
                 claims = [
                     word
                     for word in _EFFECT_CLAIMS
-                    if word in args.after and word not in anchor
+                    if word in args.after and (word not in anchor or explicitly_stopped)
                 ]
                 if claims:
                     return GuardResult(

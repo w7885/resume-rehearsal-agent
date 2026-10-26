@@ -27,6 +27,7 @@ from app.agent.memory import (
     reconcile,
     record_question,
     save_experience,
+    supported_experience_slots,
 )
 from app.agent.ports import Issue, Phase, RepoError, SessionContext
 from app.agent.prompts import build_decide_prompt, build_system_prompt
@@ -107,9 +108,10 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
     if effect == "followup":
         return guided_question(doc, 'effect', effect_followup=True), "effect"
     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
+    active_slots.update(supported_experience_slots(doc))
     answered_slots = {q.slot for q in doc.questions if q.outcome in {'answered', 'declined'}}
     for slot in _SLOT_ORDER:
-        if slot == "effect" and effect == "absent":
+        if slot == "effect" and effect in {"absent", "confirmed"}:
             continue
         if slot in doc.declined or slot in active_slots or slot in answered_slots:
             continue
@@ -552,10 +554,15 @@ async def run_loop(
                     cost_cents=step_cost,
                 )
             )
+            observation_text = json.dumps(observation, ensure_ascii=False)
+            # A bounded single-source read must reach the next decision intact;
+            # clipping it at 600 characters defeats long-material recovery.
+            single_material_page = (decision.tool == 'read_material'
+                                    and len(observation.get('sources', [])) == 1)
             history.append(
                 f"{step_number}. tool {decision.tool} "
                 f"{json.dumps(decision.args, ensure_ascii=False)[:300]} → "
-                f"{json.dumps(observation, ensure_ascii=False)[:600]}"
+                f"{observation_text if single_material_page else observation_text[:600]}"
             )
             refresh()
             continue

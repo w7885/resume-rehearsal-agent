@@ -1,0 +1,1217 @@
+{
+  "schema_version": 1,
+  "purpose": "团队内部的离线样例与人工评测准备，不是模型成绩或C独立验收回执",
+  "data_classification": "synthetic",
+  "provider_calls": 0,
+  "live_model_evaluation": "not_run",
+  "source_note": "前三个项目样例沿用既有人工参考的事实边界，原文已重构为明确构造材料，不包含真实会话编号或个人履历。",
+  "groups": [
+    "项目与实习",
+    "信息章节",
+    "事实边界",
+    "问答接续",
+    "编辑反馈与岗位适配",
+    "保留与结束"
+  ],
+  "cases": [
+    {
+      "name": "学生信息系统：整理功能但不编造效果",
+      "group": "项目与实习",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "学生信息系统\n我用Python和sqlite3实现了学生信息增删改查和持久化，支持按姓名模糊检索，修改和删除前有确认提示。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "使用Python和sqlite3实现增删改查及持久化",
+        "支持姓名模糊检索",
+        "修改和删除前提供确认提示",
+        "没有可确认的实际效果"
+      ],
+      "must_preserve": [
+        "Python/sqlite3",
+        "增删改查及持久化",
+        "姓名模糊检索",
+        "修改和删除确认"
+      ],
+      "forbidden_additions": [
+        "效率或时间百分比",
+        "虚构访谈或需求评审",
+        "主导整个平台"
+      ],
+      "expected_actions": [
+        "不再追问已经明确没有的效果",
+        "整理为克制、清楚的建议，仍待确认"
+      ],
+      "human_reference": "使用 Python 与 SQLite 实现学生信息增删改查及持久化，支持姓名模糊检索；为修改、删除操作增加确认提示。",
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "个人博客：保留本地交付边界",
+      "group": "项目与实习",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "个人博客\n为记录个人知识和控制排版，我独立完成前后端，实现文章发布与查看，并做了本地运行测试。目前没有公网部署，也没有可确认的用户效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "个人博客\n为记录个人知识和控制排版，我独立完成前后端，实现文章发布与查看，并做了本地运行测试。目前没有公网部署，也没有可确认的用户效果。"
+      ],
+      "must_preserve": [
+        "独立完成前后端",
+        "文章发布与查看",
+        "本地运行测试",
+        "尚未公网部署"
+      ],
+      "forbidden_additions": [
+        "已有外部用户",
+        "提升所有用户效率",
+        "已交付计划中的管理后台"
+      ],
+      "expected_actions": [
+        "整理独立贡献和实际范围",
+        "不得把本地运行写成公网部署"
+      ],
+      "human_reference": "面向个人知识记录场景，独立开发博客前后端，实现文章发布与查看，并完成本地运行测试；尚未公网部署。",
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "前端与反馈整理：保留数量和两类贡献",
+      "group": "项目与实习",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，合并为5项需求并形成文档。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，合并为5项需求并形成文档。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "负责React前端",
+        "3个页面",
+        "8条反馈",
+        "5项需求",
+        "形成需求文档"
+      ],
+      "forbidden_additions": [
+        "主导整个项目",
+        "未提供的接口集成经历",
+        "未验证业务收益"
+      ],
+      "expected_actions": [
+        "依据现有事实提出建议；用户确认前不改正式稿"
+      ],
+      "human_reference": "负责 React 前端开发，完成 3 个页面；整理 8 条同学反馈，归纳为 5 项需求并形成需求文档。",
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "基本信息：只调整排版不改联系方式",
+      "group": "信息章节",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "基本信息\n姓名：构造同学\n邮箱：student@example.com\n电话：13800000000",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "profile"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "基本信息\n姓名：构造同学\n邮箱：student@example.com\n电话：13800000000"
+      ],
+      "must_preserve": [
+        "构造同学",
+        "student@example.com",
+        "13800000000"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "可以规范排版或说明保留",
+        "不询问职责、动作、上线效果",
+        "不猜测或改写联系方式"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "技能：了解不能升级成熟练",
+      "group": "信息章节",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "专业技能\n了解Python，曾用sqlite3写过本地查询脚本。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "skills"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "专业技能\n了解Python，曾用sqlite3写过本地查询脚本。"
+      ],
+      "must_preserve": [
+        "了解Python的等级",
+        "使用sqlite3的具体场景"
+      ],
+      "forbidden_additions": [
+        "熟练掌握Python",
+        "精通数据库",
+        "新增证书"
+      ],
+      "expected_actions": [
+        "按已有程度和场景整理，不增加熟练度",
+        "不套用项目效果采访"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "自我评价：用真实例子提炼",
+      "group": "信息章节",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "自我评价\n希望突出通过实践学习。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "summary"
+      },
+      "supplements": [
+        {
+          "role": "supplement",
+          "text": "我利用周末自学Flask，并完成一个本地查询接口演示。"
+        }
+      ],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "自我评价\n希望突出通过实践学习。"
+      ],
+      "must_preserve": [
+        "自学Flask",
+        "本地查询接口演示"
+      ],
+      "forbidden_additions": [
+        "专家",
+        "极强学习能力",
+        "没有来源的教师资格证"
+      ],
+      "expected_actions": [
+        "引用补充原句，提炼克制的行为表达",
+        "不追问上线效果"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "新增资格证：岗位要求不是个人证明",
+      "group": "事实边界",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责接口测试，写了测试用例。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [
+        {
+          "role": "jd",
+          "text": "岗位要求：持有执业医师资格证。"
+        }
+      ],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责接口测试，写了测试用例。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "接口测试",
+        "测试用例"
+      ],
+      "forbidden_additions": [
+        "已取得执业医师资格证"
+      ],
+      "expected_actions": [
+        "错误模型输出新增资格证时必须拒绝建议",
+        "岗位要求不能背书个人资质"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "新增熟练度：引用存在也不能升级能力",
+      "group": "事实边界",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我用Python写了本地查询脚本。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我用Python写了本地查询脚本。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "Python本地查询脚本"
+      ],
+      "forbidden_additions": [
+        "熟练掌握Python",
+        "精通Python"
+      ],
+      "expected_actions": [
+        "错误模型输出新增熟练度时拒绝建议",
+        "允许有来源的保守措辞"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "合法资格补充：允许引用用户明确原句",
+      "group": "事实边界",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "获奖与证书\n暂未填写。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "awards"
+      },
+      "supplements": [
+        {
+          "role": "supplement",
+          "text": "我已取得教师资格证。"
+        }
+      ],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "获奖与证书\n暂未填写。"
+      ],
+      "must_preserve": [
+        "教师资格证"
+      ],
+      "forbidden_additions": [
+        "未提供的取得日期",
+        "未提供的证书级别"
+      ],
+      "expected_actions": [
+        "引用用户补充原句可以提出证书整理建议",
+        "不推断日期和级别"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "信息充分：无需重新采访",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责学生查询功能，用Python和sqlite3实现按姓名模糊检索；本地测试时，原来逐条翻找改成输入姓名查看结果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责学生查询功能，用Python和sqlite3实现按姓名模糊检索；本地测试时，原来逐条翻找改成输入姓名查看结果。"
+      ],
+      "must_preserve": [
+        "个人负责学生查询功能",
+        "Python和sqlite3",
+        "按姓名模糊检索",
+        "本地测试中的操作变化"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "可直接提出有价值的改写或解释保留",
+        "不机械重问职责、动作和结果"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "信息不足：问清个人动作",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n参与学生管理系统。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请帮我完善这一段。"
+      ],
+      "allowed_facts": [
+        "项目经历\n参与学生管理系统。"
+      ],
+      "must_preserve": [
+        "参与学生管理系统"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "围绕系统中的一个具体任务询问个人负责部分",
+        "不凭空补动作、工具和效果"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "明确没有效果：停止效果追问",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责用Python实现姓名查询。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "answering_effect_question",
+        "prior_questions": [
+          {
+            "slot": "effect",
+            "message": "姓名查询完成后，实际带来了什么变化？",
+            "outcome": "asked"
+          }
+        ]
+      },
+      "ordered_inputs": [
+        "没有观察到实际效果，就按现有事实写。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责用Python实现姓名查询。"
+      ],
+      "must_preserve": [
+        "负责Python姓名查询"
+      ],
+      "forbidden_additions": [
+        "效率提升",
+        "额外效果追问"
+      ],
+      "expected_actions": [
+        "不再追问效果",
+        "按职责动作提出建议，不写效果结论"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "记不清效果：最多一次中性追问",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责用Python实现姓名查询。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "answering_effect_question",
+        "prior_questions": [
+          {
+            "slot": "effect",
+            "message": "姓名查询完成后，实际带来了什么变化？",
+            "outcome": "asked"
+          }
+        ]
+      },
+      "ordered_inputs": [
+        "效果我记不清了。",
+        "还是记不清。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责用Python实现姓名查询。"
+      ],
+      "must_preserve": [
+        "负责Python姓名查询"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "第一次允许换一个中性回忆角度追问",
+        "第二次仍记不清时停止，不编造效果"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "明确拒答：停止该维度",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责接口测试并整理测试用例。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "answering_effect_question",
+        "prior_questions": [
+          {
+            "slot": "effect",
+            "message": "接口测试带来了什么变化？",
+            "outcome": "asked"
+          }
+        ]
+      },
+      "ordered_inputs": [
+        "这个问题我不想回答，请不要再问效果。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责接口测试并整理测试用例。"
+      ],
+      "must_preserve": [
+        "接口测试",
+        "整理测试用例"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "停止效果追问",
+        "按已有材料继续或说明受阻，不把拒答视为新事实"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "未上线：记录交付状态而非拒答",
+      "group": "问答接续",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我实现了姓名查询并完成本地测试。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "answering_effect_question",
+        "prior_questions": [
+          {
+            "slot": "effect",
+            "message": "查询功能完成后，实际带来了什么变化？",
+            "outcome": "asked"
+          }
+        ]
+      },
+      "ordered_inputs": [
+        "没有上线，只做了本地测试。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我实现了姓名查询并完成本地测试。"
+      ],
+      "must_preserve": [
+        "姓名查询",
+        "本地测试",
+        "没有上线"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "不把未上线当拒答或用户效果",
+        "如仍需效果，可问一次本地真实变化；不强迫编结果"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "唯一建议反馈：同目标修订不自动采用",
+      "group": "编辑反馈与岗位适配",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我用Python和sqlite3实现增删改查、姓名模糊检索及删除确认。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "awaiting_confirmation",
+        "pending_suggestion": {
+          "target": "当前项目段",
+          "after": "我写了这个程序，写完后能增删改查，名字搜一下就能查到，然后删除还会确认。"
+        },
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "太冗余了，有些表述太随意，请精简正式一些。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我用Python和sqlite3实现增删改查、姓名模糊检索及删除确认。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "Python和sqlite3",
+        "增删改查",
+        "姓名模糊检索",
+        "删除确认"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "对同一目标生成新版待确认建议",
+        "不能把批评当采用，正式稿保持原样"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "同一经历投前端：突出实现",
+      "group": "编辑反馈与岗位适配",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，归纳为5项需求并形成文档。没有可确认的实际效果。",
+      "target": {
+        "job": "前端开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，归纳为5项需求并形成文档。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "个人负责范围",
+        "React与3个页面",
+        "8条反馈与5项需求",
+        "需求文档"
+      ],
+      "forbidden_additions": [
+        "新增业务收益",
+        "主导整个项目",
+        "凭空增加用户访谈"
+      ],
+      "expected_actions": [
+        "按目标岗位调整真实贡献的顺序和重点",
+        "共同事实不丢，不用岗位关键词捏造经历"
+      ],
+      "human_reference": null,
+      "paired_case": "同一经历投产品：突出需求整理",
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "同一经历投产品：突出需求整理",
+      "group": "编辑反馈与岗位适配",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，归纳为5项需求并形成文档。没有可确认的实际效果。",
+      "target": {
+        "job": "产品助理实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "校园工具\n我负责React前端，完成3个页面；整理8条同学反馈，归纳为5项需求并形成文档。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "个人负责范围",
+        "React与3个页面",
+        "8条反馈与5项需求",
+        "需求文档"
+      ],
+      "forbidden_additions": [
+        "新增业务收益",
+        "主导整个项目",
+        "凭空增加用户访谈"
+      ],
+      "expected_actions": [
+        "按目标岗位调整真实贡献的顺序和重点",
+        "共同事实不丢，不用岗位关键词捏造经历"
+      ],
+      "human_reference": null,
+      "paired_case": "同一经历投前端：突出实现",
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "原文清楚：合理保留",
+      "group": "保留与结束",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n负责 React 前端开发，完成 3 个页面；整理 8 条同学反馈，归纳为 5 项需求并形成需求文档。没有可确认的实际效果。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "项目经历\n负责 React 前端开发，完成 3 个页面；整理 8 条同学反馈，归纳为 5 项需求并形成需求文档。没有可确认的实际效果。"
+      ],
+      "must_preserve": [
+        "React与3个页面",
+        "8条反馈与5项需求",
+        "需求文档"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "可以说明无需实质修改并保留",
+        "不为制造差异硬改，不重开采访"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "完成后礼貌回应：不重启采访",
+      "group": "保留与结束",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n负责Python本地查询脚本。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [],
+      "precondition": {
+        "phase": "completed",
+        "all_sections_processed": true,
+        "pending_suggestions": [],
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "谢谢你。",
+        "好的。",
+        "哦。"
+      ],
+      "allowed_facts": [
+        "项目经历\n负责Python本地查询脚本。"
+      ],
+      "must_preserve": [
+        "正式稿不变"
+      ],
+      "forbidden_additions": [
+        "材料未支持的新事实、数字、职责或能力等级"
+      ],
+      "expected_actions": [
+        "自然简短回应",
+        "不得调用模型、生成建议或重新采访",
+        "不得把礼貌回应当写稿授权"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    },
+    {
+      "name": "长来源：补读截断后依据",
+      "group": "保留与结束",
+      "data_classification": "synthetic",
+      "provenance": "根据既有质量标准构造的脱敏评测材料，不是用户本人经历、真实访谈或模型输出。",
+      "original": "项目经历\n我负责本地学生信息系统。",
+      "target": {
+        "job": "软件开发实习生",
+        "section": "project"
+      },
+      "supplements": [
+        {
+          "role": "supplement",
+          "text": "以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。以下是明确标记的构造背景说明。\n我负责为删除操作增加二次确认提示。"
+        }
+      ],
+      "precondition": {
+        "phase": "ready_for_review",
+        "prior_questions": []
+      },
+      "ordered_inputs": [
+        "请检查这一段，按已有真实材料优化。"
+      ],
+      "allowed_facts": [
+        "项目经历\n我负责本地学生信息系统。"
+      ],
+      "must_preserve": [
+        "删除操作二次确认提示"
+      ],
+      "forbidden_additions": [
+        "凭记忆拼造引用",
+        "无法定位的原句"
+      ],
+      "expected_actions": [
+        "若可见上下文已截断关键原句，先调用材料读取工具补读",
+        "引用来源中的确切原句，不能声称未读已知"
+      ],
+      "human_reference": null,
+      "paired_case": null,
+      "scoring": {
+        "hard_gates": [
+          "事实有个人依据",
+          "必须保留项无遗漏",
+          "目标与引用正确",
+          "确认前不写稿",
+          "重放不重复消费"
+        ],
+        "dimensions": [
+          "精简",
+          "书面表达",
+          "岗位相关"
+        ],
+        "scores": null,
+        "reviewer": null,
+        "evidence": [],
+        "status": "not_evaluated"
+      }
+    }
+  ]
+}
