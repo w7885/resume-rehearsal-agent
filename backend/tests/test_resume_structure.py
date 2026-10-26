@@ -68,7 +68,7 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(sum('项目经历1' in p for p in parts), 1)
         self.assertEqual(sum('项目经历2' in p for p in parts), 1)
         self.assertFalse(any('项目经历1' in p and '项目经历2' in p for p in parts))
-        self.assertEqual(len(parts), 6)
+        self.assertEqual(len(parts), 7)
 
     def test_markdown_crlf_unicode_and_outer_blank_lines_are_preserved(self):
         body = '\r\n# 简历\r\n## 教育背景\r\n测试大学\r\n## 项目一：平台\r\n- 动作甲\r\n## 项目二：系统\r\n- 动作乙\r\n## 专业技能\r\nPython\r\n\r\n'
@@ -130,6 +130,8 @@ class StructureUnitTests(unittest.TestCase):
     def test_instruction_inside_body_is_rejected_instead_of_deleted(self):
         with self.assertRaises(RepositoryError):
             body_span('项目经历1\n开发接口\n请只优化第二个项目\n技能证书\nPython', '项目经历1', 'Python')
+        with self.assertRaises(RepositoryError):
+            body_span('基本信息\n姓名张同学\n请只修改自我评价', '基本信息', '请只修改自我评价')
 
     def test_each_split_quote_is_an_exact_substring_of_the_original_source(self):
         result = structure_blocks([{'markdown': BODY, 'sourceRefs': [{'sourceId': 'src', 'sourceRevision': 4, 'quote': BODY}]}])
@@ -175,16 +177,16 @@ class ScopedChatTests(unittest.TestCase):
         self.material(session, text=BODY, role='resume')
         draft = self.conversation(session)['draft']
         self.assertEqual(draft['markdown'], BODY)
-        self.assertEqual(len(draft['blocks']), 6)
+        self.assertEqual(len(draft['blocks']), 7)
         self.assertEqual(block_kinds([b['markdown'] for b in draft['blocks']]),
-                         [None, None, 'project', 'project', None, None])
+                         [None, None, None, 'project', 'project', None, None])
 
     def test_chat_instruction_stays_in_message_and_out_of_draft_and_evidence(self):
         session, host = self.imported()
         value = self.conversation(session)
         self.assertEqual(value['messages'][0]['content'], MIXED)
         self.assertEqual(value['draft']['markdown'], BODY)
-        self.assertEqual(len(value['draft']['blocks']), 6)
+        self.assertEqual(len(value['draft']['blocks']), 7)
         self.assertNotIn(INSTRUCTION, value['draft']['markdown'])
         with db.database(self.path, read_only=True) as c:
             source = c.execute('SELECT text,origin_json FROM source_blocks').fetchone()
@@ -213,7 +215,8 @@ class ScopedChatTests(unittest.TestCase):
             self.assertEqual(old['blockId'], new['blockId'])
             if old['blockId'] != projects[1]['blockId']:
                 self.assertEqual(old, new)
-        ref = after['blocks'][3]['sourceRefs'][0]
+        ref = next(b for b in after['blocks'] if b['blockId'] == projects[1]['blockId'])['sourceRefs'][0]
+        self.assertIn(OLD, ref['quote'])
         source = repo.read_source_snapshot(RequestContext(session['sessionId']), ref['sourceId'], ref['sourceRevision'])
         self.assertEqual(ref['sourceRevision'], 1)
         self.assertIn(ref['quote'], source['source']['text'])
@@ -358,7 +361,7 @@ class ScopedChatTests(unittest.TestCase):
         self.analyze(session, user)
         value = self.conversation(session)
         self.assertEqual(value['draft']['markdown'], BODY)
-        self.assertEqual(len(value['draft']['blocks']), 6)
+        self.assertEqual(len(value['draft']['blocks']), 7)
         self.assertEqual(len(project_blocks(Repository(self.path), RequestContext(session['sessionId']))), 2)
 
     def test_reference_correct_source_version_remains_exact_after_reload(self):

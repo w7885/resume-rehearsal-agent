@@ -354,7 +354,7 @@ class MaterialIntakeTests(unittest.TestCase):
         self.turn(session, text)
         draft = self.conversation(session)['draft']
         self.assertEqual(draft['markdown'], NEW + '\n\n' + extra)
-        self.assertEqual(len(draft['blocks']), 2)
+        self.assertEqual(len(draft['blocks']), 4)
         repo = Repository(self.path)
         for block in draft['blocks']:
             for ref in block['sourceRefs']:

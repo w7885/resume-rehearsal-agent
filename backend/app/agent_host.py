@@ -153,11 +153,14 @@ class HostAdapter(ARepoAdapter):
         from app.agent_edit_scope import resolve_scope
         self.allowed = resolve_scope(runtime.repo, runtime.context)
         if self.allowed == set():
-            raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目。请明确项目序号；如果是旧版整块简历，请重新上传并明确替换，历史会保留。')
+            raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定段落。请明确当前稿中的章节名称或项目序号；没有对应章节时，需要先说明要补充的内容。')
         super().__init__(tools=None,context=runtime.context,repository=runtime.repo,session_id=runtime.sid)
 
     def get_session_context(self, session_id):
         ctx = super().get_session_context(session_id)
+        from app.resume_structure import section_kinds
+        kinds = dict(zip([b.block_id for b in ctx.draft_blocks], section_kinds([b.markdown for b in ctx.draft_blocks])))
+        cross_section_evidence = kinds.get(self.focus_id) in {'summary', 'skills'}
         if self.focus_id:
             ctx.session.current_focus_id = self.focus_id
             # Interview answers belong to their associated experience. Generic
@@ -166,7 +169,8 @@ class HostAdapter(ARepoAdapter):
             allowed_answers = set(memory.doc.get('source_ids', [])) if memory else set()
             with self.runtime.repo._operation(self.runtime.context) as (connection, _):
                 chat_sources = {row[0] for row in connection.execute("SELECT b.source_id FROM source_blocks b JOIN messages m ON m.session_id=b.session_id AND m.message_id=b.message_id WHERE b.session_id=? AND b.role='supplement' AND m.input_channel='chat'", (session_id,))}
-            ctx.sources = [s for s in ctx.sources if s.source_id not in chat_sources or s.source_id in allowed_answers]
+            if not cross_section_evidence:
+                ctx.sources = [s for s in ctx.sources if s.source_id not in chat_sources or s.source_id in allowed_answers]
         if self.allowed is not None:
             ctx.draft_blocks = [block for block in ctx.draft_blocks if block.block_id in self.allowed]
             ctx.session.experience_order = [block.block_id for block in ctx.draft_blocks]
@@ -175,7 +179,7 @@ class HostAdapter(ARepoAdapter):
             # Show each scoped source excerpt, not the first 800 characters of an entire resume.
             for source in ctx.sources:
                 quotes = [ref.quote for block in ctx.draft_blocks for ref in block.source_refs if ref.source_id == source.source_id]
-                if source.kind == 'resume' and quotes:
+                if source.kind == 'resume' and quotes and not cross_section_evidence:
                     source.text = '\n'.join(dict.fromkeys(quotes))
         return ctx
 
@@ -231,6 +235,7 @@ class Runtime:
         self.initial_import = False
         self.accepted_this_turn = False
         self.advance_after_accept = False
+        self.advance_after_skip = False
         self.revision_target = None
 
     def _emit(self, kind, payload, connection=None):
@@ -353,7 +358,11 @@ class Runtime:
         candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
             return False
-        from app.agent_progress import CONTINUE, plain
+        from app.agent_edit_scope import resolve_scope
+        allowed = resolve_scope(self.repo, self.context)
+        if allowed is not None and not any(s['target']['blockId'] in allowed for p in candidates for s in p['suggestions']):
+            return False
+        from app.agent_progress import CONTINUE, KEEP_NEXT, plain
         if plain(turn['userMessage']['content']) in CONTINUE:
             ids = list(dict.fromkeys(s['suggestionId'] for p in candidates for s in p['suggestions']))
             self._reply('当前还有待确认的改写。请先采用、拒绝或说明调整要求；“继续”不会替你采用它。', 'change_question', ids)
@@ -364,9 +373,15 @@ class Runtime:
         # Repeated confirmations of the same suggestion are one target. An
         # unrelated ordinary question still makes an implicit reply ambiguous.
         unique = len(targets) == 1 and len(active_prompts) == len(candidates)
+        skip_requested = plain(turn['userMessage']['content']) in KEEP_NEXT | {'跳过', '先跳过'}
         if unique:
             candidates = [candidates[-1]]
-        if positive:
+        if unique and skip_requested:
+            prompt = candidates[0]
+            data = {'status': 'resolved', 'decisions': [{'promptMessageId': prompt['promptMessageId'],
+                    'suggestionId': prompt['suggestions'][0]['suggestionId'], 'decision': 'reject',
+                    'feedback': turn['userMessage']['content']}]}
+        elif positive:
             if unique:
                 prompt = candidates[0]
                 data = {'status': 'resolved', 'decisions': [{'promptMessageId': prompt['promptMessageId'],
@@ -402,6 +417,9 @@ class Runtime:
             if 'revise' in actions:
                 text+='调整要求已保留。'
             self._reply(text)
+            if actions == {'reject'} and skip_requested:
+                self.advance_after_skip = True
+                return False
             if actions == {'revise'} and len(result['decisions']) == 1:
                 self.revision_target = offered[result['decisions'][0]['suggestionId']]['target']['blockId']
                 return False
@@ -421,12 +439,14 @@ class Runtime:
         sync(self)
         progress = plan(self)
         if not progress['blocks']:
-            self._reply('简历里还没识别到项目或实习经历，请上传或粘贴一段项目/实习。', 'question')
+            self._reply('当前还没有可整理的简历段落。可以先上传简历，或粘贴基本信息、经历、自我评价等任一部分。', 'question')
             return 'completed'
         if progress['pending']:
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
         command = plain(turn['userMessage']['content'])
+        from app.agent_edit_scope import named_sections, whole_resume_request
+        named = named_sections(turn['userMessage']['content'])
         keep_next = command in KEEP_NEXT
         if keep_next and progress['waiting']:
             record(self, progress['waiting'], completed=True)
@@ -435,17 +455,17 @@ class Runtime:
         elif command in CONTINUE and progress['blocked']:
             self._reply('上一段改写尚未通过校验，当前稿没有改变。要保留这一段并接着处理，请回复“保留原文，继续下一段”；也可以补充或纠正具体事实。')
             return 'completed'
-        forced = bool(self.revision_target) or keep_next or self.advance_after_accept or self.initial_import or command in CONTINUE
+        forced = bool(self.revision_target) or bool(named) or whole_resume_request(command) or keep_next or self.advance_after_accept or self.advance_after_skip or self.initial_import or command in CONTINUE
         if progress['review']:
             self._reply('继续前需要核对当前段落的来源：原文或引用版本已变化，请先核对材料；已保存内容保留。', 'question')
             return 'completed'
         store = GuardedStateStore(self)
         existing = load_session(store, self.sid)
         awaiting_goal = bool(existing and existing[0].awaiting_goal)
-        if forced and not progress['remaining']:
+        if forced and not progress['remaining'] and not named and not self.revision_target:
             self._reply(completion(progress))
             return 'completed'
-        choices = progress['remaining'] or progress['blocks']
+        choices = progress['blocks'] if named else progress['remaining'] or progress['blocks']
         if not choices:
             self._reply('当前稿没有可处理的正文，请先提供简历。', 'question')
             return 'completed'
@@ -548,6 +568,10 @@ class Runtime:
                 self._reply('已暂停后续处理。已保存的当前稿和待确认建议保留；需要时可回复“继续”。')
                 self.finish('done', 'completed')
                 return
+            from app.agent_social import handle as handle_social
+            if handle_social(self, turn):
+                self.finish('done', 'waiting_user' if self.waiting else 'completed')
+                return
             from app.agent_image_intake import recognize
             await recognize(self, turn['userMessage']['content'])
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
@@ -573,7 +597,7 @@ class Runtime:
                     self.finish('done', 'completed')
                 else:
                     if not isinstance(error,RepositoryError) or error.code not in {'cancelled','stale_state','session_not_found'}:
-                        self._reply('本轮处理未完成，消息和当前稿仍已保存。请稍后继续；不会把未完成的修改显示为成功。')
+                        self._reply('这一步暂时没有处理成功，消息和当前稿仍已保存。可以稍后再试，未完成的修改不会写入当前稿。')
                     self.finish('failed',getattr(error,'code','agent_failed'))
             except RepositoryError:
                 self.finish('interrupted','stale_state',check=False)

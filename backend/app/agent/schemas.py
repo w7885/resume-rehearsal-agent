@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from app.agent.memory import NewFact, Slot
 from app.agent.ports import Issue, Phase, SourceRef
+from app.resume_structure import SectionKind
 
 ToolName = Literal[
     "read_material",
@@ -85,7 +86,7 @@ StepDecisionAdapter = TypeAdapter(StepDecision)
 class CandidateBrief(BaseModel):
     experience_id: str
     seq: int
-    kind: Literal["project", "work"]
+    kind: SectionKind
     title: str
     role: str | None = None
     phase: Phase
@@ -126,7 +127,7 @@ class RouteDecision(BaseModel):
 
 
 class SegmentSeed(BaseModel):
-    kind: Literal["project", "work"]
+    kind: SectionKind
     title: str
     role: str | None = None
     period: str | None = None

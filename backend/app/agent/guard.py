@@ -17,6 +17,7 @@ from app.agent.schemas import (
 )
 from app.agent.tools import TOOL_SPECS, parse_args
 from app.agent.questions import MAX_QUESTION_LENGTH
+from app.agent.section_policy import EXPERIENCE_KINDS
 
 MAX_STEPS = 8
 MAX_ROUNDS = 6
@@ -241,6 +242,9 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
         return GuardResult()
 
     if isinstance(decision, AskStep):
+        if state.focus_doc is not None and state.focus_doc.kind not in EXPERIENCE_KINDS:
+            if decision.slot in {'responsibility', 'action', 'effect', 'result', 'tech'} or re.search(r'上线|交付后|本人负责哪部分|具体做了哪些步骤', decision.message):
+                return GuardResult(violation=Violation('section_question', '当前是信息／评价段，请问字段、偏好或优势事例，不套用经历效果采访。', True))
         if state.focus_doc is not None and state.focus_doc.no_fact_streak >= 2:
             return GuardResult(
                 violation=Violation(
@@ -253,7 +257,7 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
             return GuardResult(
                 violation=Violation("round_limit", "已达到轮次上限", False)
             )
-        if state.focus_doc is not None and effect_state(state.focus_doc) != "confirmed":
+        if state.focus_doc is not None and state.focus_doc.kind in EXPERIENCE_KINDS and effect_state(state.focus_doc) != "confirmed":
             effect_questions = sum(
                 1
                 for question in state.focus_doc.questions
@@ -316,6 +320,18 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                         "wrong_target", "只能改写当前这一段，不能改其他段落。", True
                     )
                 )
+            if state.focus_doc.kind not in EXPERIENCE_KINDS:
+                evidence = _personal_change_evidence(args, state)
+                for word in ('本科', '专科', '硕士', '博士', '精通', '熟练掌握', '专家', '资深', '卓越', '极强', '执业医师资格证', '教师资格证', '领导能力强', '沟通能力强', '学习能力强', '组织能力强'):
+                    if word in args.after and word not in evidence:
+                        return GuardResult(violation=Violation('unsupported_section_claim', f'新增表述“{word}”缺少个人原文依据，不能用语言升级改变事实或能力等级。', True))
+                if state.focus_doc.kind == 'profile':
+                    for pattern in (r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', r'(?<!\d)1[3-9](?:[ -]?\d){9}(?!\d)'):
+                        normalize = lambda s: re.sub(r'[ -]', '', s).lower()
+                        known = {normalize(s) for s in re.findall(pattern, evidence)}
+                        if any(normalize(s) not in known for s in re.findall(pattern, args.after)):
+                            return GuardResult(violation=Violation('profile_identity_changed', '排版不能改写邮箱或电话号码；新联系方式须引用用户明确提供的原句。', True))
+                return _evidence_gate(args, state)
             answered = any(
                 question.outcome in ("answered", "declined")
                 and question.slot != "confirm"

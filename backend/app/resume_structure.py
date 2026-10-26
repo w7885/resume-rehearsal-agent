@@ -1,11 +1,20 @@
 """Lossless resume boundaries. Never ask a model to regenerate imported text."""
 import re
 import unicodedata
+from typing import Literal
 
 from app.draft_actions import join_markdown
 from app.repository import RepositoryError
 
-SECTION = re.compile(r'^(?:教育(?:经历|背景)|项目(?:经历|经验)|个人项目|个人经历|工作(?:经历|经验)|实习(?:经历|经验)|校园经历|实践经历|技能(?:证书|清单)?|专业技能|个人技能|获奖(?:经历|情况)|荣誉奖项|自我评价|个人总结|求职意向|个人信息|联系方式|Education|Projects?|Experience|Skills|Summary)\s*[:：]?$', re.I)
+SECTION = re.compile(r'^(?:教育(?:经历|背景)|项目(?:经历|经验)|个人项目|个人经历|工作(?:经历|经验)|实习(?:经历|经验)|校园经历|实践经历|技能(?:证书|清单)?|专业技能|个人技能|获奖(?:经历|情况)|荣誉奖项|自我评价|个人总结|自我优势|个人优势|核心优势|个人简介|自我介绍|求职意向|基本信息|个人信息|联系方式|Education|Projects?|Experience|Skills|Summary|Profile)\s*[:：]?$', re.I)
+SectionKind = Literal['project', 'work', 'profile', 'education', 'skills', 'summary', 'awards']
+SECTION_TYPES = {
+    **{s: 'profile' for s in ('基本信息', '个人信息', '联系方式', '求职意向', 'profile')},
+    **{s: 'education' for s in ('教育背景', '教育经历', 'education')},
+    **{s: 'skills' for s in ('技能', '技能证书', '技能清单', '专业技能', '个人技能', 'skills')},
+    **{s: 'summary' for s in ('自我评价', '个人总结', '自我优势', '个人优势', '核心优势', '个人简介', '自我介绍', 'summary')},
+    **{s: 'awards' for s in ('获奖经历', '获奖情况', '荣誉奖项')},
+}
 PROJECT = re.compile(r'^(?:项目(?:经历|经验)?\s*[一二三四五六七八九十0-9]+|第[一二三四五六七八九十0-9]+个项目)(?:\s*[:：、.．｜|—-].*|\s+.*)?$')
 DATE = re.compile(r'^\d{4}[.年/-]\d{1,2}.{0,20}[—–~～-].{0,20}[｜|]')
 # Extracted PDFs often use whitespace instead of "｜": "2025.10—2025.12  项目名  角色".
@@ -28,6 +37,7 @@ _SECTION_KIND = {
     '获奖': None, '获奖经历': None, '获奖情况': None, '荣誉奖项': None,
     '自我评价': None, '个人总结': None, 'summary': None,
     '求职意向': None, '个人信息': None, '联系方式': None,
+    **{s: None for s in SECTION_TYPES},
 }
 _EXPERIENCE_PREFIX = re.compile(
     r'^(?:项目经历|项目经验|项目|个人项目|个人经历|校园经历|实践经历|'
@@ -41,6 +51,8 @@ _ICONS = re.compile(r'^[\s\uf000-\uf8ff\u2022\u00b7\u25aa\u25b8\u25cf\u25c6\u25c
 
 def heading(line):
     label = re.sub(r'^\s{0,3}#{1,6}\s+', '', line.strip()).strip()
+    if label.startswith('**') and label.endswith('**'):
+        label = label[2:-2].strip()
     # NFKC folds Kangxi radicals (⼈⽬) and full-width punctuation back to normal text.
     return _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
 
@@ -49,6 +61,9 @@ def section_kind(label):
     """Return (recognized, kind) for a section heading; kind may be None (frozen)."""
     text = re.sub(r'[:：]\s*$', '', heading(label)).strip()
     key = text.lower()
+    inline_label = re.split(r'[:：]', text, maxsplit=1)[0].strip().lower()
+    if inline_label in SECTION_TYPES:
+        return True, None
     if key in _SECTION_KIND:
         return True, _SECTION_KIND[key]
     return False, None
@@ -110,6 +125,40 @@ def block_kinds(markdowns):
     return kinds
 
 
+def section_kinds(markdowns):
+    """All supported resume sections, without changing the legacy project index."""
+    legacy = block_kinds(markdowns)
+    result, current = [], None
+    for index, (markdown, experience_kind) in enumerate(zip(markdowns, legacy)):
+        lines = [heading(line) for line in markdown.splitlines() if line.strip()]
+        if not lines:
+            result.append(None)
+            continue
+        if len(lines) == 1 and lines[0].endswith('简历'):
+            result.append(None)
+            continue
+        label = re.split(r'[:：]', lines[0], maxsplit=1)[0].strip().lower()
+        if label in SECTION_TYPES:
+            current = SECTION_TYPES[label]
+            result.append(current)
+        elif section_kind(lines[0])[0] or PROJECT.fullmatch(lines[0]) or inline_kind(lines[0]):
+            current = None
+            result.append(experience_kind)
+        elif current is None and index == 0 and not inline_kind(lines[0]) and (experience_kind is None or any(
+                re.search(r'基本信息|个人信息|姓名|求职意向|联系方式|邮箱|电话|\b\d{11}\b|[\w.+-]+@[\w.-]+', line) for line in lines)):
+            result.append('profile')
+        elif experience_kind in {'project', 'work'} and current is None:
+            # An unstructured resume fragment keeps its original experience path.
+            result.append(experience_kind)
+        elif current is not None:
+            result.append(current)
+        elif any(re.search(r'基本信息|个人信息|姓名|求职意向|联系方式|邮箱|电话|\b\d{11}\b|[\w.+-]+@[\w.-]+', line) for line in lines):
+            result.append('profile')
+        else:
+            result.append(experience_kind)
+    return result
+
+
 def split_resume(text):
     """Keep each heading with its content; preserve every byte-equivalent character."""
     starts, offset, fence, in_experience = [0], 0, None, False
@@ -123,14 +172,14 @@ def split_resume(text):
                 fence = None
         elif fence is None:
             label = heading(line)
-            section = bool(SECTION.fullmatch(label))
+            section = bool(SECTION.fullmatch(label)) or bool(inline_kind(label)) or bool(re.match(r'^([^:：]+)[:：].+', label) and re.split(r'[:：]', label, maxsplit=1)[0].strip().lower() in SECTION_TYPES)
             project = bool(PROJECT.fullmatch(label))
             dated_entry = in_experience and bool(ENTRY_DATE.match(label))
             named_entry = in_experience and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(_NAMED_ENTRY.search(label))
             if (section or project or dated_entry or named_entry) and offset and text[starts[-1]:offset].strip():
                 starts.append(offset)
             if section:
-                in_experience = section_kind(label)[1] is not None
+                in_experience = section_kind(label)[1] is not None or inline_kind(label) is not None
         offset += len(line)
     starts.append(len(text))
     return [text[a:b] for a, b in zip(starts, starts[1:]) if text[a:b].strip()]
@@ -192,6 +241,6 @@ def body_span(content, start_line, end_line):
     if not content[b:].strip():
         b = len(content)
     body = content[a:b]
-    if any(re.match(r'^\s*(?:操作指令|修改要求)\s*[:：]|^\s*(?:请|帮我|只|仅).{0,12}(?:优化|修改|改写|润色|精简).{0,12}(?:项目|简历|正文)', line) for line in body.splitlines()):
+    if any(re.match(r'^\s*(?:操作指令|修改要求)\s*[:：]|^\s*(?:请|帮我|只|仅).{0,12}(?:优化|修改|改写|润色|精简).{0,12}(?:项目|简历|正文|基本信息|个人信息|自我评价|自我优势|个人优势|技能|教育|获奖|证书)', line) for line in body.splitlines()):
         raise RepositoryError('invalid_input', '正文范围内仍含修改指令，请将正文与指令分开发送。')
     return a, b

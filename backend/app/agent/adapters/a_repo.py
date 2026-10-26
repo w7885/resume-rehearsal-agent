@@ -218,7 +218,7 @@ class ARepoAdapter:
             raise RepoError("stale_state", "目标段落不在当前稿中。", True)
         sources = {source.source_id: source for source in ctx.sources}
         refs: list[dict[str, Any]] = []
-        seen: set[tuple[str, int]] = set()
+        seen: dict[tuple[str, int], int] = {}
         for ref in source_refs:
             source = sources.get(ref.source_id)
             if source is None:
@@ -227,8 +227,16 @@ class ARepoAdapter:
                 raise RepoError("invalid_input", "引用文字与来源原文不符。", True)
             key = (source.source_id, source.source_revision)
             if key in seen:
+                saved = refs[seen[key]]
+                if ref.quote not in saved['quote']:
+                    # Preserve all support when a summary cites two passages
+                    # from the same original file. Save one contiguous quote,
+                    # never invent a concatenation absent from that source.
+                    left = min(source.text.find(saved['quote']), source.text.find(ref.quote))
+                    right = max(source.text.find(saved['quote']) + len(saved['quote']), source.text.find(ref.quote) + len(ref.quote))
+                    saved['quote'] = source.text[left:right]
                 continue
-            seen.add(key)
+            seen[key] = len(refs)
             refs.append(
                 {
                     "sourceId": source.source_id,
