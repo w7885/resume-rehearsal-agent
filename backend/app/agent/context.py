@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agent.memory import ExperienceDoc, Slot, effect_state
+from app.agent.memory import ExperienceDoc, Slot, effect_state, supported_experience_slots
 from app.agent.ports import Phase, SessionContext
 from app.agent.section_policy import EXPERIENCE_KINDS, RULES
 
@@ -68,11 +68,8 @@ def _effect_block(doc: ExperienceDoc) -> str:
         return '本节不适用经历效果采访；按当前段类型的处理规则整理。'
     state = effect_state(doc)
     if state == "confirmed":
-        statement = next(
-            fact.statement
-            for fact in doc.facts
-            if fact.slot == "effect" and fact.status == "active"
-        )
+        statement = next((fact.statement for fact in reversed(doc.facts)
+                          if fact.slot == "effect" and fact.status == "active"), doc.raw_text)
         return f"已确认：{_clip(statement, 200)}"
     if state == "followup":
         return "已追问 1 次，仍待具体变化（最多再问 1 次）"
@@ -163,6 +160,14 @@ def assemble_context(
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:
+        available = supported_experience_slots(
+            focus, source_texts={s.source_id: s.text for s in ctx.sources},
+            source_kinds={s.source_id: s.kind for s in ctx.sources})
+        if focus.kind in EXPERIENCE_KINDS:
+            sections.append('## 已有材料诊断\n'
+                            + '原文或已核实个人引用中可辨认的维度：'
+                            + '、'.join(slot for slot in ('responsibility', 'action', 'effect') if slot in available)
+                            + '。只补影响改写的缺口；已有维度不重复采访。明确没有效果或拒答时按现有事实处理；记不清最多换角度追问一次。')
         if focus.kind not in EXPERIENCE_KINDS:
             sections.append('## 当前段处理规则（本节优先，不套用经历采访）\n' + RULES[focus.kind]
                             + '\n可以直接整理清楚的原文，不必先问职责、动作或效果。只修改当前目标块，其他个人材料仅作依据。')
@@ -177,7 +182,9 @@ def assemble_context(
         sections.append(
             f"## 当前焦点\n{_focus_block(focus)}\n\n"
             f"## 可用来源（quote 必须逐字来自这里）\n{_sources_block(ctx, focus)}\n"
-            '未完整展示的依据可按 source_id 调用 read_material；不能用事实记忆拼造引用。\n\n'
+            '未完整展示的依据可按 source_id 调用 read_material，优先每次一个来源；'
+            '按返回的 next_offset 继续补读，offset 按原文字符位置计，不按字节或token；'
+            '来源版本变化时重新核对，不跨版本拼接；不能用事实记忆拼造引用。\n\n'
             f"## 已确认事实\n{_facts_block(focus)}\n\n"
             f"## 实际效果\n{_effect_block(focus)}\n\n"
             f"## 问题与缺口\n{_questions_block(focus)}\n\n"

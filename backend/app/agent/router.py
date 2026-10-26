@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from typing import AsyncIterator
 
@@ -55,6 +56,35 @@ def _is_decline(text: str) -> bool:
     if any(marker in value for marker in _EFFECT_MARKERS + _DELIVERY_MARKERS):
         return False
     return any(word in value for word in _DECLINE_WORDS)
+
+
+def _effect_answer_kind(text: str) -> str:
+    """Classify the saved user's response, not an inferred model fact."""
+    value = re.sub(r'\s+', '', text).strip('。！!？?，,')
+    refusal_pattern = (
+        r'不想(?:再|继续)?(?:说|回答|聊|讨论)|'
+        r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
+        r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|'
+        r'别问|不要再问|不再问|跳过|先不说'
+    )
+    for match in re.finditer(refusal_pattern, value):
+        prefix = re.split(r'[，,。；;！？!?]', value[:match.start()])[-1]
+        # Quoted/hypothetical wording and "不是不愿意" are not the user's
+        # present refusal. Do not suppress a legitimate follow-up for them.
+        if (any(marker in prefix for marker in ('如果', '假如', '假设', '“', '「', '『', '"', "'"))
+                or re.search(r'(?:不是|并非|不代表|不表示|没有说|没说)$', prefix)):
+            continue
+        return 'refused'
+    # A delivery status is not an effect refusal. Mixed replies with an actual
+    # change remain available for the normal fact-recording path.
+    if re.search(r'不记得|记不清|忘记|忘了|不确定|不清楚|不知道|应该吧|大概吧|可能吧', value):
+        return 'uncertain'
+    if value in {'没有', '没了', '无', '没有了', '就这些'}:
+        return 'absent'
+    if not re.search(r'不是没有|并非没有|但|不过|可是|然而', value):
+        if re.search(r'(?:没有|没|未)(?:观察到|发现|看到|产生|带来)?(?:任何|什么|明显|实际|可确认的|更多)?(?:效果|变化|改善|提升|反馈|结果)', value):
+            return 'absent'
+    return 'answered'
 
 
 def _asked_question(doc: ExperienceDoc):
@@ -415,7 +445,8 @@ async def _execute(
             sink.emit("focus_skipped", experience_id=focus_doc.experience_id)
             close("skipped", action=action)
             return
-        record_answer(focus_doc, question.id, message_id, declined=True)
+        kind = _effect_answer_kind(text)
+        record_answer(focus_doc, question.id, message_id, declined=True, answer_kind=kind)
         _persist_doc(store, session_id, focus_doc)
         answered = True
 
@@ -438,8 +469,10 @@ async def _execute(
         question = _asked_question(focus_doc)
         if question is not None:
             declined = _is_decline(text)
+            kind = _effect_answer_kind(text)
+            declined = declined or kind in {'absent', 'refused', 'uncertain'}
             record_answer(
-                focus_doc, question.id, message_id, declined=declined
+                focus_doc, question.id, message_id, declined=declined, answer_kind=kind
             )
             _persist_doc(store, session_id, focus_doc)
             answered = True
