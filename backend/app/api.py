@@ -46,7 +46,8 @@ class LocalRequestGuard:
         if method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return await self.app(scope, receive, send)
         is_binary = scope["path"].endswith("/materials") and headers.get(b"content-type", "").split(";")[0].lower() != "application/json"
-        maximum = MAX_UPLOAD_BYTES if is_binary else MAX_JSON_BYTES
+        from app.voice import MAX_AUDIO_BYTES
+        maximum = MAX_AUDIO_BYTES if scope['path'] == '/api/voice/transcribe' else MAX_UPLOAD_BYTES if is_binary else MAX_JSON_BYTES
         length = headers.get(b"content-length")
         if length is not None and (not re.fullmatch(r"[0-9]{1,20}", length) or int(length) > maximum):
             return await error_response("invalid_input", "请求内容过大或长度无效。", 413)(scope, receive, send)

@@ -47,15 +47,28 @@ class FakeClient:
         return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)
 
     async def route(self,**kwargs):
-        block=self.runtime.repo.get_draft(self.runtime.context)['blocks'][0]
+        from app.agent.memory import load_session
+        from app.agent_state import GuardedStateStore
+        loaded = load_session(GuardedStateStore(self.runtime), self.runtime.sid)
+        blocks = self.runtime.repo.get_draft(self.runtime.context)['blocks']
+        block = next((b for b in blocks if loaded and b['blockId'] == loaded[0].current_focus_id), blocks[0])
         return {'action':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1}
 
     async def decide(self,**kwargs):
         self.steps+=1
         user=kwargs['user']
         context=self.runtime.repo.get_session_context(self.runtime.context)
-        block=context['draft']['blocks'][0]
-        source=next((s for s in context['sources'] if s.get('role')=='resume'),context['sources'][0])
+        import re
+        target = re.search(r'段落编号（blockId）：(\S+)', user)[1]
+        block=next(b for b in context['draft']['blocks'] if b['blockId'] == target)
+        source=next((s for s in context['sources'] if s['sourceId'] in {r['sourceId'] for r in block['sourceRefs']}),context['sources'][0])
+        if re.search(r'类型：(\w+)', user)[1] not in {'project', 'work'}:
+            if self.proposed:
+                return SimpleNamespace(data={'action':'finish','outcome':'completed'})
+            self.proposed = True
+            return SimpleNamespace(data={'action':'tool','tool':'propose_change','args':{'operation':'replace','target':target,
+                'before':block['markdown'],'after':'## '+block['markdown'],'reason':'构造信息段排版建议','gaps':[],
+                'source_refs':[{'source_id':r['sourceId'],'source_revision':r['sourceRevision'],'quote':r['quote']} for r in block['sourceRefs']]}})
         if not self.answered(user):
             data={'action':'ask_user','message':'这段经历中，你本人负责哪部分？','slot':'responsibility','related_source_ids':[],'rationale':'先确认个人职责'}
         elif not self.effect_known(user):

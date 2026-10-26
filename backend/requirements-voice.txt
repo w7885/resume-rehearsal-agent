@@ -1,0 +1,2 @@
+# Optional local speech input; no paid service or API key.
+vosk==0.3.45

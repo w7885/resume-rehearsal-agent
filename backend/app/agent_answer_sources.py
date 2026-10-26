@@ -39,7 +39,7 @@ def bind_answers(adapter, session_id, doc):
     with runtime.repo._operation(runtime.context, write=True) as (connection, session):
         # Only the questions already associated with this experience are eligible.
         ids = list(dict.fromkeys(q.answer_message_id for q in doc.questions
-                                if q.outcome == 'answered' and q.slot not in {None, 'confirm'} and q.answer_message_id))
+                                if q.outcome == 'answered' and q.slot not in {None, 'confirm', 'preference'} and q.answer_message_id))
         if not ids:
             return []
         old_prefix = store._key(connection, session, '')

@@ -26,6 +26,14 @@ def guided_question(doc, slot, *, effect_followup=False):
 
 
 def with_answer_guidance(text, doc, slot):
+    if doc.kind not in {'project', 'work'}:
+        from app.agent.section_policy import question
+        if slot not in {'details', 'strength', 'preference', 'context', 'evidence'}:
+            return text
+        if any(word in text for word in ('可从', '可以从', '可按', '例如', '比如', '先说', '可选', '可先', '选一项', '没有也可以')):
+            return text
+        guide = question(doc)[0].split('？', 1)[1]
+        return text + guide if len(text + guide) <= MAX_QUESTION_LENGTH else text
     if slot not in {'responsibility', 'action', 'context', 'effect', 'tech', 'evidence'}:
         return text
     if any(word in text for word in ('可从', '可以从', '可按', '例如', '比如', '先说', '选一项', '没有也可以')):

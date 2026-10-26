@@ -39,6 +39,7 @@ from app.agent.schemas import (
 )
 from app.agent.store import AgentStateStore
 from app.agent.questions import guided_question, with_answer_guidance
+from app.agent.section_policy import EXPERIENCE_KINDS, question as section_question
 from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_text
 
 _PHRASES = {
@@ -97,6 +98,11 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         return None, None
     if doc.round >= MAX_ROUNDS:
         return None, None
+    if doc.kind not in EXPERIENCE_KINDS:
+        text, slot = section_question(doc)
+        if any(q.outcome in {'answered', 'declined'} and q.slot in {'details', 'strength', 'preference'} for q in doc.questions):
+            return None, None
+        return text, slot
     effect = effect_state(doc)
     if effect == "followup":
         return guided_question(doc, 'effect', effect_followup=True), "effect"

@@ -5,11 +5,11 @@ import re
 
 from app.agent_edit_scope import resolve_scope
 from app.repository import RepositoryError
-from app.resume_structure import block_kinds, heading, section_kind
+from app.resume_structure import section_kinds, heading, section_kind
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
-KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段'}
+KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段', '跳过这一节', '跳过这节', '跳过这部分'}
 
 
 def plain(text):
@@ -45,7 +45,7 @@ def plan(runtime):
     if allowed == set():
         raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目，请明确要修改的项目。')
     blocks = [b for b in context['draft']['blocks'] if allowed is None or b['blockId'] in allowed]
-    kinds = block_kinds([b['markdown'] for b in blocks])
+    kinds = section_kinds([b['markdown'] for b in blocks])
     blocks = [b for b, kind in zip(blocks, kinds) if kind is not None]
     with runtime.repo._operation(runtime.context) as (connection, session):
         progress = _load(connection, session)
@@ -73,6 +73,7 @@ def plan(runtime):
             remaining.sort(key=lambda b: b['blockId'] != waiting)
         return {'blocks': blocks, 'done': done, 'remaining': remaining, 'review': review,
                 'waiting': waiting, 'blocked': progress.get('blocked'),
+                'sectionKinds': dict(zip([b['blockId'] for b in blocks], [k for k in kinds if k is not None])),
                 'pending': pending, 'limitedScope': allowed is not None, 'sources': context['sources']}
 
 
@@ -93,4 +94,4 @@ def record(runtime, block_id, *, completed=False, blocked=False):
 
 def completion(plan):
     prefix = '本次指定范围已处理完。' if plan['limitedScope'] else '本轮简历检查已完成。'
-    return prefix + f"已处理 {len(plan['done'])} 段；当前稿已保存，可以预览或下载。交付前仍请核对经历、数字和资质。"
+    return prefix + f"已处理 {len(plan['done'])} 段，当前稿已保存。可以先预览或下载，看看是否符合你的表达习惯；有想调整的地方再告诉我。投递前，记得最后核对经历、数字和资质。"

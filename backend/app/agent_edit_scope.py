@@ -2,11 +2,30 @@
 import re
 
 from app.repository import RepositoryError
-from app.resume_structure import DATE, ENTRY_DATE, PROJECT, block_kinds, heading
+from app.resume_structure import DATE, ENTRY_DATE, PROJECT, block_kinds, section_kinds, SECTION_TYPES, heading, inline_kind
 
 NUMBERS = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 ORDINAL = r'(?:第\s*([0-9一二两三四五六七八九十]+)\s*(?:个|项)?\s*项目|项目\s*([0-9一二两三四五六七八九十]+))'
 REQUEST = re.compile(r'(?:(?:只|仅)(?:对|把)?(?:优化|修改|改写|调整|润色|精简|改)?\s*|(?:优化|修改|改写|调整|润色|精简|改)\s*)' + ORDINAL)
+SECTION_NAMES = tuple(sorted((s for s in SECTION_TYPES if not s.isascii()), key=len, reverse=True))
+
+
+def named_sections(text):
+    """Only explicit section-edit requests; ordinary biography is not authority."""
+    if re.search(r'如果|假如|是否|例如|比如|他说|她说|不要|别|[“”「」"?？]', text):
+        return []
+    for name in SECTION_NAMES:
+        if text.startswith(name) and re.match(r'^(?:部分|这一节|这节|的)?(?:请|再|先|帮我)?(?:修改|改写|改|调整|润色|精简|压缩|简短|简洁|更正式|太冗余|太口语|太随意)', text[len(name):]):
+            return [name]
+    if not re.match(r'^(?:请|帮我|我想|这次|现在|接下来|只|仅|优化|修改|改写|调整|润色|精简|整理|检查|完善|改)', text):
+        return [text] if text in SECTION_NAMES else []
+    if not re.search(r'优化|修改|改写|调整|润色|精简|整理|检查|完善|排版|改', text):
+        return []
+    return list(dict.fromkeys(s for s in SECTION_NAMES if s in text))
+
+
+def whole_resume_request(text):
+    return text.strip() in {'都改', '整体', '全部', '整体改', '全部改', '都改改', '都改一下'} or bool(re.match(r'^(?:请|帮我|现在|接下来|我想|这次|\s)*(?:检查|优化|整理|完善|修改|改写)\s*(?:整份简历|全文|所有部分|全部章节)', text))
 
 
 def project_blocks(repo, context):
@@ -19,10 +38,10 @@ def project_blocks(repo, context):
             texts.append(original[0] if original else block['markdown'])
         for block, text, kind in zip(draft['blocks'], texts, block_kinds(texts)):
             # Dated entries in 实习/工作 are work, not projects.
-            if kind == 'work':
+            if kind != 'project':
                 continue
             lines = [heading(line) for line in text.splitlines() if line.strip()]
-            if lines and (PROJECT.fullmatch(lines[0]) or DATE.match(lines[0]) or ENTRY_DATE.match(lines[0]) or
+            if lines and (PROJECT.fullmatch(lines[0]) or inline_kind(lines[0]) == 'project' or DATE.match(lines[0]) or ENTRY_DATE.match(lines[0]) or
                           (lines[0] in {'项目经历', '项目经验', 'Projects', '项目'} and len(lines) > 1) or
                           (text.lstrip().startswith('#') and re.search(r'系统|平台|工具|助手|App|应用', lines[0]))):
                 result.append(block)
@@ -43,8 +62,22 @@ def resolve_scope(repo, context):
             lines.extend(re.split(r'[，,。；;！!]', line))
         for line in reversed(lines):
             text = line.strip()
-            if re.match(r'^(?:现在|接下来|请|帮我|我想|可以|\s)*(?:改|修改|优化|调整|重写|改写)?(?:整份简历|全部项目|所有项目|全文)', text):
+            if whole_resume_request(text) or re.match(r'^(?:现在|接下来|请|帮我|我想|可以|\s)*(?:改|修改|优化|调整|重写|改写)?(?:整份简历|全部项目|所有项目|全文)', text):
                 return None
+            sections = named_sections(text)
+            if sections:
+                draft = repo.get_draft(context)['blocks']
+                kinds = section_kinds([b['markdown'] for b in draft])
+                hits = set()
+                from app.agent.section_policy import section_title
+                for name in sections:
+                    exact = [b['blockId'] for b, kind in zip(draft, kinds) if kind is not None and (
+                        section_title(b['markdown'], kind) == name or any(heading(line).rstrip(':：').lower() == name for line in b['markdown'].splitlines()[:2]))]
+                    matches = exact or [b['blockId'] for b, kind in zip(draft, kinds) if SECTION_TYPES[name] == kind]
+                    if len(matches) != 1:
+                        return set()
+                    hits.update(matches)
+                return hits
             if re.search(r'不要|别', text):
                 continue
             match = REQUEST.search(text)
@@ -72,6 +105,8 @@ def resolve_scope(repo, context):
                     return {hits[0]} if len(hits) == 1 else set()
                 if re.search(r'项目|系统|平台|应用|助手', named[1]):
                     return set()
+                if named[1].strip() not in {'一下', '文字', '措辞', '表达', '这段', '这一段', '当前段'}:
+                    return set()
                 continue
             values = [value for value in match.groups() if value]
             raw = values[0]
@@ -90,6 +125,12 @@ def resolve_scope(repo, context):
 def validate_project_refs(repo, context, block_id, refs):
     """A whole-file source ID does not authorize citing another project's slice."""
     with repo._operation(context) as (connection, _):
+        draft = repo.get_draft(context)['blocks']
+        kind = next((k for b, k in zip(draft, section_kinds([b['markdown'] for b in draft])) if b['blockId'] == block_id), None)
+        if kind in {'summary', 'skills'}:
+            # Same-person current sources can support a cross-section summary;
+            # ordinary _refs still checks origin, revision and exact quotes.
+            return
         permitted = connection.execute('SELECT source_id,source_revision,quote FROM draft_sources WHERE session_id=? AND block_id=?', (context.session_id, block_id)).fetchall()
         for ref in refs:
             sid = ref.source_id if hasattr(ref, 'source_id') else ref['sourceId']

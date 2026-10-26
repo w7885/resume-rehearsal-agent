@@ -53,6 +53,14 @@
 .cp-page .cp-composer textarea:focus-visible { outline:none; }
 .cp-page .cp-composer textarea::placeholder { color:#707a73; }
 .cp-composer-tools { display:flex; align-items:center; gap:8px; }
+.cp-page .cp-voice-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:44px; min-width:44px; padding:7px 9px; color:#426150; background:transparent; border:1px solid transparent; border-radius:9px; font-size:12px; white-space:nowrap; }
+.cp-page .cp-voice-button.cp-recording { color:#9b3434; background:#fff0ef; border-color:#e3b8b4; }
+.cp-page .cp-voice-button:active:not(:disabled),.cp-page .cp-voice-action:active:not(:disabled) { background:#e4ebe6; }
+.cp-page .cp-voice-action { min-height:44px; min-width:44px; padding:6px; color:#426150; background:transparent; font-size:12px; }
+.cp-voice-status { margin-top:6px; font-size:12px; line-height:1.6; color:#48604f; }
+.cp-voice-status.cp-voice-error { color:#99362e; }
+.cp-voice-time { min-width:24px; font-variant-numeric:tabular-nums; }
+@media(max-width:680px) { .cp-composer-tools { flex-wrap:wrap; }.cp-page .cp-voice-button { padding:7px; }.cp-voice-status { overflow-wrap:anywhere; } }
 .cp-page .cp-attach-button { display:flex; align-items:center; gap:6px; color:#6a756d; font-size:11px; padding:7px 4px; border-radius:5px; min-height:36px; }
 .cp-composer-hint { font-size:10px; color:#9bA19e; margin-left:auto; }
 .cp-page .cp-send { width:34px; height:34px; min-height:34px; margin-left:8px; border-radius:10px; background:var(--cp-accent); color:#fff; padding:6px; display:grid; place-items:center; }

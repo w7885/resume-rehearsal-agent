@@ -17,10 +17,12 @@ from app.agent.ports import (
     Suggestion,
 )
 from app.agent.store import AgentStateStore
+from app.resume_structure import SectionKind, section_kinds
 
 Slot = Literal[
     "responsibility", "context", "action", "result",
     "effect", "evidence", "tech", "confirm",
+    "details", "strength", "preference",
 ]
 FactStatus = Literal["active", "superseded"]
 
@@ -56,7 +58,7 @@ class Question(BaseModel):
 class ExperienceDoc(BaseModel):
     experience_id: str
     seq: int
-    kind: Literal["project", "work"]
+    kind: SectionKind
     title: str = ""
     role: str | None = None
     period: str | None = None
@@ -432,17 +434,15 @@ def sync_experiences(
     if doc is None:
         doc = SessionDoc(current_focus_id=ctx.session.current_focus_id)
         revision = None
-    from app.resume_structure import block_kinds
-    kinds = block_kinds([block.markdown for block in ctx.draft_blocks])
-    order = list(doc.experience_order)
+    kinds = section_kinds([block.markdown for block in ctx.draft_blocks])
+    order = []
     changed = False
     for block, kind in zip(ctx.draft_blocks, kinds):
         if kind is None:
-            # Frozen sections are parsed and editable but never interviewed.
-            if block.block_id in order:
-                order.remove(block.block_id)
-                changed = True
             continue
+        order.append(block.block_id)
+        from app.agent.section_policy import section_title
+        title = _block_title(block.markdown) if kind in {'project', 'work'} else section_title(block.markdown, kind)
         existing = load_experience(store, session_id, block.block_id)
         if existing is None:
             save_experience(
@@ -450,9 +450,9 @@ def sync_experiences(
                 session_id,
                 ExperienceDoc(
                     experience_id=block.block_id,
-                    seq=len(order) + 1,
+                    seq=len(order),
                     kind=kind,
-                    title=_block_title(block.markdown),
+                    title=title,
                     raw_text=block.markdown,
                     source_ids=[ref.source_id for ref in block.source_refs],
                     block_id=block.block_id,
@@ -460,14 +460,14 @@ def sync_experiences(
                 ),
                 None,
             )
-        elif existing[0].kind != kind:
+        elif existing[0].kind != kind or existing[0].seq != len(order):
             existing[0].kind = kind
+            existing[0].seq = len(order)
+            existing[0].title = title
             save_experience(store, session_id, existing[0], existing[1])
-        if block.block_id not in order:
-            order.append(block.block_id)
-            changed = True
-    if changed:
+    if order != doc.experience_order:
         doc.experience_order = order
+        changed = True
     if doc.current_focus_id not in order:
         doc.current_focus_id = order[0] if order else None
         changed = True

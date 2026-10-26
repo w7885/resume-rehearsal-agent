@@ -93,7 +93,7 @@ def _template(code: str, ref: str, kind: str | None, total: int, title: str = ""
         return f"有 {total} 段都叫「{title}」，是哪一段？"
     if code == "multiple_match":
         return f"找到 {total} 段相关的，选哪个？"
-    return "简历里还没识别到项目/实习，先上传或粘贴一段经历吧。"
+    return "当前还没有可整理的简历段落，可以先上传或粘贴简历任一部分。"
 
 
 def _clarify(

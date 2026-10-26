@@ -25,9 +25,9 @@ from app.agent.route import RouteResult, route_message
 from app.agent.store import AgentStateStore
 
 _NOTICES = {
-    "meta": "这次先专注改当前这段经历。",
-    "chitchat": "我们先回到简历这段经历。",
-    "refuse": "这个问题我先不展开，继续看当前这段。",
+    "meta": "可以打开“当前稿”查看、编辑或下载；想调整某段经历，直接告诉我就好。",
+    "chitchat": "可以先聊到这里。之后想继续调整简历，直接告诉我就好。",
+    "refuse": "这部分可以先跳过。你愿意继续时，我们再从已有材料接着整理。",
     "global_edit": "整体改写还没开放，先改当前这段。",
 }
 _LOCKS: dict[str, asyncio.Lock] = {}
@@ -391,7 +391,7 @@ async def _execute(
         )
         if pending is None:
             sink.emit(
-                "notice", code="no_pending_suggestion", text="当前没有待确认的改写。"
+                "notice", code="no_pending_suggestion", text="好，当前没有需要采用的新建议，正文保持原样。想补充或调整时，直接告诉我就好。"
             )
             close("waiting_user", action=action)
             return

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.agent.memory import ExperienceDoc, Slot, effect_state
 from app.agent.ports import Phase, SessionContext
+from app.agent.section_policy import EXPERIENCE_KINDS, RULES
 
 _SLOT_ORDER: list[Slot] = [
     "responsibility",
@@ -11,6 +12,7 @@ _SLOT_ORDER: list[Slot] = [
     "effect",
     "evidence",
     "tech",
+    "details", "strength", "preference",
 ]
 
 
@@ -22,12 +24,12 @@ def _focus_block(doc: ExperienceDoc) -> str:
     lines = [
         f"类型：{doc.kind}",
         f"标题：{doc.title}",
-        f"角色：{doc.role or '未填写'}",
-        f"时间：{doc.period or '未填写'}",
         f"段落编号（blockId）：{doc.block_id or doc.experience_id}",
         f"段落版本（blockRevision）：{doc.block_revision}",
         f"原文（整段，before 必须逐字复制；最多 4000 字）：\n{_clip(doc.raw_text, 4000)}",
     ]
+    if doc.kind in EXPERIENCE_KINDS:
+        lines[2:2] = [f"角色：{doc.role or '未填写'}", f"时间：{doc.period or '未填写'}"]
     if doc.source_ids:
         lines.append(f"来源编号：{', '.join(doc.source_ids)}")
     return "\n".join(lines)
@@ -62,6 +64,8 @@ def _questions_block(doc: ExperienceDoc) -> str:
 
 
 def _effect_block(doc: ExperienceDoc) -> str:
+    if doc.kind not in EXPERIENCE_KINDS:
+        return '本节不适用经历效果采访；按当前段类型的处理规则整理。'
     state = effect_state(doc)
     if state == "confirmed":
         statement = next(
@@ -82,13 +86,16 @@ def _sources_block(ctx: SessionContext, doc: ExperienceDoc) -> str:
     rows = [
         source
         for source in ctx.sources
-        if source.source_id in ids and source.kind in ("resume", "supplement")
+        if (source.source_id in ids or doc.kind in {'summary', 'skills'}) and source.kind in ("resume", "supplement")
     ]
     if not rows:
         return "（暂无）"
     needed = {r.source_id for f in doc.facts if f.status == 'active' for r in f.source_refs}
     important = [s for s in rows if s.source_id in needed]
     originals = [s for s in rows if s.kind == 'resume' and s.source_id not in needed]
+    if doc.kind in {'summary', 'skills'}:
+        import re
+        originals.sort(key=lambda s: (s.source_id not in ids, not bool(re.search(r'负责|实现|开发|测试|整理|协调|分析|组织', s.text))))
     supplements = [s for s in rows if s.kind == 'supplement' and s.source_id not in needed]
     selected = [*important, *originals[:6], *supplements[-6:]][:12]
     return "\n\n".join(
@@ -156,6 +163,9 @@ def assemble_context(
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:
+        if focus.kind not in EXPERIENCE_KINDS:
+            sections.append('## 当前段处理规则（本节优先，不套用经历采访）\n' + RULES[focus.kind]
+                            + '\n可以直接整理清楚的原文，不必先问职责、动作或效果。只修改当前目标块，其他个人材料仅作依据。')
         feedback = [r for r in ctx.revision_feedback if r.get('experience_id') == focus.experience_id
                     and r.get('block_revision') == focus.block_revision]
         if feedback:

@@ -9,6 +9,8 @@ import ChatDraftPanel from './ChatDraftPanel';
 import ChatInspector from './ChatInspector';
 import type { Inspection } from './ChatInspector';
 import { useChatDraft } from './useChatDraft';
+import { useVoiceInput } from './useVoiceInput';
+import { appendVoiceText } from './voiceInput';
 import type { ChatAttachment } from './chatSend';
 import type { ChatMaterial, ChatMessage, ChatSession, Conversation } from './types';
 import './chat.css';
@@ -24,6 +26,7 @@ export default function ChatPage() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const active = useRef<Conversation | null>(null);
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
+  const draftsRef = useRef(drafts); draftsRef.current = drafts;
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const [sending, setSending] = useState(false), [loading, setLoading] = useState(true);
@@ -43,7 +46,14 @@ export default function ChatPage() {
   const draft = drafts[key] ?? EMPTY;
   const selections = pending?.key === key ? pending.operation.attachments() : draft.attachments;
   const readOnly = conversation?.session.mode === 'mock';
-  const unavailable = loading || sending || !!pending || !!deleteTarget || readOnly;
+  const baseUnavailable = loading || sending || !!pending || !!deleteTarget || !!readOnly;
+  const voice = useVoiceInput(key, baseUnavailable, (target, text) => {
+    const previous = draftsRef.current, current = previous[target] ?? EMPTY;
+    const next = { ...previous, [target]: { ...current, text: appendVoiceText(current.text, text) } };
+    draftsRef.current = next; setDrafts(next);
+    requestAnimationFrame(() => composer.current?.focus());
+  });
+  const unavailable = baseUnavailable || voice.blocking;
   const editor = useChatDraft(loading || sending || !!pending || !!deleteTarget, (sid, result) => {
     if (active.current?.session.sessionId !== sid) return;
     const next = { ...active.current, session: { ...active.current.session, ...result.session }, draft: result.draft };
@@ -68,7 +78,11 @@ export default function ChatPage() {
   const refreshList = async () => { setSessions(await api.listChatSessions()); };
   const scrollToEnd = () => requestAnimationFrame(() => thread.current?.scrollTo({ top: thread.current.scrollHeight,
     behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
-  const editDraft = (changes: Partial<ComposerDraft>) => setDrafts(previous => ({ ...previous, [key]: { ...(previous[key] ?? EMPTY), ...changes } }));
+  const editDraft = (changes: Partial<ComposerDraft>) => {
+    const previous = draftsRef.current;
+    const next = { ...previous, [key]: { ...(previous[key] ?? EMPTY), ...changes } };
+    draftsRef.current = next; setDrafts(next);
+  };
 
   useEffect(() => {
     let live = true;
@@ -88,13 +102,14 @@ export default function ChatPage() {
   }, [draft.text, key]);
   useEffect(() => {
     const protect = (event: BeforeUnloadEvent) => {
-      if (editor.ref.current?.hasUnsettled() || pending || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
+      if (voice.blocking || editor.ref.current?.hasUnsettled() || pending || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', protect); return () => window.removeEventListener('beforeunload', protect);
-  }, [drafts, pending]);
+  }, [drafts, pending, voice.blocking]);
 
   const navigate = async (sid: string | null) => {
     if (locked.current || pendingRef.current) return;
+    voice.cancel();
     setAgentTask(null);
     locked.current = true; setLoading(true); setError('');
     try {
@@ -105,7 +120,7 @@ export default function ChatPage() {
     finally { locked.current = false; setLoading(false); }
   };
   const send = async () => {
-    if (locked.current || loading || readOnly || (!pendingRef.current && !draft.text.trim() && !draft.attachments.length)) return;
+    if (locked.current || loading || readOnly || voice.blocking || (!pendingRef.current && !draft.text.trim() && !draft.attachments.length)) return;
     locked.current = true; setSending(true); setError('');
     let task = pendingRef.current;
     try {
@@ -216,6 +231,7 @@ export default function ChatPage() {
   };
   const openDelete = async (session: ChatSession) => {
     if (locked.current || pendingRef.current || sending || loading || editor.snapshot.status === 'saving') return;
+    voice.cancel();
     locked.current = true; setLoading(true); setError('');
     try {
       await editor.flush();
@@ -285,7 +301,12 @@ export default function ChatPage() {
           {replyTarget && <div className="cp-reply-selection"><span>回复：{replyTarget.content.slice(0, 80)}</span><button disabled={unavailable} aria-label="取消回复关联" onClick={() => editDraft({ replyToMessageId: undefined })}><Icon name="close" size={14} /></button></div>}
           {!!selections.length && <div className="cp-selected-files">{selections.map(item => <span key={item.localId}><Icon name="attach" size={14} />{item.material?.name ?? item.file?.name}{item.material ? ' · 原件已保存' : ''}<button disabled={unavailable} aria-label={`移除附件 ${item.material?.name ?? item.file?.name}`} onClick={() => editDraft({ attachments: draft.attachments.filter(value => value.localId !== item.localId) })}><Icon name="close" size={13} /></button></span>)}</div>}
           <label className="cp-sr-only" htmlFor="live-composer">聊天消息</label><textarea id="live-composer" ref={composer} value={draft.text} onChange={event => editDraft({ text: event.target.value })} maxLength={50000} placeholder={readOnly ? '模拟会话只供回顾，请新建对话…' : '输入消息，或添加附件…'} rows={1} readOnly={!!pending || !!readOnly} disabled={loading || sending} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void send(); } }} />
-          <div className="cp-composer-tools"><button className="cp-attach-button" aria-label="添加附件" disabled={unavailable} onClick={() => fileInput.current?.click()}><Icon name="attach" size={19} /><span>添加附件</span></button><span className="cp-composer-hint" role="status">{sending ? agentTask ? 'Agent 正在处理…' : '正在保存，请稍候…' : pending ? '本次发送未完成，输入仍保留' : 'Enter 发送，Shift + Enter 换行'}</span><button className="cp-send" aria-label="发送消息" disabled={unavailable || (!draft.text.trim() && !draft.attachments.length)} onClick={() => { void send(); }}><Icon name="send" size={21} /></button></div>
+          <div className="cp-composer-tools"><button className="cp-attach-button" aria-label="添加附件" disabled={unavailable} onClick={() => fileInput.current?.click()}><Icon name="attach" size={19} /><span>添加附件</span></button>
+            <button className={`cp-voice-button ${voice.phase === 'recording' ? 'cp-recording' : ''}`} aria-label={voice.phase === 'recording' ? '停止录音并转成文字' : '语音输入'} aria-pressed={voice.phase === 'recording'} title="普通话录音，本机转写，校对后手动发送" disabled={baseUnavailable || !voice.available || voice.loading || voice.phase === 'requesting' || voice.phase === 'transcribing'} onClick={() => voice.phase === 'recording' ? voice.stop() : voice.start()}><Icon name={voice.phase === 'recording' ? 'stop' : 'mic'} size={18} /><span>{voice.phase === 'recording' ? '停止并转文字' : voice.phase === 'requesting' ? '等待授权…' : voice.phase === 'transcribing' ? '转写中…' : voice.canRetry ? '重新录音' : '语音输入'}</span>{voice.phase === 'recording' && <span aria-hidden="true" className="cp-voice-time">{voice.seconds}s</span>}</button>
+            {voice.canRetry && <button className="cp-voice-action" disabled={baseUnavailable || voice.phase === 'transcribing'} onClick={voice.retry}>重试转写</button>}
+            {voice.blocking && <button className="cp-voice-action" disabled={baseUnavailable} onClick={voice.cancel}>取消语音</button>}
+            <span className="cp-composer-hint" role="status">{sending ? agentTask ? 'Agent 正在处理…' : '正在保存，请稍候…' : pending ? '本次发送未完成，输入仍保留' : voice.blocking ? '语音不会自动发送' : 'Enter 发送，Shift + Enter 换行'}</span><button className="cp-send" aria-label="发送消息" disabled={unavailable || (!draft.text.trim() && !draft.attachments.length)} onClick={() => { void send(); }}><Icon name="send" size={21} /></button></div>
+          {(voice.error || voice.blocking) && <div className={`cp-voice-status ${voice.error ? 'cp-voice-error' : ''}`} role={voice.error ? 'alert' : 'status'}>{voice.error || (voice.phase === 'requesting' ? '请在浏览器中允许使用麦克风。' : voice.phase === 'recording' ? '正在录音，最长 60 秒。停止后可校对文字；切换会话会取消本段语音。' : '正在本机转写，已有文字仍保留；切换会话会取消本次结果。')}{!voice.available && !voice.loading && <button className="cp-voice-action" onClick={voice.reload}>重试语音服务</button>}</div>}
           <input ref={fileInput} className="cp-sr-only" tabIndex={-1} type="file" multiple accept=".md,.docx,.pdf,.png,.jpg,.jpeg" disabled={unavailable} onChange={event => { chooseFiles(event.target.files); event.target.value = ''; }} />
         </div>
       </div>
