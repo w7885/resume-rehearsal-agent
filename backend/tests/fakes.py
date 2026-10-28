@@ -16,7 +16,23 @@ from app.agent.ports import (
     SourceRef,
     SourceText,
     Suggestion,
+    verify_proposal_snapshot,
 )
+
+
+def seed_test_suggestion(repo, context, proposal):
+    """Capture trusted input before inserting a constructed test candidate."""
+    from app.agent.adapters.a_repo import ARepoAdapter
+    from app.agent.ports import capture_proposal_snapshot
+    from app.material_tools import MaterialTools
+
+    adapter = ARepoAdapter(tools=MaterialTools(repo, context), context=context,
+                           session_id=context.session_id)
+    snapshot = capture_proposal_snapshot(
+        adapter.get_session_context(context.session_id), proposal['target']['blockId'],
+        run_id=context.run_id,
+    )
+    return repo.save_suggestion(context, proposal, snapshot=snapshot)
 
 
 def _default_sources() -> list[SourceText]:
@@ -80,6 +96,7 @@ class FakeRepo:
             draft_blocks=[b.model_copy(deep=True) for b in self.draft_blocks],
             suggestions=[s.model_copy(deep=True) for s in self.suggestions],
             issues=[i.model_copy(deep=True) for i in self.issues],
+            sources=[s.model_copy(deep=True) for s in self.sources],
         )
 
     def search_evidence(
@@ -127,6 +144,7 @@ class FakeRepo:
         reason: str,
         source_refs: list[SourceRef],
         gaps: list[str],
+        *, snapshot=None,
     ) -> Suggestion:
         if session_id != self.session.session_id:
             raise RepoError("session_not_found", f"unknown session {session_id}")
@@ -134,6 +152,18 @@ class FakeRepo:
             raise RepoError(
                 "scope_violation", f"experience {experience_id} is not in session"
             )
+        verify_proposal_snapshot(snapshot, self.get_session_context(session_id),
+                                 session_id, experience_id,
+                                 run_id=snapshot.run_id if snapshot is not None else None)
+        if before != snapshot.before:
+            raise RepoError('stale_anchor', 'Suggestion does not use the frozen before', False)
+        frozen_sources = {sid: revision for sid, revision, _ in snapshot.source_versions}
+        frozen_refs = []
+        for ref in source_refs:
+            expected = frozen_sources.get(ref.source_id)
+            if expected is None or ref.source_revision not in (0, expected):
+                raise RepoError('stale_state', 'Source does not belong to the input snapshot', False)
+            frozen_refs.append(ref.model_copy(update={'source_revision': expected}))
         self._suggestion_seq += 1
         suggestion = Suggestion(
             suggestion_id=f"sg_{self._suggestion_seq}",
@@ -143,7 +173,7 @@ class FakeRepo:
             before=before,
             after=after,
             reason=reason,
-            source_refs=[ref.model_copy(deep=True) for ref in source_refs],
+            source_refs=frozen_refs,
             gaps=list(gaps),
             created_at=datetime.now(timezone.utc).isoformat(),
         )

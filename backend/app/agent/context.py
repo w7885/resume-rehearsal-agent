@@ -26,7 +26,7 @@ def _focus_block(doc: ExperienceDoc) -> str:
         f"标题：{doc.title}",
         f"段落编号（blockId）：{doc.block_id or doc.experience_id}",
         f"段落版本（blockRevision）：{doc.block_revision}",
-        f"原文（整段，before 必须逐字复制；最多 4000 字）：\n{_clip(doc.raw_text, 4000)}",
+        f"原文（整段；before 可省略，由系统绑定原文快照；此处最多展示4000字符）：\n{_clip(doc.raw_text, 4000)}",
     ]
     if doc.kind in EXPERIENCE_KINDS:
         lines[2:2] = [f"角色：{doc.role or '未填写'}", f"时间：{doc.period or '未填写'}"]
@@ -52,7 +52,7 @@ def _facts_block(doc: ExperienceDoc) -> str:
 
 def _questions_block(doc: ExperienceDoc) -> str:
     lines: list[str] = []
-    pending = [q for q in doc.questions if q.outcome == "asked"]
+    pending = [q for q in doc.questions if q.active and q.outcome == "asked"]
     for question in pending[-3:]:
         lines.append(f"- 未答：{question.text}")
     recent = [q for q in doc.questions if q.outcome != "asked"][-3:]
@@ -120,6 +120,16 @@ def assemble_context(
 ) -> str:
     by_id = {doc.experience_id: doc for doc in experiences}
     focus = by_id.get(focus_experience_id or "")
+    if focus is not None:
+        matches = [b for b in ctx.draft_blocks if
+                   (b.block_id == focus.block_id if focus.block_id is not None else
+                    b.block_id == focus.experience_id or b.experience_id == focus.experience_id)]
+        current = matches[0] if len(matches) == 1 else None
+        if current is not None:
+            # Show exactly the input block used by the snapshot and guard,
+            # without mutating historical factual memory.
+            focus = focus.model_copy(update={'raw_text': current.markdown,
+                                            'block_revision': current.block_revision})
 
     experience_lines = []
     for experience_id in ctx.session.experience_order:

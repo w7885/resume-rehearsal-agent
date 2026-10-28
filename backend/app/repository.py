@@ -10,6 +10,7 @@ import sqlite3
 from uuid import uuid4
 
 from app.db import DEFAULT_DATABASE_PATH, database, transaction
+from app.proposal_snapshot import ProposalSnapshot, SnapshotMismatch
 
 
 class RepositoryError(ValueError):
@@ -481,7 +482,7 @@ class Repository:
             result["supersedesSuggestionId"] = row["supersedes_suggestion_id"]
         return result
 
-    def save_suggestion(self, context: RequestContext, proposal: dict):
+    def save_suggestion(self, context: RequestContext, proposal: dict, *, snapshot=None):
         _keys(proposal, {"operation", "target", "before", "after", "reason", "sourceRefs", "gaps"}, {"supersedesSuggestionId"})
         _keys(proposal["target"], {"blockId", "expectedBlockRevision"})
         _integer(proposal["target"]["expectedBlockRevision"], "目标段落版本")
@@ -495,6 +496,29 @@ class Repository:
             raise RepositoryError("invalid_input", "信息缺口必须是文字列表。")
         with self._operation(context, write=True) as (connection, session):
             block = self._current_block(connection, session, proposal["target"]["blockId"], proposal["target"]["expectedBlockRevision"])
+            if context.run_id is not None and not isinstance(snapshot, ProposalSnapshot):
+                raise RepositoryError('missing_snapshot', '模型建议缺少可信生成快照。', False)
+            if snapshot is not None:
+                if not isinstance(snapshot, ProposalSnapshot):
+                    raise RepositoryError('missing_snapshot', '生成快照类型无效。', False)
+                if snapshot.target_id != block['block_id'] or proposal['before'] != snapshot.before:
+                    raise RepositoryError('scope_violation', '建议目标或原文与输入快照不一致。', False)
+                current_sources = []
+                for source_id, _, _ in snapshot.source_versions:
+                    source = self._find_source(connection, context.session_id, source_id)
+                    self._require_active(connection, source)
+                    kind = source['role'] if source['role'] in {'resume', 'supplement', 'jd'} else 'other'
+                    current_sources.append((source_id, source['source_revision'], kind))
+                try:
+                    snapshot.verify(
+                        session_id=session['session_id'], block_id=block['block_id'],
+                        state_revision=session['state_revision'], draft_revision=session['draft_revision'],
+                        resume_generation=session['current_resume_generation'],
+                        block_revision=block['block_revision'], before=block['markdown'],
+                        source_versions=tuple(current_sources), run_id=context.run_id,
+                    )
+                except SnapshotMismatch as error:
+                    raise RepositoryError(error.code, str(error), False) from error
             supersedes = proposal.get("supersedesSuggestionId")
             if supersedes is not None:
                 _text(supersedes, "原建议编号")
@@ -505,6 +529,10 @@ class Repository:
             if proposal["before"] != block["markdown"]:
                 raise RepositoryError("stale_state", "建议原文与当前段落不一致。")
             refs = self._refs(connection, context.session_id, proposal["sourceRefs"], required=True)
+            if snapshot is not None:
+                frozen_sources = {sid: revision for sid, revision, _ in snapshot.source_versions}
+                if any(frozen_sources.get(ref['sourceId']) != ref['sourceRevision'] for ref in refs):
+                    raise RepositoryError('stale_state', '引用不属于生成时固定的来源版本。', False)
             if not any(self._find_source(connection, context.session_id, ref["sourceId"], ref["sourceRevision"])["role"] in {"resume", "supplement"} for ref in refs):
                 raise RepositoryError("invalid_input", "岗位要求不能单独作为个人经历的改写依据。")
             suggestion_id = _id("suggestion")

@@ -18,6 +18,7 @@ from app.agent.schemas import (
 from app.agent.tools import TOOL_SPECS, parse_args
 from app.agent.questions import MAX_QUESTION_LENGTH
 from app.agent.section_policy import EXPERIENCE_KINDS
+from app.agent.claim_text import claim_comparison_text
 
 MAX_STEPS = 8
 MAX_ROUNDS = 6
@@ -67,19 +68,21 @@ _PROPER_NOUN = re.compile(r"[A-Za-z][A-Za-z0-9+.#-]{2,}")
 _CLAUSE = re.compile(r"[\n，,。；;！？!?]+")
 _UNASSERTED = re.compile(
     r"如果|假如|假设|假定|是否|能否|可否|计划|打算|希望|想写|想要|备考|正在准备|"
-    r"尚未|尚无|暂无|并未|并非|没有|不具备|不具有|不持有|不拥有|不熟|不精通|不擅长|谈不上|(?:^|\s)无|"
-    r"未(?:取得|获得|通过|具备|具有|持有|拥有|掌握|熟练|精通|熟悉)|"
-    r"没(?:有|拿到|获得|取得|通过|掌握)"
+    r"尚未|尚无|暂无|并未|并非|不是|没有|不具备|不具有|不持有|不拥有|不掌握|不了解|不熟|不精通|不擅长|谈不上|(?:^|\s)无|"
+    r"不(?:太|很|算|怎么)(?:掌握|了解|熟悉|熟练|精通|擅长)|"
+    r"未(?:取得|获得|通过|具备|具有|持有|拥有|掌握|了解|熟练|精通|熟悉)|"
+    r"没(?:有|拿到|获得|取得|通过|掌握|了解|熟悉)"
 )
 _CREDENTIAL = re.compile(r"[A-Za-z0-9+#.\-\u4e00-\u9fff ]{1,40}?(?:资格证书|资格证|证书|驾驶证)")
 _CREDENTIAL_PREFIX = re.compile(r".*(?:已取得|取得|已获得|获得|持有|拥有|通过|考取|拿到|包括|以及|和|及)")
-_LEVEL = re.compile(r"熟练掌握|熟练使用|熟练运用|熟练|精通|熟悉|擅长|了解")
+_LEVEL = re.compile(r"熟练掌握|熟练使用|熟练运用|熟练|精通|熟悉|擅长|了解|掌握")
 _SECTION_CLAIMS = ('本科', '专科', '硕士', '博士', '专家', '资深', '卓越', '极强',
                    '领导能力强', '沟通能力强', '学习能力强', '组织能力强')
 
 
 def _asserted_clauses(text: str) -> list[str]:
     # A question/hypothesis cannot prove a credential, even if quoted exactly.
+    text = claim_comparison_text(text)
     return [part.strip() for part in re.findall(r'[^\n，,。；;！？!?]+[！？!?]?', text)
             if part.strip() and not part.endswith(('?', '？', '吗', '么')) and not _UNASSERTED.search(part)]
 
@@ -99,12 +102,15 @@ def _credential_claims(clause: str):
 def _level_claims(clause: str):
     levels = list(_LEVEL.finditer(clause))
     for index, match in enumerate(levels):
-        # A lower level terminates the previous list but is not an upgrade claim.
-        if match.group() == '了解':
-            continue
         end = levels[index + 1].start() if index + 1 < len(levels) else len(clause)
         subject = clause[match.end():end]
         subject = re.split(r"并且|并|同时|用于|完成|实现|负责", subject, maxsplit=1)[0]
+        # A bullet starts a separate statement, never part of a skill name.
+        subject = re.split(r'[▸▹►•●▪◆◇]', subject, maxsplit=1)[0]
+        # Remove only an exact, generic list label after a technical name.
+        # Docker集群部署 / Docker安全 are distinct; no prefix/fuzzy matching.
+        subject = re.sub(r'(?<=[A-Za-z0-9+#.])\s*(?:等)?(?:开发|应用)?'
+                         r'(?:框架|工具|技术栈)(?:和工具)?\s*$', '', subject)
         # Only distribute one explicit level across its own list. A following
         # “了解SQL” never inherits the preceding “熟练Python”.
         for skill in re.split(r"、|以及|和|与|及|/|\band\b", subject):
@@ -113,13 +119,79 @@ def _level_claims(clause: str):
                 yield match.group() + skill
 
 
+def _skill_key(claim: str) -> str:
+    level = _LEVEL.match(claim)
+    return _claim_normalize(claim[level.end():]) if level else ''
+
+
+def _skill_restrictions(args: ProposeChangeArgs, state: GuardState) -> dict[str, set[str]]:
+    """Explicit personal corrections constrain the named skill, never all skills.
+
+    No new positive facts come from this path. If two active corrections
+    disagree, their intersection fails closed rather than selecting by order.
+    """
+    restrictions = {}
+    # Only these four levels have an unambiguous weaker/stronger relation.
+    # “掌握” and “擅长” remain exact claims rather than guessed equivalents.
+    order = {'了解': 0, '熟悉': 1, '熟练': 2, '精通': 3}
+    existing = {_claim_normalize(claim) for part in _personal_change_evidence_parts(args, state)
+                for clause in _asserted_clauses(part) for claim in _level_claims(clause)}
+    quotes = {ref.quote for ref in args.source_refs if state.source_kinds.get(ref.source_id) == 'supplement'}
+    quotes.update(text for sid, text in state.source_texts.items()
+                  if state.source_kinds.get(sid) == 'supplement')
+    for text in quotes:
+        normalized = claim_comparison_text(text)
+        clauses = re.findall(r'[^\n，,。；;！？!?]+[！？!?]?', normalized)
+        constrained = set()
+        denied = {}
+        for clause in clauses:
+            if re.search(r'如果|假如|假设|计划|打算|希望|想写|是否|[?？]|吗$', clause.strip()):
+                continue
+            if (re.search(r'(?:不(?:是|太|很|算|怎么)?|未|没(?:有)?)\s*(?:' + _LEVEL.pattern + ')', clause)
+                    or re.search(r'(?:只|仅)(?:是)?\s*(?:' + _LEVEL.pattern + ')', clause)
+                    or re.search(r'更正|纠正', normalized)):
+                for claim in _level_claims(clause):
+                    skill = _skill_key(claim)
+                    constrained.add(skill)
+                    level = _LEVEL.match(claim).group()
+                    if re.search(r'(?:不(?:是|太|很|算|怎么)?|未|没(?:有)?)\s*' + re.escape(level), clause):
+                        denied.setdefault(skill, set()).add(_claim_normalize(level))
+        affirmative = {_claim_normalize(claim) for part in _asserted_clauses(text)
+                       for claim in _level_claims(part)}
+        for skill in constrained:
+            allowed = {claim for claim in affirmative if _skill_key(claim) == skill}
+            # “不精通Docker” does not retract an existing “熟悉Docker”.
+            # An explicit replacement such as “只了解” still limits the skill.
+            if not allowed and denied.get(skill) and all(level in order for level in denied[skill]):
+                for claim in existing:
+                    level = _claim_normalize(_LEVEL.match(claim).group())
+                    if (_skill_key(claim) == skill and level in order
+                            and all(order[level] < order[denied_level] for denied_level in denied[skill])):
+                        allowed.add(claim)
+            allowed.update(_claim_normalize(_LEVEL.sub('了解', claim, count=1)) for claim in list(allowed))
+            if skill in restrictions:
+                restrictions[skill].intersection_update(allowed)
+            else:
+                restrictions[skill] = allowed
+    return restrictions
+
+
 def _claim_violation(args: ProposeChangeArgs, state: GuardState) -> Violation | None:
     evidence = _personal_change_evidence(args, state)
-    evidence_clauses = _asserted_clauses(evidence)
+    evidence_clauses = [clause for part in _personal_change_evidence_parts(args, state)
+                        for clause in _asserted_clauses(part)]
     known = [_claim_normalize(part) for part in evidence_clauses]
     known_levels = {_claim_normalize(claim) for part in evidence_clauses for claim in _level_claims(part)}
+    # A weaker “了解” may retain an already supported skill. It still cannot
+    # introduce a different skill, and stronger levels are not interchangeable.
+    known_levels.update(_claim_normalize(_LEVEL.sub('了解', claim, count=1))
+                        for part in evidence_clauses for claim in _level_claims(part))
+    restrictions = _skill_restrictions(args, state)
     for clause in _asserted_clauses(args.after):
         for claim in _level_claims(clause):
+            if _skill_key(claim) in restrictions and _claim_normalize(claim) not in restrictions[_skill_key(claim)]:
+                return Violation('unsupported_section_claim',
+                                 f'表述“{claim}”与用户对该技能的明确更正不一致，不能沿用旧等级。', True)
             if _claim_normalize(claim) not in known_levels:
                 return Violation('unsupported_section_claim',
                                  f'新增表述“{claim}”缺少该技能对应等级的个人原文依据。', True)
@@ -186,9 +258,13 @@ def _personal_change_evidence(args: ProposeChangeArgs, state: GuardState) -> str
     JD describes requirements, raw chat may be a question or hypothetical, and
     model-maintained memory is not itself a new primary source.
     """
+    return '\n'.join(_personal_change_evidence_parts(args, state))
+
+
+def _personal_change_evidence_parts(args: ProposeChangeArgs, state: GuardState) -> list[str]:
     original = state.focus_block_markdown or (state.focus_doc.raw_text if state.focus_doc else '')
     quotes = [ref.quote for ref in args.source_refs if state.source_kinds.get(ref.source_id) in {'resume', 'supplement'}]
-    return '\n'.join([original, *quotes])
+    return [original, *quotes]
 
 
 def _question_violation(step: AskStep, state: GuardState) -> Violation | None:

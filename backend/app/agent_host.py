@@ -183,7 +183,8 @@ class HostAdapter(ARepoAdapter):
                     source.text = '\n'.join(dict.fromkeys(quotes))
         return ctx
 
-    def save_suggestion(self, session_id, experience_id, operation, before, after, reason, source_refs, gaps):
+    def save_suggestion(self, session_id, experience_id, operation, before, after, reason, source_refs, gaps,
+                        *, snapshot=None):
         if self.phase_suggestion_saved:
             from app.agent.ports import RepoError
             raise RepoError('suggestion_limit', '本轮已生成一条建议，先等待用户确认。', False)
@@ -194,7 +195,8 @@ class HostAdapter(ARepoAdapter):
                 raise RepositoryError('scope_violation', '建议目标不属于用户指定的项目。', False)
             from app.agent_edit_scope import validate_project_refs
             validate_project_refs(self.runtime.repo, self.runtime.context, experience_id, source_refs)
-        result = super().save_suggestion(session_id, experience_id, operation, before, after, reason, source_refs, gaps)
+        result = super().save_suggestion(session_id, experience_id, operation, before, after,
+                                         reason, source_refs, gaps, snapshot=snapshot)
         self.phase_suggestion_saved = True
         return result
 
@@ -453,8 +455,13 @@ class Runtime:
             self._reply('已按你的要求保留本段原文，继续检查下一段。')
             progress = plan(self)
         elif command in CONTINUE and progress['blocked']:
-            self._reply('上一段改写尚未通过校验，当前稿没有改变。要保留这一段并接着处理，请回复“保留原文，继续下一段”；也可以补充或纠正具体事实。')
-            return 'completed'
+            from app.agent_progress import can_retry_generation
+            if not can_retry_generation(self, progress):
+                self._reply('上一段改写尚未通过校验，当前稿没有改变。要保留这一段并接着处理，请回复“保留原文，继续下一段”；也可以补充或纠正具体事实。')
+                return 'completed'
+            record(self, progress['blocked'])
+            self._reply('上一轮生成建议时未通过程序校验，当前稿未改。这次沿用已保存的回答重试当前段，不需要重复回答。')
+            progress = plan(self)
         forced = bool(self.revision_target) or bool(named) or whole_resume_request(command) or keep_next or self.advance_after_accept or self.advance_after_skip or self.initial_import or command in CONTINUE
         if progress['review']:
             self._reply('继续前需要核对当前段落的来源：原文或引用版本已变化，请先核对材料；已保存内容保留。', 'question')
@@ -530,6 +537,8 @@ class Runtime:
             record(self, active_focus['blockId'])
             self._reply(questions[-1], 'question')
         elif notices:
+            if outcome == 'waiting_user':
+                self.waiting = True
             self._reply(notices[-1])
         elif section and outcome == 'completed':
             record(self, section['focus_id'], completed=True)
@@ -545,6 +554,11 @@ class Runtime:
             self._reply('已定位到指定段落。下一步会检查这段与 JD 的对应表达，回复“继续”即可处理。')
         else:
             record(self, active_focus['blockId'], blocked=True)
+            from app.agent_progress import generation_protocol_failure
+            if generation_protocol_failure(warnings):
+                self._reply('本段建议生成时未通过原文定位或格式校验，当前稿没有改变，已保存的回答仍然保留。'
+                            '回复“继续”可沿用这些回答重试当前段，不需要重新回答；也可回复“保留原文，继续下一段”。')
+                return 'limited'
             issues = self.repo.get_session_context(self.context)['issues']
             issue = next((w.get('message') for w in reversed(warnings) if w.get('message')), '')
             issue = issue or next((item['summary'] for item in reversed(issues) if active_focus['blockId'] in item.get('affectedBlockIds', [])), '')

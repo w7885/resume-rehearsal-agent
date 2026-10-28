@@ -15,7 +15,10 @@ RESUME = '# 测试简历\n\n项目经历：整理反馈，协助测试。'
 class TextClient(test_agent_integration.FakeClient):
     async def route(self, **kwargs):
         # A material confirmation must never reach the rewrite-decision router.
-        raise AssertionError('Material confirmation was routed as an ordinary turn')
+        content=self.runtime.repo.get_session_context(self.runtime.context)['messages'][-1]['content']
+        if content in {RESUME, '将刚才那段文字作为待修改简历。'}:
+            raise AssertionError('Material confirmation was routed as an ordinary turn')
+        return await super().route(**kwargs)
 
     async def complete_json(self, *, system, user, run_id='test'):
         value = json.loads(user)

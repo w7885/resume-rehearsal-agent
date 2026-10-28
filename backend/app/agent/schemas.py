@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, StrictBool
 
 from app.agent.memory import NewFact, Slot
 from app.agent.ports import Issue, Phase, SourceRef
@@ -126,6 +126,9 @@ class RouteDecision(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     clarification: Clarification | None = None
     rationale: str = Field(default="", max_length=40)
+    answers_pending: StrictBool = False
+    answer_quote: str | None = Field(default=None, max_length=4000)
+    reply: str | None = Field(default=None, max_length=600)
 
 
 class SegmentSeed(BaseModel):

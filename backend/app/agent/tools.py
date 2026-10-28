@@ -13,8 +13,9 @@ from app.agent.memory import (
     merge_facts,
     save_experience,
 )
-from app.agent.ports import RepoPort, RepoError
+from app.agent.ports import RepoPort, RepoError, verify_proposal_snapshot
 from app.agent.ports import SourceRef
+from app.proposal_snapshot import ProposalSnapshot
 from app.agent.schemas import (
     GetExperienceMemoryArgs,
     ListExperiencesArgs,
@@ -64,7 +65,7 @@ TOOL_SPECS: dict[ToolName, ToolSpec] = {
     ),
     "save_facts": ToolSpec(
         "save_facts",
-        "把用户刚说的事实写入记忆；默认追加去重。明确更正时用 supersedes_fact_ids 指定同维度旧事实。",
+        "把用户明确说过且有个人原句支持的事实写入记忆，默认追加去重。slot只能为responsibility、context、action、result、effect、evidence、tech、details、strength、preference；方法用tech或action，背景用context，交付状态用result，确认不是事实。明确更正时用supersedes_fact_ids指定同维度旧事实。",
         SaveFactsArgs,
         '{"experience_id": "exp_01", "facts": [{"slot": "action", "statement": "合并 8 条反馈为 5 项需求"}, {"slot": "effect", "statement": "老师录入时间从半小时缩短到五分钟"}]}',
     ),
@@ -76,9 +77,9 @@ TOOL_SPECS: dict[ToolName, ToolSpec] = {
     ),
     "propose_change": ToolSpec(
         "propose_change",
-        "提交一条待用户确认的整块改写建议。",
+        "提交一条待用户确认的整块改写建议。before可省略，由系统绑定当前目标原文快照；after仍需完整、引用仍须准确。",
         ProposeChangeArgs,
-        '{"operation": "replace", "target": "block-project-001", "before": "当前整段原文", "after": "整段改写后的完整文本", "reason": "补充了量化结果", "source_refs": [{"source_id": "source-supplement-001", "quote": "8 条同学反馈"}], "gaps": []}',
+        '{"operation": "replace", "target": "block-project-001", "after": "整段改写后的完整文本", "reason": "按已有事实整理表达", "source_refs": [{"source_id": "source-supplement-001", "quote": "8 条同学反馈"}], "gaps": []}',
     ),
 }
 
@@ -96,6 +97,8 @@ class ToolContext:
     repo: RepoPort
     store: AgentStateStore
     message_id: str | None = None
+    run_id: str | None = None
+    proposal_snapshot: ProposalSnapshot | None = None
 
 
 def _require_experience(ctx: ToolContext, experience_id: str) -> tuple[ExperienceDoc, int]:
@@ -231,16 +234,22 @@ async def _record_issues(args: RecordIssueArgs, ctx: ToolContext) -> dict[str, A
 async def _propose_change(
     args: ProposeChangeArgs, ctx: ToolContext
 ) -> dict[str, Any]:
+    snapshot = ctx.proposal_snapshot
+    verify_proposal_snapshot(snapshot, ctx.repo.get_session_context(ctx.session_id),
+                             ctx.session_id, args.target, run_id=ctx.run_id)
+    if args.before is not None and args.before.strip() != snapshot.before.strip():
+        raise RepoError('stale_anchor', '建议旧文与已固定的输入快照不一致。', False)
     doc, revision = _require_experience(ctx, args.target)
     suggestion = ctx.repo.save_suggestion(
         session_id=ctx.session_id,
         experience_id=args.target,
         operation=args.operation,
-        before=args.before,
+        before=snapshot.before,
         after=args.after,
         reason=args.reason,
         source_refs=args.source_refs,
         gaps=args.gaps,
+        snapshot=snapshot,
     )
     doc.last_suggestion_id = suggestion.suggestion_id
     doc.last_run_outcome = "waiting_user"
@@ -249,6 +258,9 @@ async def _propose_change(
         "suggestion_id": suggestion.suggestion_id,
         "status": suggestion.status,
         "after": suggestion.after,
+        "input_snapshot_id": snapshot.fingerprint,
+        "input_block_revision": snapshot.block_revision,
+        "input_before_sha256": snapshot.before_sha256,
     }
 
 

@@ -1,4 +1,5 @@
 """A-side structured Host checks; no model semantics or real provider calls."""
+from fakes import seed_test_suggestion
 from concurrent.futures import ThreadPoolExecutor
 import json
 import unittest
@@ -35,7 +36,7 @@ class ChatDecisionTests(unittest.TestCase):
         trigger = self.send(session, '请核对表达。')
         context = self.run_context(session)
         current = repo.get_session_context(context)
-        proposals = [repo.save_suggestion(context, {
+        proposals = [seed_test_suggestion(repo, context, {
             'operation': 'replace', 'target': {'blockId': block['blockId'], 'expectedBlockRevision': block['blockRevision']},
             'before': block['markdown'], 'after': f'构造改写 {index + 1}', 'reason': '构造验证',
             'gaps': [], 'sourceRefs': [ref]}) for index, block in enumerate(current['draft']['blocks'])]
@@ -120,7 +121,7 @@ class ChatDecisionTests(unittest.TestCase):
     def test_two_alternatives_cannot_both_be_accepted_but_reject_then_accept_is_atomic(self):
         session, _, context, before, proposals, prompt = self.case()
         original = proposals[0]
-        alternate = self.service.repository.save_suggestion(context, {key: original[key] for key in ('operation', 'target', 'before', 'after', 'reason', 'sourceRefs', 'gaps')})
+        alternate = seed_test_suggestion(self.service.repository, context, {key: original[key] for key in ('operation', 'target', 'before', 'after', 'reason', 'sourceRefs', 'gaps')})
         prompt = self.save(context, self.conversation(session)['messages'][0], 'change_question', [original['suggestionId'], alternate['suggestionId']], request_id='both')
         user, context = self.answer(session, prompt)
         payload = self.payload(user, prompt, [original, alternate])

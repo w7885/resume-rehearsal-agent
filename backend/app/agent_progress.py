@@ -12,6 +12,32 @@ STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时
 KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段', '跳过这一节', '跳过这节', '跳过这部分'}
 
 
+def generation_protocol_failure(warnings):
+    """Only generation-format failures are eligible for an explicit retry."""
+    codes = [item.get('code') for item in warnings if item.get('code')]
+    return bool(codes) and set(codes) <= {'stale_anchor', 'invalid_tool_args'}
+
+
+def can_retry_generation(runtime, progress):
+    """Use current-generation state; never revive an old draft or source set."""
+    from app.agent.memory import load_session
+    from app.agent_state import GuardedStateStore
+    if not progress.get('blocked') or progress.get('pending'):
+        return False
+    store = GuardedStateStore(runtime)
+    loaded = load_session(store, runtime.sid)
+    if not loaded or not loaded[0].run_index:
+        return False
+    last_id = next(reversed(loaded[0].run_index.values()))
+    run = store.get(runtime.sid, 'run', last_id)
+    if (run is None or run.doc.get('outcome') != 'limited'
+            or run.doc.get('focus_experience_id') != progress['blocked']):
+        return False
+    warnings = [event.get('payload', {}) for event in run.doc.get('events', [])
+                if event.get('type') == 'warning']
+    return generation_protocol_failure(warnings)
+
+
 def plain(text):
     return text.strip().rstrip('。！!').strip()
 

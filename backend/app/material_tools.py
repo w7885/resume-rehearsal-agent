@@ -3,6 +3,7 @@
 import sqlite3
 
 from app.repository import Repository, RepositoryError, RequestContext, _keys
+from app.proposal_snapshot import ProposalSnapshot
 
 
 class MaterialTools:
@@ -22,6 +23,14 @@ class MaterialTools:
     def get_session_context(self):
         """Host calls this to assemble context; not a model-selectable tool."""
         return self._reply(lambda: self.repository.get_session_context(self.context))
+
+    def propose_with_snapshot(self, arguments, snapshot):
+        """Trusted Host entry; not available in the model-selectable allowlist."""
+        def execute():
+            if not isinstance(snapshot, ProposalSnapshot):
+                raise RepositoryError('missing_snapshot', '缺少可信生成快照。', False)
+            return self.repository.save_suggestion(self.context, arguments, snapshot=snapshot)
+        return self._reply(execute)
 
     def dispatch(self, name: str, arguments: dict):
         def execute():

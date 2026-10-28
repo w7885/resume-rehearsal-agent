@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from app.agent.adapters.a_repo import ARepoAdapter
+from app.agent.ports import capture_proposal_snapshot
 from app.material_tools import MaterialTools
 from app.repository import RepositoryError, RequestContext, _id
 
@@ -59,13 +61,16 @@ def analyze_demo(repo, context):
         evidence = tools.dispatch("search_evidence", {"query": fixture["expectations"]["searchQuery"]})
         if not evidence["ok"] or not evidence["data"]:
             raise RepositoryError("stale_state", "构造依据查询失败，未生成建议。")
+        block = draft["blocks"][0]
+        adapter = ARepoAdapter(tools=tools, context=tools.context, session_id=context.session_id)
+        snapshot = capture_proposal_snapshot(adapter.get_session_context(context.session_id),
+                                             block['blockId'], run_id=run_id)
         def ref(role, quote):
             return {"sourceId": sources[role]["sourceId"], "sourceRevision": sources[role]["sourceRevision"], "quote": quote}
         proposal = {key: fixture["suggestion"][key] for key in ("operation", "before", "after", "reason", "gaps")}
-        block = draft["blocks"][0]
         proposal.update(target={"blockId": block["blockId"], "expectedBlockRevision": block["blockRevision"]},
                         sourceRefs=[ref("resume", fixture["suggestion"]["before"]), ref("supplement", "我整理了 8 条同学反馈，把重复意见合并成 5 项需求")])
-        suggestion = tools.dispatch("propose_change", proposal)
+        suggestion = tools.propose_with_snapshot(proposal, snapshot)
         issues = tools.dispatch("record_issues", {"issues": [{"kind": "capability_gap", "summary": fixture["issues"][0]["summary"],
             "sourceRefs": [ref("jd", "API 集成"), ref("supplement", "未做 API 集成，没有上线数据。")], "affectedBlockIds": [block["blockId"]]}]})
         if not suggestion["ok"] or not issues["ok"]:

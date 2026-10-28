@@ -156,6 +156,14 @@ def section_kinds(markdowns):
             result.append('profile')
         else:
             result.append(experience_kind)
+    # Academic metadata is an information section even under an experience
+    # heading. Preserve genuine activities/projects with personal actions.
+    for index, (kind, markdown) in enumerate(zip(result, markdowns)):
+        if (kind == 'project'
+                and re.search(r'绩点|学业成绩|\bGPA\b|主修课程', markdown, re.I)
+                and re.search(r'竞赛|等奖|获奖|CET[ -]?[46]|成绩|课程', markdown, re.I)
+                and not re.search(r'负责|开发|搭建|设计|实现|组织|担任|编写|维护|调研|协作|部署', markdown)):
+            result[index] = 'education'
     return result
 
 

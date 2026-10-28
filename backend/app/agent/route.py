@@ -9,6 +9,7 @@ from app.agent.memory import ExperienceDoc, normalize_question, question_fingerp
 from app.agent.ports import Phase, SessionContext
 from app.agent.prompts import build_route_prompt
 from app.agent.schemas import CandidateBrief, Clarification, RouteDecision
+from app.agent.dialogue import current_question, factual_quote, context_reply
 
 _CN_DIGITS = {
     "一": 1,
@@ -58,6 +59,9 @@ class RouteResult:
     rationale: str = ""
     used_model: bool = False
     drop: bool = False
+    answers_pending: bool = False
+    answer_quote: str | None = None
+    reply: str | None = None
 
 
 def _candidate(doc: ExperienceDoc, phase: Phase) -> CandidateBrief:
@@ -327,6 +331,10 @@ def _model_user_prompt(
                 f"当前焦点：{doc.seq}. {doc.kind}｜{doc.title}｜"
                 f"{phases.get(doc.experience_id, 'pending')}"
             )
+            lines.append('当前段原文：\n' + doc.raw_text[:3000])
+            question = current_question(doc)
+            if question:
+                lines.append(f'当前待答问题：{question.text}\n问题维度：{question.slot}')
     lines.append("候选经历：")
     for doc in docs:
         lines.append(
@@ -347,6 +355,7 @@ async def route_message(
     pending: dict | None,
     has_pending_question: bool,
     llm,
+    pending_question_text: str | None = None,
 ) -> RouteResult:
     text = message.strip()
     if not text:
@@ -357,7 +366,8 @@ async def route_message(
         if reply is not None:
             return reply
 
-    if text in _CONFIRM:
+    pending_suggestion = any(s.status == 'pending' for s in ctx.suggestions)
+    if text in _CONFIRM and (not has_pending_question or pending_suggestion):
         return RouteResult(
             action="confirm",
             scope="experience",
@@ -373,7 +383,9 @@ async def route_message(
             target_experience_id=ctx.session.current_focus_id,
             rationale="确认同时要求修改",
         )
-    if text in _SKIP or text.startswith("跳过"):
+    # Absence/uncertainty words need the question's context; only explicit
+    # skip commands can bypass semantic classification.
+    if text in {'跳过', '先跳过', '跳过这段'} or text.startswith("跳过"):
         return RouteResult(
             action="skip",
             scope="experience",
@@ -385,23 +397,18 @@ async def route_message(
     if text in _CANCEL:
         return RouteResult(action="cancel", clear_pending=True, rationale="取消")
 
-    focused = _focus_doc(text, docs, phases, ctx.session.current_focus_id)
+    focused = None if has_pending_question else _focus_doc(text, docs, phases, ctx.session.current_focus_id)
     if focused is not None:
         if pending:
             focused.clear_pending = True
         return focused
 
-    if has_pending_question:
-        return RouteResult(
-            action="answer",
-            scope="experience",
-            target_experience_id=ctx.session.current_focus_id,
-            rationale="回答待答问题",
-        )
-
     user_prompt = _model_user_prompt(
         text, docs, phases, ctx.session.current_focus_id, has_pending_question
     )
+    user_prompt += '\n最近对话：\n' + '\n'.join(f'{m.role}: {m.text[:500]}' for m in ctx.messages[-6:])
+    if pending_question_text:
+        user_prompt += '\n当前待答问题（优先）：' + pending_question_text
     try:
         raw = await llm.route(system=build_route_prompt(), user=user_prompt)
         decision = RouteDecision.model_validate(raw)
@@ -424,10 +431,11 @@ async def route_message(
                 rationale="模型路由失败且无经历",
             )
         return RouteResult(
-            action="answer",
+            action="meta",
             scope="experience",
             target_experience_id=ctx.session.current_focus_id,
-            rationale="模型路由失败兜底",
+            rationale="意图未能确定，保留问题状态",
+            reply=context_reply(next((d for d in docs if d.experience_id == ctx.session.current_focus_id), None)),
         )
 
     result = RouteResult(
@@ -437,7 +445,36 @@ async def route_message(
         rationale=decision.rationale,
         used_model=True,
         clarification=decision.clarification,
+        answers_pending=decision.answers_pending,
+        answer_quote=factual_quote(text, decision.answer_quote),
+        reply=decision.reply,
     )
+    if decision.answer_quote and result.answer_quote is None:
+        result.answers_pending = False
+        result.action = 'meta'
+        result.reply = '这条消息包含需要核对的内容，先保留原问题；请明确哪部分是已发生的个人事实。'
+    if decision.confidence < 0.6 or (has_pending_question and result.action == 'answer' and not result.answers_pending):
+        if decision.confidence < 0.6:
+            result.answer_quote = None
+        result.action, result.answers_pending = 'meta', False
+        result.reply = result.reply or '我还不能确定这条消息是否回答了当前问题，先核对你的意思。'
+    if has_pending_question and result.action == 'answer' and result.answer_quote is None:
+        # Uncertainty/absence can answer a question without being new facts.
+        # Mixed question text requires a separate, exact answer span.
+        if re.search(r'[?？]|什么|怎么|为何|为什么|哪[个一段项些]|哪段', text):
+            result.action, result.answers_pending = 'meta', False
+            result.reply = result.reply or '先确认你想了解的内容，再继续原问题。'
+    if result.action != 'focus' and result.target_experience_id not in {None, ctx.session.current_focus_id}:
+        result.action, result.answers_pending = 'meta', False
+        result.answer_quote = None
+        result.reply = '你提到了其他段落，请先明确是否切换；当前问题和内容保持。'
+    if result.action in {'answer', 'correct'} and result.answer_quote is None:
+        result.answer_quote = factual_quote(text, text)
+    if result.scope != 'experience':
+        result.answer_quote = None
+        if has_pending_question and result.action in {'answer', 'correct'}:
+            result.action, result.answers_pending = 'meta', False
+            result.reply = '先核对这条消息与当前问题的关系，再继续处理。'
     if result.action == "focus":
         target = next(
             (doc for doc in docs if doc.experience_id == result.target_experience_id),
@@ -445,10 +482,11 @@ async def route_message(
         )
         if target is None:
             return RouteResult(
-                action="answer",
+                action="meta",
                 scope="experience",
                 target_experience_id=ctx.session.current_focus_id,
-                rationale="模型给出了未知段，按回答处理",
+                rationale="模型给出了未知段，保留状态并澄清",
+                reply='未能定位你提到的段落，请明确章节或原文内容。',
                 used_model=True,
             )
         result.echo = _echo(target)

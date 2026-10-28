@@ -1,4 +1,5 @@
 """Lossless structure and scoped chat delivery with fixtures, never provider calls."""
+from fakes import seed_test_suggestion
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -276,7 +277,7 @@ class ScopedChatTests(unittest.TestCase):
         trigger = self.send(session, INSTRUCTION, request_id='bad-proposal-trigger')
         context = self.run_context(session)
         block = projects[0]; ref = block['sourceRefs'][0]
-        proposal = repo.save_suggestion(context, {'operation': 'replace',
+        proposal = seed_test_suggestion(repo, context, {'operation': 'replace',
             'target': {'blockId': block['blockId'], 'expectedBlockRevision': block['blockRevision']},
             'before': block['markdown'], 'after': block['markdown']+'不应写入', 'reason': '构造越界测试', 'gaps': [], 'sourceRefs': [ref]})
         service = BusinessService(repo)

@@ -40,6 +40,7 @@ def bind_answers(adapter, session_id, doc):
         # Only the questions already associated with this experience are eligible.
         ids = list(dict.fromkeys(q.answer_message_id for q in doc.questions
                                 if q.outcome == 'answered' and q.slot not in {None, 'confirm', 'preference'} and q.answer_message_id))
+        ids = list(dict.fromkeys([*ids, *doc.supplement_quotes]))
         if not ids:
             return []
         old_prefix = store._key(connection, session, '')
@@ -49,7 +50,18 @@ def bind_answers(adapter, session_id, doc):
         for message_id in ids:
             row = connection.execute("SELECT * FROM messages WHERE session_id=? AND message_id=? AND role='user' AND input_channel='chat' AND use_status='active' AND resume_generation=?",
                                      (session_id, message_id, session['current_resume_generation'])).fetchone()
-            if row is None or not factual_answer(row['content']):
+            if row is None:
+                continue
+            quote = doc.supplement_quotes.get(message_id) or next((q.answer_quote for q in doc.questions
+                    if q.answer_message_id == message_id and q.answer_quote), None)
+            if quote is not None:
+                from app.agent.dialogue import factual_quote
+                quote = factual_quote(row['content'], quote)
+                if quote is None:
+                    continue
+            else:
+                quote = row['content']
+            if not factual_answer(quote):
                 continue
             # Never resurrect a source that was later corrected/retired by a user.
             sources = connection.execute('SELECT * FROM source_blocks WHERE session_id=? AND message_id=? ORDER BY rowid DESC', (session_id, message_id)).fetchall()
@@ -57,10 +69,12 @@ def bind_answers(adapter, session_id, doc):
                 source = next((s for s in sources if s['role'] == 'supplement' and s['use_status'] == 'active'), None)
                 if source is None:
                     continue
-                ref = SourceRef(source_id=source['source_id'], source_revision=source['source_revision'], quote=source['text'])
+                if quote not in source['text']:
+                    continue
+                ref = SourceRef(source_id=source['source_id'], source_revision=source['source_revision'], quote=quote)
             else:
                 current = bound.get_session(RequestContext(session_id))
-                source = bound.save_source(RequestContext(session_id, current['stateRevision']), text=row['content'],
+                source = bound.save_source(RequestContext(session_id, current['stateRevision']), text=quote,
                                            role='supplement', use_status='active',
                                            origin={'kind': 'message', 'messageId': message_id})
                 ref = SourceRef(source_id=source['sourceId'], source_revision=source['sourceRevision'], quote=source['text'])

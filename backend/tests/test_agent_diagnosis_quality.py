@@ -170,7 +170,7 @@ class RouterAnswerTests(unittest.TestCase):
                 repo = policy.make_repo(direction='开发实习', direction_confirmed=True)
                 store = InMemoryStateStore()
                 policy.seed_experience(store, asked='实际发生了什么变化？', slot='effect')
-                policy.run_turn(repo, store, FakeLLM(decide_script=[policy.FINISH]), text)
+                policy.run_turn(repo, store, FakeLLM(route_script=[policy.ANSWER_ROUTE], decide_script=[policy.FINISH]), text)
                 value = load_experience(store, policy.SESSION, 'exp_01')[0]
                 self.assertEqual(value.questions[0].answer_kind, 'refused')
                 self.assertIn('effect', value.declined)
@@ -188,7 +188,7 @@ class RouterAnswerTests(unittest.TestCase):
         repo = policy.make_repo(direction='开发实习', direction_confirmed=True)
         store = InMemoryStateStore()
         policy.seed_experience(store, asked='你负责哪部分？', slot='responsibility')
-        policy.run_turn(repo, store, FakeLLM(decide_script=[policy.FINISH]), '不想回答这个问题')
+        policy.run_turn(repo, store, FakeLLM(route_script=[policy.ANSWER_ROUTE], decide_script=[policy.FINISH]), '不想回答这个问题')
         value = load_experience(store, policy.SESSION, 'exp_01')[0]
         self.assertIn('responsibility', value.declined)
         self.assertEqual(value.questions[0].answer_kind, 'refused')
@@ -207,7 +207,7 @@ class RouterAnswerTests(unittest.TestCase):
                 repo = policy.make_repo(direction='开发实习', direction_confirmed=True)
                 store = InMemoryStateStore()
                 policy.seed_experience(store, asked='交付后实际发生了什么变化？', slot='effect')
-                events = policy.run_turn(repo, store, FakeLLM(decide_script=[policy.FINISH]), text)
+                events = policy.run_turn(repo, store, FakeLLM(route_script=[policy.ANSWER_ROUTE], decide_script=[policy.FINISH]), text)
                 value = load_experience(store, policy.SESSION, 'exp_01')[0]
                 self.assertEqual(value.questions[0].answer_kind, expected_kind)
                 self.assertEqual(value.questions[0].answer_message_id, 'm1')
@@ -218,12 +218,12 @@ class RouterAnswerTests(unittest.TestCase):
         repo = policy.make_repo(direction='开发实习', direction_confirmed=True)
         store = InMemoryStateStore()
         policy.seed_experience(store, asked='交付后实际发生了什么变化？', slot='effect')
-        policy.run_turn(repo, store, FakeLLM(decide_script=[policy.FINISH]), '记不清了', 'first')
+        policy.run_turn(repo, store, FakeLLM(route_script=[policy.ANSWER_ROUTE], decide_script=[policy.FINISH]), '记不清了', 'first')
         value, revision = load_experience(store, policy.SESSION, 'exp_01')
         value.questions.append(Question(id='q2', slot='effect', text='操作步骤有变化吗？', fingerprint='q2'))
         from app.agent.memory import save_experience
         save_experience(store, policy.SESSION, value, revision)
-        policy.run_turn(repo, store, FakeLLM(decide_script=[policy.FINISH]), '还是记不清', 'second')
+        policy.run_turn(repo, store, FakeLLM(route_script=[policy.ANSWER_ROUTE], decide_script=[policy.FINISH]), '还是记不清', 'second')
         value = load_experience(store, policy.SESSION, 'exp_01')[0]
         self.assertEqual(effect_state(value), 'absent')
         self.assertEqual(value.questions[-1].answer_kind, 'uncertain')

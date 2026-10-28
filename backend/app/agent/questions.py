@@ -1,13 +1,21 @@
 """One focused question plus optional, non-presupposing answer guidance."""
+import re
 
 MAX_QUESTION_LENGTH = 120
 
 
 def _anchor(doc):
+    for line in doc.raw_text.splitlines():
+        if re.search(r'负责|承担|开发|搭建|实现|组织|担任|编写', line) and re.search(r'[:：]', line):
+            label = re.split(r'[:：]', line, maxsplit=1)[0].strip(' ▸▹►•●▪◆◇#*')
+            if label and len(label) <= 28 and label not in {'项目经历', '工作经历', '实习经历', '校园经历'}:
+                return f'「{label}」'
     text = doc.raw_text + '\n' + '\n'.join(f.statement for f in doc.facts if f.status == 'active')
     for word in ('姓名模糊查询', '模糊查询', '接口测试', '文章发布', '学生信息', '个人博客', '反馈整理'):
         if word in text:
             return word
+    if doc.title.strip() and doc.title.strip() in doc.raw_text and re.search(r'项目|系统|平台|网站|活动|建模', doc.title):
+        return f'「{doc.title.strip()[:28]}」'
     return '这段经历'
 
 
