@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from app import db
 from app.agent.llm import LLMError
-from app.agent.ports import RepoError, SourceRef
+from app.agent.ports import RepoError, SourceRef, capture_proposal_snapshot
 from app.agent_host import HostAdapter
 from app.agent_budget import ProjectBudget
 from app.main import create_app
@@ -20,7 +20,7 @@ BODY = '项目经历1\n参与项目一测试。\n项目经历2\n参与项目二�
 
 class ProactiveClient(integration.FakeClient):
     async def route(self, **kwargs):
-        return {'action': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1}
+        return {'action': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1, 'answers_pending': True}
 
     async def decide(self, **kwargs):
         self.steps += 1
@@ -315,7 +315,11 @@ class ProactiveFlowTests(unittest.TestCase):
         with self.assertRaises(RepositoryError) as error:
             adapter.save_suggestion(session['sessionId'], ids[1], 'replace', block['markdown'], '协助测试', '构造越界', refs, [])
         self.assertEqual(error.exception.code, 'scope_violation')
-        adapter.save_suggestion(session['sessionId'], ids[0], 'replace', block['markdown'], block['markdown'].replace('参与', '协助'), '梳理职责', refs, [])
+        snapshot = capture_proposal_snapshot(adapter.get_session_context(session['sessionId']), ids[0],
+                                             run_id=runtime.context.run_id)
+        adapter.save_suggestion(session['sessionId'], ids[0], 'replace', block['markdown'],
+                                block['markdown'].replace('参与', '协助'), '梳理职责', refs, [],
+                                snapshot=snapshot)
         with self.assertRaises(RepoError) as error:
             adapter.save_suggestion(session['sessionId'], ids[0], 'replace', block['markdown'], '再次改写', '重复建议', refs, [])
         self.assertEqual(error.exception.code, 'suggestion_limit')

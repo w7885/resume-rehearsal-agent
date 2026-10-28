@@ -50,10 +50,13 @@ class Question(BaseModel):
     fingerprint: str
     round: int = 0
     outcome: Literal["asked", "answered", "declined"] = "asked"
+    active: bool = True
+    resolution_reason: str | None = None
     # Kept separately from outcome: uncertainty allows one recall prompt, while
     # an explicit absence or refusal must stop that interview dimension.
     answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy"
     answer_message_id: str | None = None
+    answer_quote: str | None = None
     asked_at: str = ""
     answered_at: str | None = None
 
@@ -81,6 +84,7 @@ class ExperienceDoc(BaseModel):
     accepted_at: str | None = None
     summary: str = ""
     updated_at: str = ""
+    supplement_quotes: dict[str, str] = Field(default_factory=dict)
 
 
 class SessionDoc(BaseModel):
@@ -441,6 +445,7 @@ def record_answer(
     *,
     declined: bool = False,
     answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy",
+    answer_quote: str | None = None,
 ) -> Question:
     for question in doc.questions:
         if question.id != question_id:
@@ -448,6 +453,7 @@ def record_answer(
         question.outcome = "declined" if declined else "answered"
         question.answer_kind = answer_kind
         question.answer_message_id = message_id
+        question.answer_quote = answer_quote
         question.answered_at = now_iso()
         if declined and question.slot and question.slot != "confirm":
             if question.slot not in doc.declined:
@@ -529,6 +535,11 @@ def sync_experiences(
                 None,
             )
         elif existing[0].kind != kind or existing[0].seq != len(order):
+            if existing[0].kind in {'project', 'work'} and kind not in {'project', 'work'}:
+                for question in existing[0].questions:
+                    if question.outcome == 'asked' and question.slot in {'responsibility', 'action', 'effect', 'result', 'tech'}:
+                        question.active = False
+                        question.resolution_reason = '章节重新诊断为信息段，原经历采访不再适用；保留原记录。'
             existing[0].kind = kind
             existing[0].seq = len(order)
             existing[0].title = title

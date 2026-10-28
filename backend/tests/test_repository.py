@@ -7,6 +7,8 @@ import unittest
 from app.db import database, initialize_database, transaction
 from app.material_tools import MaterialTools
 from app.repository import Repository, RepositoryError, RequestContext
+from app.agent.adapters.a_repo import ARepoAdapter
+from app.agent.ports import capture_proposal_snapshot
 from test_db import FIXTURE, WORKSPACE_ROOT, seed_fixture, temporary_directory
 
 
@@ -159,7 +161,11 @@ class RepositoryTests(unittest.TestCase):
         run_context = self.begin_run()
         tools = MaterialTools(self.repo, run_context)
         draft, state = self.repo.get_draft(self.context), self.repo.get_session(self.context)
-        result = tools.dispatch("propose_change", self.proposal())
+        self.assert_error(tools.dispatch("propose_change", self.proposal()), 'missing_snapshot')
+        adapter = ARepoAdapter(tools=tools, context=run_context, session_id=self.session_id)
+        snapshot = capture_proposal_snapshot(adapter.get_session_context(self.session_id),
+                                             self.proposal()['target']['blockId'], run_id=run_context.run_id)
+        result = tools.propose_with_snapshot(self.proposal(), snapshot)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["data"]["status"], "pending")
         self.assertNotEqual(result["data"]["suggestionId"], FIXTURE["suggestion"]["suggestionId"])

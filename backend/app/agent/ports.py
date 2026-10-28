@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
+from app.proposal_snapshot import ProposalSnapshot, SnapshotMismatch
 
 Scope = Literal["session", "experience", "run", "budget"]
 Phase = Literal[
@@ -108,6 +109,52 @@ class SessionContext(BaseModel):
     revision_feedback: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def capture_proposal_snapshot(ctx: SessionContext, target_id: str, *, block_id=None, run_id=None):
+    if target_id not in ctx.session.experience_order:
+        raise RepoError('scope_violation', '目标不属于本次生成范围。', False)
+    matches = [b for b in ctx.draft_blocks if
+               (b.block_id == block_id if block_id is not None else
+                b.block_id == target_id or b.experience_id == target_id)]
+    if len(matches) != 1:
+        return None
+    block = matches[0]
+    if block.block_id != target_id and block.experience_id != target_id:
+        raise RepoError('scope_violation', '目标段落与输入快照不属于同一经历。', False)
+    return ProposalSnapshot(
+        session_id=ctx.session.session_id, target_id=target_id, block_id=block.block_id,
+        state_revision=ctx.session.state_revision, draft_revision=ctx.session.draft_revision,
+        resume_generation=ctx.session.current_resume_generation,
+        block_revision=block.block_revision, before=block.markdown,
+        source_versions=tuple(sorted((s.source_id, s.source_revision, s.kind) for s in ctx.sources)),
+        run_id=run_id,
+    )
+
+
+def verify_proposal_snapshot(snapshot, ctx: SessionContext, session_id, target_id, *, run_id=None):
+    if not isinstance(snapshot, ProposalSnapshot):
+        raise RepoError('missing_snapshot', '缺少可信的生成输入快照，不能保存建议。', False)
+    if snapshot.session_id != session_id or snapshot.target_id != target_id:
+        raise RepoError('scope_violation', '建议目标与生成输入快照不一致。', False)
+    matches = [b for b in ctx.draft_blocks if b.block_id == snapshot.block_id]
+    if len(matches) != 1:
+        raise RepoError('stale_state', '快照目标已不在当前稿中。', False)
+    block = matches[0]
+    if block.block_id != target_id and block.experience_id != target_id:
+        raise RepoError('scope_violation', '当前段落与快照经历归属不一致。', False)
+    try:
+        snapshot.verify(
+            session_id=ctx.session.session_id, block_id=block.block_id,
+            state_revision=ctx.session.state_revision, draft_revision=ctx.session.draft_revision,
+            resume_generation=ctx.session.current_resume_generation,
+            block_revision=block.block_revision, before=block.markdown,
+            source_versions=tuple((s.source_id, s.source_revision, s.kind) for s in ctx.sources),
+            run_id=run_id,
+        )
+    except SnapshotMismatch as error:
+        raise RepoError(error.code, str(error), False) from error
+    return block
+
+
 class RepoPort(Protocol):
     def get_session_context(self, session_id: str) -> SessionContext: ...
 
@@ -129,6 +176,7 @@ class RepoPort(Protocol):
         reason: str,
         source_refs: list[SourceRef],
         gaps: list[str],
+        *, snapshot: ProposalSnapshot | None = None,
     ) -> Suggestion: ...
 
     def save_issues(self, session_id: str, issues: list[Issue]) -> list[str]: ...

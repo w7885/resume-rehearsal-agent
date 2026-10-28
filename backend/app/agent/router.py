@@ -23,6 +23,7 @@ from app.agent.memory import (
 )
 from app.agent.ports import Issue, Phase, SessionContext
 from app.agent.route import RouteResult, route_message
+from app.agent.dialogue import context_reply, current_question
 from app.agent.store import AgentStateStore
 
 _NOTICES = {
@@ -89,7 +90,7 @@ def _effect_answer_kind(text: str) -> str:
 
 def _asked_question(doc: ExperienceDoc):
     return next(
-        (question for question in reversed(doc.questions) if question.outcome == "asked"),
+        (question for question in reversed(doc.questions) if question.active and question.outcome == "asked"),
         None,
     )
 
@@ -268,7 +269,7 @@ async def _execute(
     focus_id = session_doc.current_focus_id
     focus_doc = by_id.get(focus_id or "")
     has_question = bool(
-        focus_doc and any(q.outcome == "asked" for q in focus_doc.questions)
+        focus_doc and any(q.active and q.outcome == "asked" for q in focus_doc.questions)
     )
 
     sink.emit("run_started", focus_experience_id=focus_id)
@@ -282,20 +283,36 @@ async def _execute(
 
     try:
         if goal_reply:
-            session_doc.goal = text.strip()[:200]
-            session_doc.awaiting_goal = False
-            save_direction = getattr(repo, "save_direction", None)
-            if callable(save_direction):
-                save_direction(session_id, session_doc.goal)
-            decision = RouteResult(
-                action="answer",
-                target_experience_id=focus_id,
-                scope="experience",
-                rationale="目标答复",
-            )
+            decision = await route_message(message=text, ctx=ctx, docs=docs, phases=phases,
+                pending=None, has_pending_question=True, llm=llm, pending_question_text=_GOAL_QUESTION)
+            if decision.action == 'refuse' and decision.scope == 'whole_resume':
+                sink.emit('notice', code='paused', text='已暂停本轮；已有材料与当前稿保留。')
+                close('cancelled', action=decision.action)
+                return
+            goal_text = decision.answer_quote or text
+            if (decision.action in {'answer', 'meta'} and decision.answers_pending
+                    and _effect_answer_kind(goal_text) == 'answered'
+                    and (decision.action == 'answer' or decision.answer_quote)):
+                session_doc.goal = (decision.answer_quote or text).strip()[:200]
+                session_doc.awaiting_goal = False
+                save_direction = getattr(repo, 'save_direction', None)
+                if callable(save_direction):
+                    save_direction(session_id, session_doc.goal)
+                decision.answer_quote, decision.answers_pending = None, False
+                if decision.action == 'meta' or decision.reply:
+                    save_session(store, session_id, session_doc, session_revision)
+                    sink.emit('notice', code='goal_answer', text='已记录求职方向：' + session_doc.goal + '\n' +
+                              (decision.reply or '可以按这个方向继续整理。'))
+                    close('waiting_user', action=decision.action)
+                    return
+            else:
+                sink.emit('notice', code='goal_clarification', text=(decision.reply or
+                          '我在确认这份简历的求职方向。') + '\n' + _GOAL_QUESTION)
+                close('waiting_user', action=decision.action)
+                return
         else:
             decision = RouteResult(action='answer', target_experience_id=focus_id, scope='experience',
-                                   rationale='材料用途已确认，开始首次分析') if start_analysis else await route_message(
+                                   rationale='材料用途已确认，开始首次分析') if start_analysis and not has_question else await route_message(
                 message=text,
                 ctx=ctx,
                 docs=docs,
@@ -317,7 +334,7 @@ async def _execute(
     )
 
     previous_focus = focus_id
-    if decision.target_experience_id:
+    if decision.target_experience_id and decision.action not in {'meta', 'chitchat'}:
         session_doc.current_focus_id = decision.target_experience_id
         focus_id = decision.target_experience_id
         focus_doc = by_id.get(focus_id)
@@ -378,9 +395,31 @@ async def _execute(
         close("limited", action=action)
         return
 
-    if action in ("meta", "chitchat", "refuse"):
-        sink.emit("notice", code=action, text=_NOTICES[action])
-        close(action, action=action)
+    if action == 'refuse' and decision.scope == 'whole_resume':
+        sink.emit('notice', code=action, text='已暂停本轮，不再追问；已有消息与当前稿保留。')
+        close('cancelled', action=action)
+        return
+
+    if focus_doc is not None and decision.answer_quote and message_id:
+        focus_doc.supplement_quotes[message_id] = decision.answer_quote
+        _persist_doc(store, session_id, focus_doc)
+
+    if action in ('meta', 'chitchat'):
+        if action == 'meta' and focus_doc is not None:
+            question = current_question(focus_doc)
+            if question and decision.answers_pending and decision.answer_quote:
+                kind = _effect_answer_kind(decision.answer_quote)
+                record_answer(focus_doc, question.id, message_id, answer_kind=kind,
+                              declined=kind in {'absent', 'refused', 'uncertain'},
+                              answer_quote=decision.answer_quote)
+                _persist_doc(store, session_id, focus_doc)
+            binder = getattr(repo, 'bind_answer_sources', None)
+            if callable(binder) and decision.answer_quote:
+                binder(session_id, focus_doc)
+            sink.emit('notice', code=action, text=context_reply(focus_doc, decision.reply))
+        else:
+            sink.emit('notice', code=action, text=decision.reply or _NOTICES[action])
+        close('waiting_user' if focus_doc and current_question(focus_doc) else action, action=action)
         return
 
     if focus_doc is None:
@@ -465,14 +504,16 @@ async def _execute(
                 pending.suggestion_id, "reject", "message", message_id
             )
 
-    if action == "answer":
+    if action in ('answer', 'refuse'):
         question = _asked_question(focus_doc)
-        if question is not None:
-            declined = _is_decline(text)
-            kind = _effect_answer_kind(text)
+        if question is not None and (decision.answers_pending or action == 'refuse'):
+            answer_text = decision.answer_quote or text
+            declined = _is_decline(answer_text) or action == 'refuse'
+            kind = 'refused' if action == 'refuse' else _effect_answer_kind(answer_text)
             declined = declined or kind in {'absent', 'refused', 'uncertain'}
             record_answer(
-                focus_doc, question.id, message_id, declined=declined, answer_kind=kind
+                focus_doc, question.id, message_id, declined=declined, answer_kind=kind,
+                answer_quote=decision.answer_quote,
             )
             _persist_doc(store, session_id, focus_doc)
             answered = True
@@ -480,6 +521,11 @@ async def _execute(
     binder = getattr(repo, 'bind_answer_sources', None)
     if callable(binder):
         binder(session_id, focus_doc)
+
+    if decision.reply:
+        sink.emit('notice', code='dialogue_reply', text=context_reply(focus_doc, decision.reply))
+        close('waiting_user', action=action)
+        return
 
     # ponytail: every interview-style turn runs the single-segment loop; other
     # actions were handled above and need no model call.

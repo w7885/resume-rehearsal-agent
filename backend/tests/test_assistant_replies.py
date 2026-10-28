@@ -1,4 +1,5 @@
 """A-T11.1 synthetic Host reply/ask bindings; no semantic or model tests."""
+from fakes import seed_test_suggestion
 from concurrent.futures import ThreadPoolExecutor
 import json
 import unittest
@@ -35,7 +36,7 @@ class AssistantReplyTests(unittest.TestCase):
 
     def proposal(self,context,current,quote='整理 8 条反馈'):
         block=current['draft']['blocks'][0];source=current['sources'][0]
-        return self.service.repository.save_suggestion(context,{'operation':'replace','target':{'blockId':block['blockId'],'expectedBlockRevision':block['blockRevision']},'before':block['markdown'],'after':'构造建议：协助整理反馈并测试。','reason':'构造修改理由','gaps':[], 'sourceRefs':[{'sourceId':source['sourceId'],'sourceRevision':source['sourceRevision'],'quote':quote}]})
+        return seed_test_suggestion(self.service.repository, context,{'operation':'replace','target':{'blockId':block['blockId'],'expectedBlockRevision':block['blockRevision']},'before':block['markdown'],'after':'构造建议：协助整理反馈并测试。','reason':'构造修改理由','gaps':[], 'sourceRefs':[{'sourceId':source['sourceId'],'sourceRevision':source['sourceRevision'],'quote':quote}]})
 
     def save(self,context,user,kind='reply',ids=None,request_id='assistant',**extra):
         return self.service.save_assistant_message(context,{'requestId':request_id,'userMessageId':user['messageId'],'content':'构造回复：这是保存与关联测试，不是真实模型回复。','kind':kind,'suggestionIds':ids or [],**extra},synthetic=True)['data']['message']

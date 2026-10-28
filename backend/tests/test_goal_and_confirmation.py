@@ -1,4 +1,5 @@
 """JD target propagation and unambiguous approval using isolated, scripted clients."""
+from fakes import seed_test_suggestion
 from types import SimpleNamespace
 import unittest
 from app import db
@@ -134,7 +135,7 @@ class GoalAndConfirmationTests(unittest.TestCase):
         context = self.run_context(session)
         data = repo.get_session_context(context)
         first = data['suggestions'][0]; block = data['draft']['blocks'][0]
-        second = repo.save_suggestion(context, {'operation': 'replace', 'target': first['target'], 'before': block['markdown'],
+        second = seed_test_suggestion(repo, context, {'operation': 'replace', 'target': first['target'], 'before': block['markdown'],
             'after': '参与反馈整理与测试。', 'reason': '构造另一个有效候选', 'gaps': [], 'sourceRefs': first['sourceRefs']})
         prompt = BusinessService(repo).save_assistant_message(context, {'requestId': 'multi', 'userMessageId': trigger['messageId'],
             'content': '两条候选，请选择。', 'kind': 'change_question', 'suggestionIds': [first['suggestionId'], second['suggestionId']]}, synthetic=True)['data']['message']

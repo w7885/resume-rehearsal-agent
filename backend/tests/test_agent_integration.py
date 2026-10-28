@@ -52,7 +52,7 @@ class FakeClient:
         loaded = load_session(GuardedStateStore(self.runtime), self.runtime.sid)
         blocks = self.runtime.repo.get_draft(self.runtime.context)['blocks']
         block = next((b for b in blocks if loaded and b['blockId'] == loaded[0].current_focus_id), blocks[0])
-        return {'action':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1}
+        return {'action':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1,'answers_pending':True}
 
     async def decide(self,**kwargs):
         self.steps+=1

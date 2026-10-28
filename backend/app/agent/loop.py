@@ -29,7 +29,10 @@ from app.agent.memory import (
     save_experience,
     supported_experience_slots,
 )
-from app.agent.ports import Issue, Phase, RepoError, SessionContext
+from app.agent.ports import (
+    Issue, Phase, RepoError, SessionContext, capture_proposal_snapshot,
+    verify_proposal_snapshot,
+)
 from app.agent.prompts import build_decide_prompt, build_system_prompt
 from app.agent.schemas import (
     AskStep,
@@ -68,6 +71,23 @@ def _normalize_action(raw) -> Any:
                 "rationale": raw.get("rationale", ""),
             }
     return raw
+
+
+def _anchor_diagnostic(decision: ToolStep, state: GuardState) -> dict[str, Any]:
+    """Bounded mismatch evidence, without logging entire personal paragraphs."""
+    expected = state.focus_block_markdown.strip()
+    provided = decision.args.get('before')
+    actual = provided.strip() if isinstance(provided, str) else ''
+    index = next((i for i, (left, right) in enumerate(zip(expected, actual))
+                  if left != right), min(len(expected), len(actual)))
+    return {
+        'target': decision.args.get('target'),
+        'expected_characters': len(expected),
+        'provided_characters': len(actual),
+        'first_difference': index,
+        'expected_codepoint': f'U+{ord(expected[index]):04X}' if index < len(expected) else None,
+        'provided_codepoint': f'U+{ord(actual[index]):04X}' if index < len(actual) else None,
+    }
 
 
 @dataclass
@@ -194,6 +214,7 @@ async def run_loop(
     total_prompt = 0
     total_completion = 0
     total_cost = 0
+    decision_snapshot = None
 
     system_prompt = build_system_prompt() + "\n\n" + build_decide_prompt(
         tool_spec_text()
@@ -389,6 +410,9 @@ async def run_loop(
         return finish_result("waiting_user")
 
     async def ask_model(note: str) -> tuple[StepDecision | None, int, int, int]:
+        nonlocal decision_snapshot
+        decision_snapshot = capture_proposal_snapshot(
+            ctx, focus_id, block_id=focus_doc.block_id if focus_doc else None, run_id=run_id)
         user = assemble_context(
             ctx, docs, phases, focus_id, session_goal=session_goal
         )
@@ -459,6 +483,14 @@ async def run_loop(
                 note = "上一次输出不是合法的动作 JSON，请只输出一个符合格式的 JSON 对象。"
                 continue
 
+            if isinstance(decision, ToolStep) and decision.tool == 'propose_change':
+                try:
+                    verify_proposal_snapshot(
+                        decision_snapshot, repo.get_session_context(session_id),
+                        session_id, decision.args.get('target'), run_id=run_id)
+                except RepoError as error:
+                    sink.emit('warning', code=error.code, message=error.message)
+                    return limited(error.code, error.message)
             load_ref_sources(decision)
             result = check(decision, guard_state())
             if result.violation is None and isinstance(decision, AskStep) and focus_doc is not None:
@@ -472,6 +504,8 @@ async def run_loop(
                 "warning",
                 code=result.violation.code,
                 message=result.violation.message,
+                **({'anchor_check': _anchor_diagnostic(decision, guard_state())}
+                   if result.violation.code == 'stale_anchor' and isinstance(decision, ToolStep) else {}),
             )
             if not result.violation.retryable:
                 return limited(result.violation.code, result.violation.message)
@@ -479,6 +513,8 @@ async def run_loop(
                 f"上一次动作被拦截（{result.violation.code}）："
                 f"{result.violation.message}。请换一个合规动作。"
             )
+            if result.violation.code == 'stale_anchor':
+                note += '请省略 before 或设为 null，由系统绑定本轮目标原文；不要重复抄写或改写旧文，target 仍须保持当前段。'
             decision = None
 
         if decision is None:
@@ -495,6 +531,11 @@ async def run_loop(
                     "warning", code="missing_evidence", message="；".join(gaps)
                 )
 
+            if decision.tool == 'propose_change':
+                # The same immutable object was captured before the model call;
+                # validation never replaces its old text with a fresh read.
+                decision.args['before'] = decision_snapshot.before
+
             sink.emit(
                 "tool_progress",
                 state="requested",
@@ -510,6 +551,8 @@ async def run_loop(
                         repo=repo,
                         store=store,
                         message_id=message_id,
+                        run_id=run_id,
+                        proposal_snapshot=decision_snapshot,
                     ),
                 )
             except RepoError as exc:

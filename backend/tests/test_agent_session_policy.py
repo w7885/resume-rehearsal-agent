@@ -115,7 +115,7 @@ class DeclineAndStreakTests(unittest.TestCase):
     def test_uncertain_reply_is_declined(self):
         repo, store = make_repo(), InMemoryStateStore()
         seed_experience(store, asked="这段经历的结果怎么样？", slot="result")
-        llm = FakeLLM(decide_script=[FINISH])
+        llm = FakeLLM(route_script=[ANSWER_ROUTE], decide_script=[FINISH])
         run_turn(repo, store, llm, "不确定")
         doc, _ = load_experience(store, SESSION, "exp_01")
         self.assertEqual(doc.questions[0].outcome, "declined")
@@ -124,7 +124,7 @@ class DeclineAndStreakTests(unittest.TestCase):
     def test_bare_maybe_is_not_declined(self):
         repo, store = make_repo(), InMemoryStateStore()
         seed_experience(store, asked="这段经历的结果怎么样？", slot="result")
-        llm = FakeLLM(decide_script=[FINISH])
+        llm = FakeLLM(route_script=[ANSWER_ROUTE], decide_script=[FINISH])
         run_turn(repo, store, llm, "可能负责了接口")
         doc, _ = load_experience(store, SESSION, "exp_01")
         self.assertEqual(doc.questions[0].outcome, "answered")
@@ -134,6 +134,7 @@ class DeclineAndStreakTests(unittest.TestCase):
         repo, store = make_repo(), InMemoryStateStore()
         seed_experience(store, asked="这段经历的结果怎么样？", slot="result")
         llm = FakeLLM(
+            route_script=[ANSWER_ROUTE, ANSWER_ROUTE],
             decide_script=[
                 {
                     "action": "ask_user",
@@ -192,6 +193,7 @@ ANSWER_ROUTE = {
     "target_experience_id": "exp_01",
     "scope": "experience",
     "confidence": 1,
+    "answers_pending": True,
 }
 
 
@@ -244,9 +246,9 @@ class GoalTests(unittest.TestCase):
             },
             "rationale": "补充职责",
         }
-        llm = FakeLLM(decide_script=[propose, FINISH], route_script=[])
+        llm = FakeLLM(decide_script=[propose, FINISH], route_script=[ANSWER_ROUTE])
         events = run_turn(repo, store, llm, "销售岗")
-        self.assertFalse(any(kind == "route" for kind, _ in llm.calls))
+        self.assertEqual(sum(kind == "route" for kind, _ in llm.calls), 1)
         self.assertTrue(any(event.type == "suggestion" for event in events))
         session, _ = load_session(store, SESSION)
         self.assertEqual(session.goal, "销售岗")

@@ -1,4 +1,5 @@
 """A handles unique wording revisions through the existing confirmation transaction."""
+from fakes import seed_test_suggestion
 from types import SimpleNamespace
 import unittest
 
@@ -82,7 +83,7 @@ class RevisionTests(unittest.TestCase):
         repo = Repository(self.path)
         context = self.run_context(session)
         first = repo.get_session_context(context)['suggestions'][0]
-        second = repo.save_suggestion(context, {'operation': 'replace', 'target': first['target'],
+        second = seed_test_suggestion(repo, context, {'operation': 'replace', 'target': first['target'],
             'before': first['before'], 'after': '参与反馈整理与测试。', 'reason': '另一个候选', 'gaps': [], 'sourceRefs': first['sourceRefs']})
         prompt = BusinessService(repo).save_assistant_message(context, {'requestId': 'multi-style', 'userMessageId': trigger['messageId'],
             'content': '两条候选，请选择。', 'kind': 'change_question', 'suggestionIds': [first['suggestionId'], second['suggestionId']]}, synthetic=True)['data']['message']

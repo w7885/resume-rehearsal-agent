@@ -13,7 +13,9 @@ from app.agent.ports import (
     SourceRef,
     SourceText,
     Suggestion,
+    verify_proposal_snapshot,
 )
+from app.proposal_snapshot import ProposalSnapshot
 
 _KIND = {"resume": "resume", "jd": "jd", "supplement": "supplement"}
 _FINISH_STATUS: dict[str, tuple[str, str | None]] = {
@@ -207,25 +209,26 @@ class ARepoAdapter:
         reason: str,
         source_refs: list[SourceRef],
         gaps: list[str],
+        *, snapshot: ProposalSnapshot | None = None,
     ) -> Suggestion:
         self._check(session_id)
         ctx = self.get_session_context(session_id)
-        block = next(
-            (item for item in ctx.draft_blocks if item.block_id == experience_id),
-            None,
-        )
-        if block is None:
-            raise RepoError("stale_state", "目标段落不在当前稿中。", True)
+        block = verify_proposal_snapshot(snapshot, ctx, session_id, experience_id,
+                                         run_id=getattr(self.context, 'run_id', None))
+        frozen_sources = {sid: (revision, kind) for sid, revision, kind in snapshot.source_versions}
         sources = {source.source_id: source for source in ctx.sources}
         refs: list[dict[str, Any]] = []
         seen: dict[tuple[str, int], int] = {}
         for ref in source_refs:
             source = sources.get(ref.source_id)
-            if source is None:
+            if source is None or ref.source_id not in frozen_sources:
                 raise RepoError("source_not_found", "引用的来源不存在。", True)
+            source_revision = frozen_sources[ref.source_id][0]
+            if ref.source_revision not in (0, source_revision):
+                raise RepoError('stale_state', '建议引用不属于生成时的来源版本。', False)
             if not ref.quote or ref.quote not in source.text:
                 raise RepoError("invalid_input", "引用文字与来源原文不符。", True)
-            key = (source.source_id, source.source_revision)
+            key = (source.source_id, source_revision)
             if key in seen:
                 saved = refs[seen[key]]
                 if ref.quote not in saved['quote']:
@@ -240,7 +243,7 @@ class ARepoAdapter:
             refs.append(
                 {
                     "sourceId": source.source_id,
-                    "sourceRevision": source.source_revision,
+                    "sourceRevision": source_revision,
                     "quote": ref.quote,
                 }
             )
@@ -253,10 +256,10 @@ class ARepoAdapter:
             if operation in {"replace", "insert_after", "delete"}
             else "replace",
             "target": {
-                "blockId": block.block_id,
-                "expectedBlockRevision": block.block_revision,
+                "blockId": snapshot.block_id,
+                "expectedBlockRevision": snapshot.block_revision,
             },
-            "before": block.markdown,
+            "before": snapshot.before,
             "after": after,
             "reason": reason,
             "sourceRefs": refs,
@@ -264,12 +267,9 @@ class ARepoAdapter:
         }
         if operation not in {'replace', 'insert_after', 'delete'}:
             raise RepoError('invalid_input', '不支持的建议操作。', False)
-        if before is not None and before.strip() != block.markdown.strip():
+        if before is not None and before.strip() != snapshot.before.strip():
             raise RepoError('stale_state', '建议旧文已改变，不能套用最新正文。', True)
-        for ref in source_refs:
-            if ref.source_revision not in (0, sources[ref.source_id].source_revision):
-                raise RepoError('stale_state', '建议引用的来源版本已改变。', True)
-        return _suggestion(_unwrap(self.tools.dispatch("propose_change", proposal)))
+        return _suggestion(_unwrap(self.tools.propose_with_snapshot(proposal, snapshot)))
 
     def save_issues(self, session_id: str, issues: list[Issue]) -> list[str]:
         self._check(session_id)
