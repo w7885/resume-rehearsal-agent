@@ -239,6 +239,7 @@ class Runtime:
         self.advance_after_accept = False
         self.advance_after_skip = False
         self.revision_target = None
+        self._reminded_this_run = False
 
     def _emit(self, kind, payload, connection=None):
         if connection is None:
@@ -355,6 +356,23 @@ class Runtime:
             connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
+    REMINDER_PREFIX = '另有一条改写等你确认'
+
+    def _already_reminded(self):
+        with self.repo._operation(self.context) as (connection, _):
+            return connection.execute(
+                "SELECT 1 FROM messages WHERE session_id=? AND role='assistant' AND content LIKE ? LIMIT 1",
+                (self.sid, self.REMINDER_PREFIX + '%')).fetchone() is not None
+
+    def _remind_pending_once(self, pending, just_replied):
+        if self._reminded_this_run or self._already_reminded():
+            return
+        self._reminded_this_run = True
+        if str(just_replied).startswith(self.REMINDER_PREFIX):
+            return
+        self._reply(self.REMINDER_PREFIX + '：采用、拒绝还是调整？',
+                    'change_question', [p['suggestionId'] for p in pending][:10])
+
     async def _decisions(self, turn, out=None):
         active_prompts=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
         candidates=[p for p in active_prompts if p['suggestions']]
@@ -448,7 +466,7 @@ class Runtime:
         if not progress['blocks']:
             self._reply('当前还没有可整理的简历段落。可以先上传简历，或粘贴基本信息、经历、自我评价等任一部分。', 'question')
             return 'completed'
-        if progress['pending']:
+        if progress['pending'] and (out is None or out.intent not in {'meta', 'chitchat'}):
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
         command = plain(turn['userMessage']['content'])
@@ -509,7 +527,8 @@ class Runtime:
         outcome = 'completed'
         async for event in stream_run(session_id=self.sid, text=turn['userMessage']['content'], repo=adapter, store=store, llm=self.llm,
                 request_id=self.request_id, message_id=self.user_id, run_id=self.context.run_id,
-                expected_state_revision=self.context.expected_state_revision, start_analysis=forced):
+                expected_state_revision=self.context.expected_state_revision, start_analysis=forced,
+                decision=out):
             with self.repo._operation(self.context):
                 pass
             if event.type == 'suggestion':
@@ -545,6 +564,8 @@ class Runtime:
             if outcome == 'waiting_user':
                 self.waiting = True
             self._reply(notices[-1])
+            if progress['pending'] and out is not None and out.intent in {'meta', 'chitchat'}:
+                self._remind_pending_once(progress['pending'], notices[-1])
         elif section and outcome == 'completed':
             record(self, section['focus_id'], completed=True)
             following = plan(self)

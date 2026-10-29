@@ -261,6 +261,51 @@ class DispositionConsumptionTests(unittest.TestCase):
             self._runtime(), {'userMessage': {'content': '继续'}}, out))
 
 
+import test_proactive_flow as proactive
+
+
+class MetaOnlyClient(proactive.ProactiveClient):
+    async def route(self, **kwargs):
+        return {'intent': 'meta', 'confidence': 0.9,
+                'reply': '这里是在核对当前段落的依据，不要求你补充新内容。'}
+
+    async def complete_json(self, *, system, user, run_id='test'):
+        if system.startswith('解析用户对改写'):
+            return SimpleNamespace(data={'status': 'none', 'decisions': []})
+        return await super().complete_json(system=system, user=user, run_id=run_id)
+
+
+class PendingGateTests(unittest.TestCase):
+    setUp = proactive.ProactiveFlowTests.setUp
+    request = proactive.ProactiveFlowTests.request
+    version = proactive.ProactiveFlowTests.version
+    chat = proactive.ProactiveFlowTests.chat
+    material = proactive.ProactiveFlowTests.material
+    send = proactive.ProactiveFlowTests.send
+    analyze = proactive.ProactiveFlowTests.analyze
+    conversation = proactive.ProactiveFlowTests.conversation
+    count = proactive.ProactiveFlowTests.count
+    ready = proactive.ProactiveFlowTests.ready
+    turn = proactive.ProactiveFlowTests.turn
+    drive = proactive.ProactiveFlowTests.drive
+    start = proactive.ProactiveFlowTests.start
+    answer = proactive.ProactiveFlowTests.answer
+    pending = proactive.ProactiveFlowTests.pending
+
+    def reminders(self, session):
+        return [m for m in self.conversation(session)['messages']
+                if (m.get('content') or '').startswith('另有一条改写等你确认')]
+
+    def test_meta_question_passes_pending_gate_and_reminds_once(self):
+        session, host, ids = self.ready()
+        self.start(session, 'first')
+        host.client_factory = lambda runtime, budget: MetaOnlyClient(runtime)
+        self.turn(session, '这一段为什么不建议写精通？', 'meta-1')
+        self.assertEqual(len(self.reminders(session)), 1)
+        self.turn(session, '那这段还能怎么改？', 'meta-2')
+        self.assertEqual(len(self.reminders(session)), 1)
+
+
 class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_injected_decision_skips_model(self):
         ctx = SessionContext(session=SessionInfo(session_id='s1'))
