@@ -546,3 +546,69 @@ def _sanitize(
 
 def code_is_empty(code: str) -> bool:
     return code == "no_experience"
+
+
+def normalize(
+    output,
+    *,
+    message: str,
+    docs: list[ExperienceDoc],
+    phases: dict[str, Phase],
+    suggestion_ids: set[str],
+):
+    """校验模型输出。任何一项不成立就降级，不猜、不放宽。"""
+    out = output.model_copy(deep=True)
+    if out.confidence < 0.6:
+        out.intent, out.answers_pending, out.answer_quote = "meta", False, None
+        out.disposition, out.pending_resolution, out.mixed = None, None, []
+        out.suppress_kind = None
+        return out
+
+    if out.suppress_kind and out.disposition != "suppress":
+        out.suppress_kind = None
+
+    if out.reply and out.intent not in {"meta", "chitchat"}:
+        out.reply = None
+
+    if out.answer_quote and factual_quote(message, out.answer_quote) is None:
+        out.answer_quote, out.answers_pending = None, False
+
+    if out.clarification is not None:
+        out.clarification = _sanitize(out.clarification, message, docs, phases)
+        out.intent = "clarify"
+
+    if out.pending_resolution is not None:
+        out.pending_resolution = _normalize_resolution(out, message, suggestion_ids)
+
+    if out.mixed:
+        kinds = [(bool(item.disposition), bool(item.intent)) for item in out.mixed]
+        both_intents = all(second and not first for first, second in kinds)
+        both_dispositions = all(first and not second for first, second in kinds)
+        if len(out.mixed) > 2 or both_intents or both_dispositions:
+            out.mixed = []
+            out.intent = "clarify"
+            out.clarification = _clarify_template(message, docs, phases)
+
+    return out
+
+
+def _normalize_resolution(out, message: str, suggestion_ids: set[str]):
+    item = out.pending_resolution
+    if not item.decision or item.suggestion_id not in suggestion_ids:
+        return item.model_copy(update={"decision": None})
+    if item.decision != "revise":
+        return item
+    feedback, quote = item.feedback or "", out.quote or ""
+    if not feedback or not quote or feedback not in quote:
+        return item.model_copy(update={"decision": None})
+    if factual_quote(message, quote) is None:
+        return item.model_copy(update={"decision": None})
+    return item
+
+
+def _clarify_template(message: str, docs: list[ExperienceDoc], phases: dict[str, Phase]):
+    candidates = _candidates(docs[:5], phases)
+    code = "multiple_match" if candidates else "no_experience"
+    question = _template(code, message[:12], None, len(candidates))
+    return Clarification(code=code, question=question,
+                         quoted_reference=message[:12], candidates=candidates)

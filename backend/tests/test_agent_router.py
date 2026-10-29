@@ -132,3 +132,90 @@ class UserPromptTests(unittest.TestCase):
             suggestions=[], recent=[],
         )
         self.assertIn('待答问题：无', prompt)
+
+
+from app.agent.route import normalize
+
+
+def _docs():
+    from app.agent.memory import ExperienceDoc
+    return [
+        ExperienceDoc(experience_id='blk_1', seq=1, kind='project', title='项目一', raw_text='参与项目一。'),
+        ExperienceDoc(experience_id='blk_2', seq=2, kind='project', title='项目二', raw_text='参与项目二。'),
+    ]
+
+
+class NormalizeTests(unittest.TestCase):
+    def test_revise_feedback_must_be_substring_of_quote(self):
+        out = RouterOutput.model_validate({
+            'disposition': 'resolve',
+            'confidence': 0.9,
+            'quote': '这段太啰嗦',
+            'pending_resolution': {'decision': 'revise', 'suggestion_id': 'sg_1',
+                                   'feedback': '希望精简这段内容'},
+        })
+        result = normalize(out, message='这段太啰嗦', docs=_docs(), phases={}, suggestion_ids={'sg_1'})
+        self.assertIsNone(result.pending_resolution.decision)
+
+    def test_revise_feedback_substring_is_kept(self):
+        out = RouterOutput.model_validate({
+            'disposition': 'resolve',
+            'confidence': 0.9,
+            'quote': '这段太啰嗦',
+            'pending_resolution': {'decision': 'revise', 'suggestion_id': 'sg_1',
+                                   'feedback': '太啰嗦'},
+        })
+        result = normalize(out, message='这段太啰嗦', docs=_docs(), phases={}, suggestion_ids={'sg_1'})
+        self.assertEqual(result.pending_resolution.decision, 'revise')
+
+    def test_quote_must_come_from_message(self):
+        out = RouterOutput.model_validate({
+            'disposition': 'resolve', 'confidence': 0.9, 'quote': '编造的一句',
+            'pending_resolution': {'decision': 'revise', 'suggestion_id': 'sg_1',
+                                   'feedback': '编造的一句'},
+        })
+        result = normalize(out, message='这段太啰嗦', docs=_docs(), phases={}, suggestion_ids={'sg_1'})
+        self.assertIsNone(result.pending_resolution.decision)
+
+    def test_unknown_suggestion_id_clears_decision(self):
+        out = RouterOutput.model_validate({
+            'disposition': 'resolve',
+            'confidence': 0.9,
+            'pending_resolution': {'decision': 'accept', 'suggestion_id': 'sg_ghost'},
+        })
+        result = normalize(out, message='采用', docs=_docs(), phases={}, suggestion_ids={'sg_1'})
+        self.assertIsNone(result.pending_resolution.decision)
+
+    def test_hallucinated_clarification_candidates_are_dropped(self):
+        out = RouterOutput.model_validate({
+            'intent': 'clarify', 'confidence': 0.9,
+            'clarification': {'code': 'multiple_match', 'question': '改哪一段？',
+                              'quoted_reference': '那段', 'candidates': []},
+        })
+        # 模型给的是不存在的 id，Pydantic 无法拒绝，normalize 必须剔除
+        out.clarification.candidates = [type('C', (), {'experience_id': 'blk_ghost'})()]
+        result = normalize(out, message='那段改短', docs=_docs(), phases={}, suggestion_ids=set())
+        ids = [c.experience_id for c in result.clarification.candidates]
+        self.assertNotIn('blk_ghost', ids)
+        self.assertEqual(ids, ['blk_1', 'blk_2'])
+
+    def test_mixed_with_two_intents_is_downgraded_to_clarify(self):
+        out = RouterOutput.model_validate({
+            'confidence': 0.9,
+            'mixed': [{'intent': 'focus', 'target_experience_id': 'blk_1'},
+                      {'intent': 'focus', 'target_experience_id': 'blk_2'}],
+        })
+        result = normalize(out, message='两段都改', docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertEqual(result.intent, 'clarify')
+        self.assertEqual(result.mixed, [])
+
+    def test_low_confidence_becomes_meta(self):
+        out = RouterOutput.model_validate({'intent': 'focus', 'target_experience_id': 'blk_1',
+                                           'confidence': 0.3})
+        result = normalize(out, message='嗯', docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertEqual(result.intent, 'meta')
+
+    def test_suppress_kind_requires_suppress(self):
+        out = RouterOutput.model_validate({'intent': 'meta', 'suppress_kind': 'thanks'})
+        result = normalize(out, message='谢谢', docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertIsNone(result.suppress_kind)
