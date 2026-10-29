@@ -9,6 +9,8 @@ from app.resume_structure import section_kinds, heading, section_kind
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
+# 默认按段检查的范围。教育、获奖按原文保留，只有用户点名时才进入。
+REVIEW_KINDS = frozenset({'project', 'work', 'skills', 'summary'})
 KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段', '跳过这一节', '跳过这节', '跳过这部分'}
 
 
@@ -71,8 +73,11 @@ def plan(runtime):
     if allowed == set():
         raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目，请明确要修改的项目。')
     blocks = [b for b in context['draft']['blocks'] if allowed is None or b['blockId'] in allowed]
-    kinds = section_kinds([b['markdown'] for b in blocks])
-    blocks = [b for b, kind in zip(blocks, kinds) if kind is not None]
+    sections = section_kinds([b['markdown'] for b in blocks])
+    # 基本信息按原文保留；教育、获奖不进默认检查顺序，用户点名范围仍可处理。
+    pairs = [(b, kind) for b, kind in zip(blocks, sections)
+             if kind in REVIEW_KINDS or (allowed is not None and kind not in (None, 'profile'))]
+    blocks, kinds = [b for b, _ in pairs], [kind for _, kind in pairs]
     with runtime.repo._operation(runtime.context) as (connection, session):
         progress = _load(connection, session)
         done, remaining, review = [], [], []
@@ -99,7 +104,7 @@ def plan(runtime):
             remaining.sort(key=lambda b: b['blockId'] != waiting)
         return {'blocks': blocks, 'done': done, 'remaining': remaining, 'review': review,
                 'waiting': waiting, 'blocked': progress.get('blocked'),
-                'sectionKinds': dict(zip([b['blockId'] for b in blocks], [k for k in kinds if k is not None])),
+                'sectionKinds': dict(zip([b['blockId'] for b in blocks], kinds)),
                 'pending': pending, 'limitedScope': allowed is not None, 'sources': context['sources']}
 
 

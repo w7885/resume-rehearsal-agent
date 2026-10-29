@@ -125,6 +125,25 @@ class AgentIntegrationTests(unittest.TestCase):
             events=self.analyze(session,reply,request_id)
         return events
 
+    def test_run_ending_without_a_result_is_closed_so_the_session_can_continue(self):
+        import app.agent_host as host_module
+        session,user=self.ready()
+        original=host_module.Runtime.run
+
+        async def silent(runtime):
+            runtime.queue.put_nowait(None)
+
+        host_module.Runtime.run=silent
+        try:
+            events=self.analyze(session,user,'silent')
+        finally:
+            host_module.Runtime.run=original
+        self.assertEqual(events[-1]['type'],'done',events)
+        self.assertEqual(events[-1]['payload']['outcome'],'agent_failed')
+        retry=self.request('POST',f"/api/sessions/{session['sessionId']}/runs",data={
+            'requestId':'silent-retry','userMessageId':user['messageId'],'expectedStateRevision':self.version(session['sessionId'])})
+        self.assertEqual(retry['status'],200,retry)
+
     def test_suggestion_accepts_whitespace_only_before_difference(self):
         class Trimmed(FakeClient):
             async def decide(self,**kwargs):

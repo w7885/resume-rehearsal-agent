@@ -23,6 +23,17 @@ test('analysis uses a saved message ID, handles fragmented UTF8 and Host continu
   assert.equal(calls, 1); assert.equal(notices, 3); assert.equal(operation.runId, 'r2');
 });
 
+test('diagnostic events such as router warnings do not abort the run', async () => {
+  let calls = 0;
+  const operation = new ChatAgentOperation('s', 'm', 7, undefined, async (_, init) => {
+    calls++;
+    const id = JSON.parse(String(init?.body)).requestId;
+    return stream(packet(id, 'progress', 1) + packet(id, 'warning', 2, { code: 'router_fallback' }) + packet(id, 'done', 3, { outcome: 'waiting_user' }));
+  });
+  await operation.run();
+  assert.equal(calls, 1);
+});
+
 test('unknown stream result retries exactly the same request and never resends raw chat', async () => {
   const bodies: string[] = [];
   const operation = new ChatAgentOperation('s', 'm', 7, undefined, async (_, init) => {

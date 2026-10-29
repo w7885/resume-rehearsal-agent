@@ -45,6 +45,8 @@ _EXPERIENCE_PREFIX = re.compile(
     re.I,
 )
 _NAMED_ENTRY = re.compile(r'系统|平台|工具|助手|App|应用')
+# Contact fields need a label separator: "姓名模糊查询" is project text, not basic info.
+PROFILE_HINT = re.compile(r'基本信息|个人信息|(?:姓名|电话|邮箱|联系方式|求职意向)\s*[:：]|\b\d{11}\b|[\w.+-]+@[\w.-]+')
 # PDF extracts often prefix headings with icon-font glyphs from the private use area.
 _ICONS = re.compile(r'^[\s\uf000-\uf8ff\u2022\u00b7\u25aa\u25b8\u25cf\u25c6\u25c7\u25a0\u25a1\u25b6\u25ba\u2605\u2606]+|[\s\uf000-\uf8ff\u2022\u00b7\u25aa\u25b8\u25cf\u25c6\u25c7\u25a0\u25a1\u25b6\u25ba\u2605\u2606]+$')
 
@@ -145,14 +147,14 @@ def section_kinds(markdowns):
             current = None
             result.append(experience_kind)
         elif current is None and index == 0 and not inline_kind(lines[0]) and (experience_kind is None or any(
-                re.search(r'基本信息|个人信息|姓名|求职意向|联系方式|邮箱|电话|\b\d{11}\b|[\w.+-]+@[\w.-]+', line) for line in lines)):
+                PROFILE_HINT.search(line) for line in lines)):
             result.append('profile')
         elif experience_kind in {'project', 'work'} and current is None:
             # An unstructured resume fragment keeps its original experience path.
             result.append(experience_kind)
         elif current is not None:
             result.append(current)
-        elif any(re.search(r'基本信息|个人信息|姓名|求职意向|联系方式|邮箱|电话|\b\d{11}\b|[\w.+-]+@[\w.-]+', line) for line in lines):
+        elif any(PROFILE_HINT.search(line) for line in lines):
             result.append('profile')
         else:
             result.append(experience_kind)

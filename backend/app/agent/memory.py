@@ -512,7 +512,8 @@ def sync_experiences(
     order = []
     changed = False
     for block, kind in zip(ctx.draft_blocks, kinds):
-        if kind is None:
+        # 基本信息按原文保留，不建经历文档、不进入检查顺序。
+        if kind in (None, 'profile'):
             continue
         order.append(block.block_id)
         from app.agent.section_policy import section_title

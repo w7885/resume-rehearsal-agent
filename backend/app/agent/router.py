@@ -123,13 +123,15 @@ def _phases(ctx: SessionContext, docs: list[ExperienceDoc]) -> dict[str, Phase]:
     }
 
 
-def router_brief(store: AgentStateStore, ctx: SessionContext) -> dict:
+def router_brief(store: AgentStateStore, ctx: SessionContext, *, awaiting_goal: bool = False) -> dict:
     """Compact, read-only state for the outer RouterAgent."""
     session_id = ctx.session.session_id
     docs = _load_docs(store, session_id, ctx)
     phases = _phases(ctx, docs)
     focus = next((d for d in docs if d.experience_id == ctx.session.current_focus_id), None)
     question = current_question(focus)
+    # 求职方向问题只存在 SessionDoc 上，段落文档里没有；不带给外层，模型就不知道在等这个答案。
+    question_text = _GOAL_QUESTION if awaiting_goal else question.text if question else None
     return {
         'blocks': [
             {'id': d.experience_id, 'seq': d.seq, 'kind': d.kind,
@@ -137,7 +139,7 @@ def router_brief(store: AgentStateStore, ctx: SessionContext) -> dict:
             for d in docs
         ],
         'focus_id': ctx.session.current_focus_id,
-        'question': question.text if question else None,
+        'question': question_text,
         # 一并带出，供外层 normalize 校验澄清候选（用户的硬要求第 5 条）。
         'docs': docs,
         'phases': phases,

@@ -6,6 +6,7 @@ Live calls are off by default; a developer may inject a fake client for tests.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from uuid import uuid4
 
@@ -22,6 +23,9 @@ from app.business_service import BusinessService
 from app.db import database, transaction
 from app.material_tools import MaterialTools
 from app.repository import Repository, RepositoryError, RequestContext
+
+
+logger = logging.getLogger('uvicorn.error')
 
 
 def fresh_id(prefix):
@@ -461,17 +465,21 @@ class Runtime:
         from app.agent_goal import sync
         from app.agent_progress import CONTINUE, KEEP_NEXT, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
+        from app.resume_structure import SECTION_TYPES
         sync(self)
+        command = plain(turn['userMessage']['content'])
+        from app.agent_edit_scope import named_sections, whole_resume_request
+        named = named_sections(turn['userMessage']['content'])
+        if named and all(SECTION_TYPES.get(name) == 'profile' for name in named):
+            self._reply('基本信息按原文保留，不参与改写。姓名、联系方式等如需调整，请在编辑器里直接修改。')
+            return 'completed'
         progress = plan(self)
         if not progress['blocks']:
-            self._reply('当前还没有可整理的简历段落。可以先上传简历，或粘贴基本信息、经历、自我评价等任一部分。', 'question')
+            self._reply('当前简历没有可改写的段落；基本信息、教育、获奖按原文保留。可以上传简历，或粘贴项目／工作经历、技能、自我评价等内容。', 'question')
             return 'completed'
         if progress['pending'] and (out is None or out.intent not in {'meta', 'chitchat'}):
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
-        command = plain(turn['userMessage']['content'])
-        from app.agent_edit_scope import named_sections, whole_resume_request
-        named = named_sections(turn['userMessage']['content'])
         keep_next = command in KEEP_NEXT
         if keep_next and progress['waiting']:
             record(self, progress['waiting'], completed=True)
@@ -609,7 +617,7 @@ class Runtime:
             loaded = load_session(store, self.sid)
             if loaded and loaded[0].current_focus_id:
                 ctx.session.current_focus_id = loaded[0].current_focus_id
-            brief = router_brief(store, ctx)
+            brief = router_brief(store, ctx, awaiting_goal=bool(loaded and loaded[0].awaiting_goal))
             progress = plan(self)
         except RepositoryError:
             return None
@@ -767,6 +775,7 @@ class Runtime:
             connection.execute('UPDATE runs SET status=?,error_code=? WHERE run_id=? AND status=\'running\'',(run_status,None if status=='done' else outcome,self.context.run_id))
             connection.execute('UPDATE sessions SET status=? WHERE session_id=? AND status=\'running\'',('idle' if status=='done' else run_status,self.sid))
         self.queue.put_nowait(event)
+        return event
 
 
 def create_agent_router(host):
@@ -779,12 +788,27 @@ def create_agent_router(host):
             runtime=host.active.get((session_id,row['request_id'])) if created else None
             if runtime:
                 runtime.task=asyncio.create_task(asyncio.wait_for(runtime.run(),timeout=180))
+                finished=False
                 try:
                     while True:
                         event=await runtime.queue.get()
                         if event is None:
                             break
+                        finished = finished or event['type'] == 'done'
                         yield f"event: {event['type']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                    # run() 的 finally 先投递 None 再抛出异常，所以任务结束不等于客户端拿到了结果。
+                    failure=(await asyncio.gather(runtime.task,return_exceptions=True))[0]
+                    if isinstance(failure,BaseException) and not isinstance(failure,asyncio.CancelledError):
+                        logger.error('agent run ended before a final event',exc_info=(type(failure),failure,failure.__traceback__))
+                    if not finished:
+                        # 最后兜底：不能在缺少 done 的情况下结束请求，否则会话会永久停在 running。
+                        try:
+                            event=runtime.finish('failed','agent_failed',check=False)
+                        except Exception:
+                            logger.exception('could not finalize an unfinished run')
+                        else:
+                            if event:
+                                yield f"event: done\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
                 finally:
                     if not runtime.task.done():
                         runtime.task.cancel()
