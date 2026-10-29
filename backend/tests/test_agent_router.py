@@ -93,3 +93,42 @@ class ClassifyTests(unittest.IsolatedAsyncioTestCase):
         result = await classify(llm, user='u')
         self.assertEqual(result.fallback_reason, FALLBACK_BUDGET)
         self.assertEqual(llm.calls, 1)
+
+
+from app.agent_router import build_user_prompt
+
+
+class UserPromptTests(unittest.TestCase):
+    def test_includes_message_blocks_and_focus(self):
+        prompt = build_user_prompt(
+            message='第二段改短点',
+            blocks=[{'id': 'blk_1', 'seq': 1, 'kind': 'project', 'title': '项目一'},
+                    {'id': 'blk_2', 'seq': 2, 'kind': 'project', 'title': '项目二'}],
+            focus_id='blk_2',
+            question='你在项目二里负责哪部分？',
+            suggestions=[],
+            recent=['assistant: 好'],
+        )
+        self.assertIn('第二段改短点', prompt)
+        self.assertIn('blk_2', prompt)
+        self.assertIn('你在项目二里负责哪部分？', prompt)
+        self.assertIn('blk_1', prompt)
+
+    def test_lists_pending_suggestions_with_ids(self):
+        prompt = build_user_prompt(
+            message='太啰嗦了',
+            blocks=[{'id': 'blk_1', 'seq': 1, 'kind': 'project', 'title': '项目一'}],
+            focus_id='blk_1',
+            question=None,
+            suggestions=[{'id': 'sg_9', 'title': '项目一', 'after': '协助项目一测试。'}],
+            recent=[],
+        )
+        self.assertIn('sg_9', prompt)
+        self.assertIn('协助项目一测试。', prompt)
+
+    def test_says_none_when_no_pending_question(self):
+        prompt = build_user_prompt(
+            message='继续', blocks=[], focus_id=None, question=None,
+            suggestions=[], recent=[],
+        )
+        self.assertIn('待答问题：无', prompt)
