@@ -20,3 +20,7 @@ def build_decide_prompt(tools_text: str) -> str:
 
 def build_route_prompt() -> str:
     return _read("route")
+
+
+def build_router_prompt() -> str:
+    return _read("router")
