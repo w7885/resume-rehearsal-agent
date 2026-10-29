@@ -20,7 +20,7 @@ BODY = '项目经历1\n参与项目一测试。\n项目经历2\n参与项目二�
 
 class ProactiveClient(integration.FakeClient):
     async def route(self, **kwargs):
-        return {'action': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1, 'answers_pending': True}
+        return {'intent': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1, 'answers_pending': True}
 
     async def decide(self, **kwargs):
         self.steps += 1

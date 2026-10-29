@@ -189,7 +189,7 @@ class DeclineAndStreakTests(unittest.TestCase):
 
 
 ANSWER_ROUTE = {
-    "action": "answer",
+    "intent": "answer",
     "target_experience_id": "exp_01",
     "scope": "experience",
     "confidence": 1,

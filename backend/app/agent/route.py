@@ -356,6 +356,7 @@ async def route_message(
     has_pending_question: bool,
     llm,
     pending_question_text: str | None = None,
+    decision=None,
 ) -> RouteResult:
     text = message.strip()
     if not text:
@@ -403,60 +404,31 @@ async def route_message(
             focused.clear_pending = True
         return focused
 
-    user_prompt = _model_user_prompt(
-        text, docs, phases, ctx.session.current_focus_id, has_pending_question
-    )
-    user_prompt += '\n最近对话：\n' + '\n'.join(f'{m.role}: {m.text[:500]}' for m in ctx.messages[-6:])
-    if pending_question_text:
-        user_prompt += '\n当前待答问题（优先）：' + pending_question_text
-    try:
-        raw = await llm.route(system=build_route_prompt(), user=user_prompt)
-        decision = RouteDecision.model_validate(raw)
-    except (ValidationError, ValueError):
-        if not docs:
-            return RouteResult(
-                action="clarify",
-                clarification=Clarification(
-                    code="no_experience",
-                    question=_template("no_experience", "", None, 0),
-                    quoted_reference=text[:12],
-                ),
-                pending_clarification={
-                    "code": "no_experience",
-                    "fingerprint": question_fingerprint(text),
-                    "quoted_reference": text[:12],
-                    "candidates": [],
-                    "attempts": 1,
-                },
-                rationale="模型路由失败且无经历",
-            )
-        return RouteResult(
-            action="meta",
-            scope="experience",
-            target_experience_id=ctx.session.current_focus_id,
-            rationale="意图未能确定，保留问题状态",
-            reply=context_reply(next((d for d in docs if d.experience_id == ctx.session.current_focus_id), None)),
+    if decision is None:
+        # 降级路径：外层没给出判定时，内层自己判一次。
+        user_prompt = _model_user_prompt(
+            text, docs, phases, ctx.session.current_focus_id, has_pending_question
+        )
+        user_prompt += '\n最近对话：\n' + '\n'.join(f'{m.role}: {m.text[:500]}' for m in ctx.messages[-6:])
+        if pending_question_text:
+            user_prompt += '\n当前待答问题（优先）：' + pending_question_text
+        from app.agent_router import classify
+        result = await classify(llm, user=user_prompt)
+        if result.output is None:
+            return _route_fallback(ctx, docs)
+        decision = normalize(
+            result.output, message=text, docs=docs, phases=phases,
+            suggestion_ids={s.suggestion_id for s in ctx.suggestions},
         )
 
-    result = RouteResult(
-        action=decision.action,
-        target_experience_id=decision.target_experience_id,
-        scope=decision.scope,
-        rationale=decision.rationale,
-        used_model=True,
-        clarification=decision.clarification,
-        answers_pending=decision.answers_pending,
-        answer_quote=factual_quote(text, decision.answer_quote),
-        reply=decision.reply,
-    )
-    if decision.answer_quote and result.answer_quote is None:
+    result = to_route_result(decision, ctx=ctx, docs=docs, phases=phases, text=text)
+    if decision.answer_quote and result.answer_quote is None and result.action in {'answer', 'correct'}:
         result.answers_pending = False
         result.action = 'meta'
         result.reply = '这条消息包含需要核对的内容，先保留原问题；请明确哪部分是已发生的个人事实。'
-    if decision.confidence < 0.6 or (has_pending_question and result.action == 'answer' and not result.answers_pending):
-        if decision.confidence < 0.6:
-            result.answer_quote = None
-        result.action, result.answers_pending = 'meta', False
+    if has_pending_question and result.action == 'answer' and not result.answers_pending:
+        # 有待答问题却没说自己在回答，不能当回答消费掉。
+        result.action = 'meta'
         result.reply = result.reply or '我还不能确定这条消息是否回答了当前问题，先核对你的意思。'
     if has_pending_question and result.action == 'answer' and result.answer_quote is None:
         # Uncertainty/absence can answer a question without being new facts.
@@ -492,7 +464,7 @@ async def route_message(
         result.echo = _echo(target)
 
     if result.clarification is not None:
-        result.clarification = _sanitize(decision.clarification, text, docs, phases)
+        result.clarification = _sanitize(result.clarification, text, docs, phases)
         result.action = "clarify"
         result.pending_clarification = {
             "code": result.clarification.code,
@@ -504,6 +476,43 @@ async def route_message(
             "attempts": 1,
         }
     return result
+
+
+def to_route_result(output, *, ctx, docs, phases, text) -> RouteResult:
+    return RouteResult(
+        action=output.intent or "meta",
+        target_experience_id=output.target_experience_id,
+        scope=output.scope or "unknown",
+        rationale=output.meta_note or "",
+        used_model=True,
+        clarification=output.clarification,
+        answers_pending=output.answers_pending,
+        answer_quote=factual_quote(text, output.answer_quote or output.quote),
+        reply=output.reply,
+    )
+
+
+def _route_fallback(ctx, docs) -> RouteResult:
+    if not docs:
+        return RouteResult(
+            action="clarify",
+            clarification=Clarification(
+                code="no_experience",
+                question=_template("no_experience", "", None, 0),
+                quoted_reference="",
+            ),
+            pending_clarification={
+                "code": "no_experience", "fingerprint": question_fingerprint(""),
+                "quoted_reference": "", "candidates": [], "attempts": 1,
+            },
+            rationale="模型路由失败且无经历",
+        )
+    return RouteResult(
+        action="meta", scope="experience",
+        target_experience_id=ctx.session.current_focus_id,
+        rationale="意图未能确定，保留问题状态",
+        reply=context_reply(next((d for d in docs if d.experience_id == ctx.session.current_focus_id), None)),
+    )
 
 
 def _sanitize(

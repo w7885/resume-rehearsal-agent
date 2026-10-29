@@ -219,3 +219,27 @@ class NormalizeTests(unittest.TestCase):
         out = RouterOutput.model_validate({'intent': 'meta', 'suppress_kind': 'thanks'})
         result = normalize(out, message='谢谢', docs=_docs(), phases={}, suggestion_ids=set())
         self.assertIsNone(result.suppress_kind)
+
+
+from app.agent.ports import SessionContext, SessionInfo
+from app.agent.route import route_message
+
+
+class NoCallLLM:
+    async def route(self, **kwargs):
+        raise AssertionError('injected decision must not call the model')
+
+
+class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_injected_decision_skips_model(self):
+        ctx = SessionContext(session=SessionInfo(session_id='s1'))
+        ctx.session.current_focus_id = 'blk_1'
+        result = await route_message(
+            message='继续', ctx=ctx, docs=_docs(), phases={}, pending=None,
+            has_pending_question=False, llm=NoCallLLM(),
+            decision=RouterOutput.model_validate({'intent': 'meta', 'confidence': 0.9,
+                                                  'reply': '我们按你的节奏来。'}),
+        )
+        self.assertEqual(result.action, 'meta')
+        self.assertEqual(result.reply, '我们按你的节奏来。')
+        self.assertTrue(result.used_model)

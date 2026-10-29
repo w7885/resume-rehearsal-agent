@@ -183,6 +183,7 @@ async def _execute(
     expected_state_revision: int | None = None,
     cancel_event: asyncio.Event | None = None,
     start_analysis: bool = False,
+    routed=None,
 ) -> None:
     started_at = now_iso()
     ctx = repo.get_session_context(session_id)
@@ -284,7 +285,8 @@ async def _execute(
     try:
         if goal_reply:
             decision = await route_message(message=text, ctx=ctx, docs=docs, phases=phases,
-                pending=None, has_pending_question=True, llm=llm, pending_question_text=_GOAL_QUESTION)
+                pending=None, has_pending_question=True, llm=llm,
+                pending_question_text=_GOAL_QUESTION, decision=routed)
             if decision.action == 'refuse' and decision.scope == 'whole_resume':
                 sink.emit('notice', code='paused', text='已暂停本轮；已有材料与当前稿保留。')
                 close('cancelled', action=decision.action)
@@ -320,6 +322,7 @@ async def _execute(
                 pending=session_doc.pending_clarification,
                 has_pending_question=has_question,
                 llm=llm,
+                decision=routed,
             )
     except Exception as exc:
         sink.emit("error", code="route_failed", message=str(exc)[:200])
@@ -449,30 +452,10 @@ async def _execute(
         return
 
     if action == "confirm":
-        pending = next(
-            (
-                suggestion
-                for suggestion in ctx.suggestions
-                if suggestion.suggestion_id == focus_doc.last_suggestion_id
-                and suggestion.status == "pending"
-            ),
-            None,
-        )
-        if pending is None:
-            sink.emit(
-                "notice", code="no_pending_suggestion", text="好，当前没有需要采用的新建议，正文保持原样。想补充或调整时，直接告诉我就好。"
-            )
-            close("waiting_user", action=action)
-            return
-        repo.apply_suggestion_decision(
-            pending.suggestion_id, "accept", "message", message_id
-        )
-        sink.emit(
-            "suggestion_applied",
-            suggestion_id=pending.suggestion_id,
-            experience_id=pending.experience_id,
-        )
-        close("completed", action=action)
+        # 采用/拒绝统一由外层 _resolve_pending 通过 service 落库；内层没有写权限。
+        sink.emit("notice", code="confirm_deferred",
+                  text="好，请确认采用哪条改写；我会按你的选择更新当前稿。")
+        close("waiting_user", action=action)
         return
 
     answered = False
@@ -569,6 +552,7 @@ async def stream_run(
     expected_state_revision: int | None = None,
     cancel_event: asyncio.Event | None = None,
     start_analysis: bool = False,
+    decision=None,
 ) -> AsyncIterator[RunEvent]:
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     request_id = request_id or run_id
@@ -593,6 +577,7 @@ async def stream_run(
                     expected_state_revision=expected_state_revision,
                     cancel_event=cancel_event,
                     start_analysis=start_analysis,
+                    routed=decision,
                 )
         except Exception as exc:
             sink.emit("error", code="run_failed", message=str(exc)[:200])
