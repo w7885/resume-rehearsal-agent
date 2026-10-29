@@ -100,7 +100,7 @@ def sse_text(event: RunEvent) -> str:
 
 
 def _load_docs(
-    repo, store: AgentStateStore, session_id: str, ctx: SessionContext
+    store: AgentStateStore, session_id: str, ctx: SessionContext
 ) -> list[ExperienceDoc]:
     docs: list[ExperienceDoc] = []
     for experience_id in ctx.session.experience_order:
@@ -120,6 +120,27 @@ def _phases(ctx: SessionContext, docs: list[ExperienceDoc]) -> dict[str, Phase]:
             else None,
         )
         for doc in docs
+    }
+
+
+def router_brief(store: AgentStateStore, ctx: SessionContext) -> dict:
+    """Compact, read-only state for the outer RouterAgent."""
+    session_id = ctx.session.session_id
+    docs = _load_docs(store, session_id, ctx)
+    phases = _phases(ctx, docs)
+    focus = next((d for d in docs if d.experience_id == ctx.session.current_focus_id), None)
+    question = current_question(focus)
+    return {
+        'blocks': [
+            {'id': d.experience_id, 'seq': d.seq, 'kind': d.kind,
+             'title': d.title, 'phase': phases.get(d.experience_id, 'pending')}
+            for d in docs
+        ],
+        'focus_id': ctx.session.current_focus_id,
+        'question': question.text if question else None,
+        # 一并带出，供外层 normalize 校验澄清候选（用户的硬要求第 5 条）。
+        'docs': docs,
+        'phases': phases,
     }
 
 
@@ -264,7 +285,7 @@ async def _execute(
         return
 
     ctx.session.current_focus_id = session_doc.current_focus_id
-    docs = _load_docs(repo, store, session_id, ctx)
+    docs = _load_docs(store, session_id, ctx)
     phases = _phases(ctx, docs)
     by_id = {doc.experience_id: doc for doc in docs}
     focus_id = session_doc.current_focus_id

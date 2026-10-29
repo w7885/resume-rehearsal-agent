@@ -230,6 +230,37 @@ class NoCallLLM:
         raise AssertionError('injected decision must not call the model')
 
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.agent_host import Runtime
+
+
+class DispositionConsumptionTests(unittest.TestCase):
+    def _runtime(self):
+        return SimpleNamespace(_reply=lambda *a, **k: self.fail('suppress 分支不应自行回复'),
+                               _pending=lambda: [])
+
+    def test_model_ack_defers_to_pending_suggestion_guard(self):
+        out = RouterOutput.model_validate({'disposition': 'suppress', 'suppress_kind': 'ack'})
+        with patch('app.agent_social.handle', return_value=False) as guarded:
+            self.assertFalse(Runtime._consume_disposition(
+                self._runtime(), {'userMessage': {'content': '好的'}}, out))
+        guarded.assert_called_once()
+        self.assertEqual(guarded.call_args.kwargs['kind'], 'ack')
+
+    def test_courtesy_is_consumed_when_guard_accepts(self):
+        out = RouterOutput.model_validate({'disposition': 'suppress', 'suppress_kind': 'thanks'})
+        with patch('app.agent_social.handle', return_value=True):
+            self.assertTrue(Runtime._consume_disposition(
+                self._runtime(), {'userMessage': {'content': '谢谢'}}, out))
+
+    def test_resume_does_not_end_the_turn(self):
+        out = RouterOutput.model_validate({'disposition': 'resume'})
+        self.assertFalse(Runtime._consume_disposition(
+            self._runtime(), {'userMessage': {'content': '继续'}}, out))
+
+
 class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_injected_decision_skips_model(self):
         ctx = SessionContext(session=SessionInfo(session_id='s1'))
