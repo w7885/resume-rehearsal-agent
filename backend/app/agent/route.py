@@ -82,7 +82,7 @@ def _candidates(
 
 
 def _echo(doc: ExperienceDoc) -> str:
-    return f"已切到第 {doc.seq} 段「{doc.title}」"
+    return f"已切到「{doc.title}」这一段"
 
 
 def _template(code: str, ref: str, kind: str | None, total: int, title: str = "") -> str:
@@ -309,7 +309,7 @@ def _pending_reply(
             target_experience_id=doc.experience_id,
             scope="experience",
             clear_pending=True,
-            echo=f"先改第 {doc.seq} 段「{doc.title}」，想换随时说",
+            echo=f"先改「{doc.title}」这一段，想换随时说",
             rationale="用户委托代选",
         )
 

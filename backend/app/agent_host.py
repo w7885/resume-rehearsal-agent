@@ -463,7 +463,7 @@ class Runtime:
 
     async def _analyze_next(self, turn, out=None):
         from app.agent_goal import sync
-        from app.agent_progress import CONTINUE, KEEP_NEXT, plain, plan, record, label, completion
+        from app.agent_progress import CONTINUE, KEEP_NEXT, REVIEW_KINDS, announce, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
         from app.resume_structure import SECTION_TYPES
         sync(self)
@@ -499,7 +499,6 @@ class Runtime:
             return 'completed'
         store = GuardedStateStore(self)
         existing = load_session(store, self.sid)
-        awaiting_goal = bool(existing and existing[0].awaiting_goal)
         if forced and not progress['remaining'] and not named and not self.revision_target:
             self._reply(completion(progress))
             return 'completed'
@@ -522,9 +521,18 @@ class Runtime:
             doc, revision = existing
             doc.current_focus_id = focus['blockId']
             save_session(store, self.sid, doc, revision)
-        if awaiting_goal and focus in progress['blocks']:
-            index = progress['blocks'].index(focus) + 1
-            self._reply(f'现在进入第 {index} 段「{_block_title(focus["markdown"])}」的修改。')
+        # 先问岗位的那一轮不播报段名：播报应紧接在真正的段内问题或建议之前。
+        session_doc = existing[0] if existing else None
+        asking_goal = (not (session_doc and session_doc.goal) and not (session_doc and session_doc.goal_asked)
+                       and self.repo.get_session(self.context)['directionStatus'] != 'provided')
+        if not asking_goal and progress['announced'] != focus['blockId']:
+            title = _block_title(focus['markdown'])
+            if progress['sectionKinds'].get(focus['blockId']) in REVIEW_KINDS:
+                index = progress['blocks'].index(focus) + 1
+                self._reply(f'现在进入第 {index} 段「{title}」的修改。')
+            else:
+                self._reply(f'现在进入「{title}」的修改。')
+            announce(self, focus['blockId'])
         if self.budget.status()['remainingCents'] == 0:
             self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
             return 'completed'

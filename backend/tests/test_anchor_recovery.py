@@ -126,9 +126,14 @@ class AnchorRecoveryTests(unittest.TestCase):
             self.assertNotIn('before', value['messages'][-1]['content'])
             self.assertEqual(self.pending(session), [])
             calls = host.calls
+            announced = [m['content'] for m in value['messages']
+                         if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')]
+            self.assertEqual(announced, ['现在进入第 1 段「参与项目一测试。」的修改。'])
             host.fail_anchor = False
             user, events = self.turn(session, '继续', 'retry-current')
             self.assertGreater(host.calls, calls)
+            self.assertEqual([m['content'] for m in self.conversation(session)['messages']
+                              if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')], announced)
             self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user')
             suggestion = self.pending(session)[0]
             self.assertEqual(suggestion['target']['blockId'], ids[0])

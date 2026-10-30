@@ -35,7 +35,7 @@ def context_reply(doc, reply=None):
     # A mixed campus block may put the actual activity after grades/awards.
     # Do not hide it by showing only the first metadata lines.
     excerpt = '\n'.join(lines)[:600]
-    text = f'当前正在处理第{doc.seq}段，原文片段是：\n{excerpt}\n'
+    text = f'当前正在处理「{doc.title}」这一段，原文片段是：\n{excerpt}\n'
     if reply:
         text += reply.strip() + '\n'
     question = current_question(doc)

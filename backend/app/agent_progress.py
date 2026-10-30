@@ -59,7 +59,7 @@ def _key(session):
 
 def _load(connection, session):
     row = connection.execute("SELECT doc_json FROM agent_state WHERE session_id=? AND scope='session' AND key=?", (session['session_id'], _key(session))).fetchone()
-    return json.loads(row[0]) if row else {'reviewed': {}, 'waiting': None}
+    return json.loads(row[0]) if row else {'reviewed': {}, 'waiting': None, 'announced': None}
 
 
 def _signature(block, sources):
@@ -104,6 +104,7 @@ def plan(runtime):
             remaining.sort(key=lambda b: b['blockId'] != waiting)
         return {'blocks': blocks, 'done': done, 'remaining': remaining, 'review': review,
                 'waiting': waiting, 'blocked': progress.get('blocked'),
+                'announced': progress.get('announced'),
                 'sectionKinds': dict(zip([b['blockId'] for b in blocks], kinds)),
                 'pending': pending, 'limitedScope': allowed is not None, 'sources': context['sources']}
 
@@ -119,8 +120,20 @@ def record(runtime, block_id, *, completed=False, blocked=False):
         progress['blocked'] = block_id if blocked else None
         if completed:
             progress['reviewed'][block_id] = {'signature': _signature(block, context['sources'])}
-        connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json,revision) VALUES (?,'session',?,?,1) ON CONFLICT(session_id,scope,key) DO UPDATE SET doc_json=excluded.doc_json,revision=agent_state.revision+1",
-                           (runtime.sid, _key(session), json.dumps(progress, ensure_ascii=False)))
+        _save(connection, session, progress, runtime.sid)
+
+
+def announce(runtime, block_id):
+    """Remember which segment was announced so the same one is not repeated."""
+    with runtime.repo._operation(runtime.context, write=True) as (connection, session):
+        progress = _load(connection, session)
+        progress['announced'] = block_id
+        _save(connection, session, progress, runtime.sid)
+
+
+def _save(connection, session, progress, session_id):
+    connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json,revision) VALUES (?,'session',?,?,1) ON CONFLICT(session_id,scope,key) DO UPDATE SET doc_json=excluded.doc_json,revision=agent_state.revision+1",
+                       (session_id, _key(session), json.dumps(progress, ensure_ascii=False)))
 
 
 def completion(plan):

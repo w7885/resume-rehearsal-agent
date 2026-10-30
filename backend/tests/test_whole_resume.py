@@ -128,6 +128,9 @@ class WholeResumeTests(unittest.TestCase):
         session, host, ids = self.setup_whole()
         self.turn(session, '请修改教育背景', 'education')
         self.assertEqual([p['target']['blockId'] for p in self.pending(session)], [ids[1]])
+        announced = [m['content'] for m in self.conversation(session)['messages']
+                     if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')]
+        self.assertEqual(announced, ['现在进入「教育背景」的修改。'])
 
     def test_named_summary_can_use_project_evidence_without_touching_other_sections(self):
         session, host, ids = self.setup_whole()
