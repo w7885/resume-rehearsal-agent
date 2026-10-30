@@ -14,8 +14,10 @@ def social_kind(text):
     return 'thanks' if token in THANKS else 'ack' if token in ACKNOWLEDGEMENTS else None
 
 
-def handle(runtime, turn):
-    kind = social_kind(turn['userMessage']['content'])
+def handle(runtime, turn, kind=None):
+    # 来源不区分：词表命中和模型输出走同一守卫。
+    if kind is None:
+        kind = social_kind(turn['userMessage']['content'])
     if kind is None or (kind == 'ack' and runtime._pending()):
         return False
     with runtime.repo._operation(runtime.context) as (connection, _):

@@ -12,7 +12,7 @@ import test_agent_session_policy as policy
 
 
 def intent(action='meta', **fields):
-    return {'action': action, 'scope': 'experience', 'confidence': 1,
+    return {'intent': action, 'scope': 'experience', 'confidence': 1,
             'target_experience_id': 'exp_01', **fields}
 
 
@@ -74,7 +74,7 @@ class DialogueControlTests(unittest.TestCase):
         self.assertEqual(doc.round, 0)
 
     def test_invalid_or_uncertain_classification_never_defaults_to_answer(self):
-        for decision in ({'action': 'invented'}, intent('answer', confidence=0.2, answers_pending=True),
+        for decision in ({'intent': 'invented'}, intent('answer', confidence=0.2, answers_pending=True),
                          intent('answer'), intent('answer', answers_pending='yes'),
                          intent('focus', target_experience_id='foreign')):
             with self.subTest(decision=decision):

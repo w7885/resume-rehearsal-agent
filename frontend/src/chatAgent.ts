@@ -57,7 +57,8 @@ export class ChatAgentOperation {
           if (!data) continue;
           let event;
           try { event = JSON.parse(data); } catch { throw new ApiError('分析事件格式异常。', 'invalid_response'); }
-          if (event?.sessionId !== this.sessionId || event?.requestId !== this.id || !['progress', 'question', 'done'].includes(event?.type) || !event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) {
+          // 未知事件类型（如 warning）只是服务端诊断，忽略即可；按类型白名单拒收会中断本轮分析。
+          if (event?.sessionId !== this.sessionId || event?.requestId !== this.id || typeof event?.type !== 'string' || !event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) {
             throw new ApiError('分析事件不属于当前请求。', 'scope_violation');
           }
           if (event.payload.replayed === true && event.type !== 'done') throw new ApiError('非法重放事件。', 'invalid_response');

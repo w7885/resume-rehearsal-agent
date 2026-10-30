@@ -20,7 +20,7 @@ BODY = '项目经历1\n参与项目一测试。\n项目经历2\n参与项目二�
 
 class ProactiveClient(integration.FakeClient):
     async def route(self, **kwargs):
-        return {'action': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1, 'answers_pending': True}
+        return {'intent': 'answer', 'scope': 'experience', 'target_experience_id': None, 'confidence': 1, 'answers_pending': True}
 
     async def decide(self, **kwargs):
         self.steps += 1
@@ -125,6 +125,10 @@ class ProactiveFlowTests(unittest.TestCase):
     def pending(self, session):
         return self.app.state.business_service.repository.get_session_context(RequestContext(session['sessionId']))['suggestions']
 
+    def announced(self, session):
+        return [m['content'] for m in self.conversation(session)['messages']
+                if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')]
+
     def test_accept_advances_once_without_implicitly_applying_next_and_replays_once(self):
         session, host, ids = self.ready()
         self.start(session, 'first')
@@ -142,7 +146,29 @@ class ProactiveFlowTests(unittest.TestCase):
         self.assertEqual(host.phases, ids[:2])
         self.assertEqual(self.count('suggestion_decisions'), 1)
 
-    def test_informational_sections_now_enter_the_default_review_order(self):
+    def test_each_new_segment_is_announced_once_before_its_question(self):
+        session, host, ids = self.ready()
+        self.start(session, 'first')
+        self.assertEqual(self.announced(session), ['现在进入第 1 段「参与项目一测试。」的修改。'])
+        # 采用后自动进入第 2 段：播报紧跟在本轮问题之前，只出现一次。
+        self.turn(session, '是', 'yes')
+        self.assertEqual(self.announced(session)[1:], ['现在进入第 2 段「参与项目二测试。」的修改。'])
+        last = self.conversation(session)['messages'][-1]
+        self.assertEqual(last['role'], 'assistant')
+        self.assertEqual(last['assistant']['kind'], 'question')
+        count = len(self.announced(session))
+        self.answer(session, 'next-answer')
+        self.assertEqual(len(self.announced(session)), count)
+
+    def test_announced_segment_persists_in_progress_state(self):
+        session, host, ids = self.ready()
+        self.start(session, 'first')
+        with db.database(self.path, read_only=True) as connection:
+            stored = json.loads(connection.execute(
+                "SELECT doc_json FROM agent_state WHERE key='host-progress:g1'").fetchone()[0])
+        self.assertEqual(stored['announced'], ids[0])
+
+    def test_basic_information_and_education_are_left_out_of_the_review_order(self):
         body = '李明轩\n13800000000\n教育经历\n示例大学 本科\n项目经历1\n参与项目一测试。\n专业技能\nPython\n'
         session, host, ids = self.ready(body, expected=4)
         kinds = block_kinds([b['markdown'] for b in self.conversation(session)['draft']['blocks']])
@@ -150,9 +176,24 @@ class ProactiveFlowTests(unittest.TestCase):
         self.start(session, 'first')
         with db.database(self.path) as c:
             docs = [json.loads(row[0]) for row in c.execute("SELECT doc_json FROM agent_state WHERE scope='experience'")]
-        self.assertEqual([d['kind'] for d in docs], ['profile', 'education', 'project', 'skills'])
-        self.assertEqual(host.phases, [ids[0]])
-        self.assertIn('保留原文', self.conversation(session)['messages'][-1]['content'])
+        self.assertEqual([d['kind'] for d in docs], ['education', 'project', 'skills'])
+        self.assertNotIn(ids[0], host.phases)
+        # 教育段建了记忆但不进入检查顺序：只有项目段触发决策。
+        self.assertEqual(host.phases, [ids[2]])
+
+    def test_explicit_basic_information_request_is_declined_without_editing(self):
+        body = '李明轩\n13800000000\n教育经历\n示例大学 本科\n项目经历1\n参与项目一测试。\n'
+        session, host, ids = self.ready(body, expected=3)
+        self.turn(session, '基本信息改一下', 'profile-edit')
+        self.assertEqual(host.phases, [])
+        self.assertIn('基本信息按原文保留', self.conversation(session)['messages'][-1]['content'])
+        self.assertEqual(self.input_blocks(session)[ids[0]], '李明轩\n13800000000\n')
+
+    def input_blocks(self, session):
+        with db.database(self.path) as c:
+            return {block_id: markdown for block_id, markdown in c.execute(
+                'SELECT block_id, markdown FROM draft_blocks WHERE session_id=? AND block_revision=1',
+                (session['sessionId'],))}
 
     def test_scoped_project_list_excludes_internship_entries(self):
         from app.agent_edit_scope import project_blocks
@@ -162,12 +203,12 @@ class ProactiveFlowTests(unittest.TestCase):
         blocks = project_blocks(repo, RequestContext(session['sessionId']))
         self.assertEqual([b['blockId'] for b in blocks], [ids[2]])
 
-    def test_resume_without_projects_can_still_review_basic_information(self):
+    def test_resume_without_projects_still_reviews_skills_but_not_education(self):
         body = '李明轩\n13800000000\n教育经历\n示例大学 本科\n专业技能\nPython\n'
         session, host, ids = self.ready(body, expected=3)
         self.turn(session, '继续', 'first')
         self.assertIn('保留原文', self.conversation(session)['messages'][-1]['content'])
-        self.assertEqual(host.phases, [ids[0]])
+        self.assertEqual(host.phases, [ids[2]])
 
     def test_each_accept_moves_forward_then_summarizes_without_extra_call(self):
         session, host, ids = self.ready()

@@ -8,12 +8,13 @@ from app import vision
 
 
 class FakeResponse:
-    def __init__(self, status, content=''):
+    def __init__(self, status, content='', finish_reason='stop'):
         self.status_code = status
         self._content = content
+        self._finish_reason = finish_reason
 
     def json(self):
-        return {'choices': [{'message': {'content': self._content}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 100, 'completion_tokens': 50}}
+        return {'choices': [{'message': {'content': self._content}, 'finish_reason': self._finish_reason}], 'usage': {'prompt_tokens': 100, 'completion_tokens': 50}}
 
 
 class FakeClient:
@@ -89,6 +90,7 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, 'https://example.test/chat/completions')
         self.assertEqual(kwargs['json']['model'], 'deepseek-flash')
         self.assertEqual(kwargs['json']['effort'], 'low')
+        self.assertEqual(kwargs['json']['max_tokens'], 16000)
         self.assertEqual(kwargs['headers']['Authorization'], 'Bearer test-key')
         self.assertTrue(kwargs['json']['messages'][0]['content'][1]['image_url']['url']
                         .startswith('data:image/png;base64,'))
@@ -144,17 +146,33 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
         with self.render(), self.client([FakeResponse(503), FakeResponse(200, text)]):
             self.assertEqual(await self.transcribe('image/png', b'raw'), text)
         self.assertEqual(len(self.budget.reserved), 2)
-        self.assertEqual(self.budget.charged, [7, 1])
+        self.assertEqual(self.budget.charged, [14, 1])
 
     async def test_cancellation_keeps_unknown_charge(self):
         with self.render(), self.client([asyncio.CancelledError()]):
             with self.assertRaises(asyncio.CancelledError):
                 await self.transcribe('image/png', b'raw')
-        self.assertEqual(self.budget.charged, [7])
+        self.assertEqual(self.budget.charged, [14])
 
-    async def test_missing_usage_is_conservatively_charged_and_truncation_rejected(self):
-        response = FakeResponse(200)
-        response.json = lambda: {'choices': [{'message': {'content': '长' * 40}, 'finish_reason': 'length'}]}
+    async def test_missing_usage_is_conservatively_charged(self):
+        response = FakeResponse(200, '长' * 40)
+        response.json = lambda: {'choices': [{'message': {'content': '长' * 40}, 'finish_reason': 'stop'}]}
         with self.render(), self.client([response]):
-            self.assertIsNone(await self.transcribe('image/png', b'raw'))
-        self.assertEqual(self.budget.charged, [7])
+            self.assertEqual(await self.transcribe('image/png', b'raw'), '长' * 40)
+        self.assertEqual(self.budget.charged, [14])
+
+    async def test_truncated_transcript_keeps_its_text_and_marks_the_rest_unreadable(self):
+        with self.render(), self.client([FakeResponse(200, '长' * 40, finish_reason='length')]):
+            text = await self.transcribe('image/png', b'raw')
+        self.assertEqual(text, '长' * 40 + '\n[无法识别]')
+
+    async def test_truncated_transcript_does_not_repeat_the_unreadable_marker(self):
+        body = '长' * 40 + '\n[无法识别]'
+        with self.render(), self.client([FakeResponse(200, body, finish_reason='length')]):
+            self.assertEqual(await self.transcribe('image/png', b'raw'), body)
+
+    async def test_failure_reason_is_logged(self):
+        with self.render(), self.client([FakeResponse(400)]):
+            with self.assertLogs('app.vision', level='WARNING') as logs:
+                self.assertIsNone(await self.transcribe('image/png', b'raw'))
+        self.assertIn('http_400', '\n'.join(logs.output))

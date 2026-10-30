@@ -131,6 +131,51 @@ class RouteDecision(BaseModel):
     reply: str | None = Field(default=None, max_length=600)
 
 
+IntentName = Literal[
+    "answer",
+    "correct",
+    "skip",
+    "refuse",
+    "focus",
+    "global_edit",
+    "clarify",
+    "meta",
+    "chitchat",
+    "cancel",
+]
+DispositionName = Literal["suppress", "pause", "resolve", "resume"]
+
+
+class SubIntent(BaseModel):
+    disposition: DispositionName | None = None
+    intent: IntentName | None = None
+    quote: str | None = Field(default=None, max_length=4000)
+    target_experience_id: str | None = None
+
+
+class PendingResolution(BaseModel):
+    decision: Literal["accept", "reject", "revise"] | None = None
+    suggestion_id: str | None = None
+    feedback: str | None = Field(default=None, max_length=4000)
+
+
+class RouterOutput(BaseModel):
+    disposition: DispositionName | None = None
+    intent: IntentName | None = None
+    suppress_kind: Literal["thanks", "ack"] | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    quote: str | None = Field(default=None, max_length=4000)
+    target_experience_id: str | None = None
+    scope: Literal["experience", "whole_resume", "jd", "unknown"] | None = None
+    clarification: Clarification | None = None
+    answers_pending: StrictBool = False
+    answer_quote: str | None = Field(default=None, max_length=4000)
+    reply: str | None = Field(default=None, max_length=600)
+    pending_resolution: PendingResolution | None = None
+    mixed: list[SubIntent] = Field(default_factory=list)
+    meta_note: str | None = Field(default=None, max_length=200)
+
+
 class SegmentSeed(BaseModel):
     kind: SectionKind
     title: str

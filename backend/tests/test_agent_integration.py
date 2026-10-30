@@ -52,7 +52,7 @@ class FakeClient:
         loaded = load_session(GuardedStateStore(self.runtime), self.runtime.sid)
         blocks = self.runtime.repo.get_draft(self.runtime.context)['blocks']
         block = next((b for b in blocks if loaded and b['blockId'] == loaded[0].current_focus_id), blocks[0])
-        return {'action':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1,'answers_pending':True}
+        return {'intent':'answer','target_experience_id':block['blockId'],'scope':'experience','confidence':1,'answers_pending':True}
 
     async def decide(self,**kwargs):
         self.steps+=1
@@ -124,6 +124,25 @@ class AgentIntegrationTests(unittest.TestCase):
             reply=self.send(session,text,request_id=request_id,replyToMessageId=last['messageId'])
             events=self.analyze(session,reply,request_id)
         return events
+
+    def test_run_ending_without_a_result_is_closed_so_the_session_can_continue(self):
+        import app.agent_host as host_module
+        session,user=self.ready()
+        original=host_module.Runtime.run
+
+        async def silent(runtime):
+            runtime.queue.put_nowait(None)
+
+        host_module.Runtime.run=silent
+        try:
+            events=self.analyze(session,user,'silent')
+        finally:
+            host_module.Runtime.run=original
+        self.assertEqual(events[-1]['type'],'done',events)
+        self.assertEqual(events[-1]['payload']['outcome'],'agent_failed')
+        retry=self.request('POST',f"/api/sessions/{session['sessionId']}/runs",data={
+            'requestId':'silent-retry','userMessageId':user['messageId'],'expectedStateRevision':self.version(session['sessionId'])})
+        self.assertEqual(retry['status'],200,retry)
 
     def test_suggestion_accepts_whitespace_only_before_difference(self):
         class Trimmed(FakeClient):

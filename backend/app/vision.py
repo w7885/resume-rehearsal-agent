@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import httpx
@@ -9,14 +10,23 @@ import httpx
 from app.page_renderer import render_page
 from app.agent.llm import cost_cents
 
+LOGGER = logging.getLogger(__name__)
+
 PROMPT = (
     "只转录图中可见文字，保留换行与栏目顺序；看不清写 [无法识别]；"
     "不得推断、补全或润色；不得描述人脸。"
 )
 MIN_CHARS = 30
-MAX_TOKENS = 8000
+# Reasoning tokens share this budget and have overrun 8000 on their own, which
+# truncated the transcript; the visible text itself stays around 1500 tokens.
+MAX_TOKENS = 16000
 _RETRYABLE = {429, 500, 502, 503, 504}
 _RETRY_DELAY = 0.5
+
+
+def _failed(reason, run_id):
+    LOGGER.warning('image transcription failed: %s (run %s)', reason, run_id)
+    return None
 
 
 def configured() -> bool:
@@ -27,11 +37,13 @@ def configured() -> bool:
 
 async def transcribe_image(media_type: str, raw: bytes, *, budget=None, run_id='vision') -> str | None:
     """Return visible text, or None when disabled, unavailable or unreadable."""
-    if not configured() or budget is None:
-        return None
+    if not configured():
+        return _failed('not_configured', run_id)
+    if budget is None:
+        return _failed('no_budget', run_id)
     page = await asyncio.to_thread(render_page, media_type, raw, 1)
     if page.get("status") != "ready":
-        return None
+        return _failed('render_failed', run_id)
     image = page["image"]
     payload = {
         "model": os.getenv("VISION_MODEL", "deepseek-flash"),
@@ -53,7 +65,7 @@ async def transcribe_image(media_type: str, raw: bytes, *, budget=None, run_id='
             # and conservatively use peak uncached rates (2/8 CNY per million tokens).
             reserved = cost_cents(2048, MAX_TOKENS)
             if not await budget.reserve(reserved):
-                return None
+                return _failed('budget_exhausted', run_id)
             try:
                 response = await client.post(url, headers=headers, json=payload)
             except httpx.HTTPError:
@@ -71,19 +83,28 @@ async def transcribe_image(media_type: str, raw: bytes, *, budget=None, run_id='
             except (ValueError, TypeError, AttributeError):
                 await budget.charge_unknown(run_id, reserved)
             if response is not None and response.status_code == 200:
-                return _transcript(response)
+                return _transcript(response, run_id)
             if attempt or (response is not None and response.status_code not in _RETRYABLE):
-                return None
+                return _failed('transport_error' if response is None else f'http_{response.status_code}', run_id)
             await asyncio.sleep(_RETRY_DELAY)
-    return None
+    return _failed('retries_exhausted', run_id)
 
 
-def _transcript(response: httpx.Response) -> str | None:
+def _transcript(response: httpx.Response, run_id) -> str | None:
     try:
         choice = response.json()['choices'][0]
-        if choice.get('finish_reason') == 'length':
-            return None
+        truncated = choice.get('finish_reason') == 'length'
         text = (choice["message"]["content"] or "").strip()
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-        return None
-    return text if MIN_CHARS <= len(text) <= 50000 else None
+        return _failed('unreadable_response', run_id)
+    if len(text) < MIN_CHARS:
+        return _failed('empty_transcript', run_id)
+    if len(text) > 50000:
+        return _failed('transcript_too_long', run_id)
+    if truncated:
+        # ponytail: reuse the prompt's own unreadable marker instead of adding a
+        # reason channel, so the intake already stores this as a partial result.
+        LOGGER.warning('image transcript truncated at %s tokens (run %s)', MAX_TOKENS, run_id)
+        if '[无法识别]' not in text:
+            text += '\n[无法识别]'
+    return text

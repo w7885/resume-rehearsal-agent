@@ -6,6 +6,7 @@ Live calls are off by default; a developer may inject a fake client for tests.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from uuid import uuid4
 
@@ -22,6 +23,9 @@ from app.business_service import BusinessService
 from app.db import database, transaction
 from app.material_tools import MaterialTools
 from app.repository import Repository, RepositoryError, RequestContext
+
+
+logger = logging.getLogger('uvicorn.error')
 
 
 def fresh_id(prefix):
@@ -239,6 +243,7 @@ class Runtime:
         self.advance_after_accept = False
         self.advance_after_skip = False
         self.revision_target = None
+        self._reminded_this_run = False
 
     def _emit(self, kind, payload, connection=None):
         if connection is None:
@@ -355,7 +360,24 @@ class Runtime:
             connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
-    async def _decisions(self, turn):
+    REMINDER_PREFIX = '另有一条改写等你确认'
+
+    def _already_reminded(self):
+        with self.repo._operation(self.context) as (connection, _):
+            return connection.execute(
+                "SELECT 1 FROM messages WHERE session_id=? AND role='assistant' AND content LIKE ? LIMIT 1",
+                (self.sid, self.REMINDER_PREFIX + '%')).fetchone() is not None
+
+    def _remind_pending_once(self, pending, just_replied):
+        if self._reminded_this_run or self._already_reminded():
+            return
+        self._reminded_this_run = True
+        if str(just_replied).startswith(self.REMINDER_PREFIX):
+            return
+        self._reply(self.REMINDER_PREFIX + '：采用、拒绝还是调整？',
+                    'change_question', [p['suggestionId'] for p in pending][:10])
+
+    async def _decisions(self, turn, out=None):
         active_prompts=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
         candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
@@ -397,9 +419,14 @@ class Runtime:
                     'feedback': turn['userMessage']['content']}]}
         else:
             data=await self._json('解析用户对改写询问的决定。返回 status=none/clarify/resolved 和 decisions 数组。明确时每项只有 promptMessageId,suggestionId,decision(accept/reject/revise),feedback。feedback 必须逐字摘自用户原话；要求调整必须非空。唯一有效建议下，“太冗余、太口语、精简些”等明确评价表示 revise，不因否定语气要求重复指认目标；多候选、条件、引用、假设及范围不明确时先 clarify，不默认最后一条或全部。不要输出新的目标或版本。',{'userContent':turn['userMessage']['content'],'replyToMessageId':turn['replyToMessageId'],'candidatePrompts':candidates})
+        return self._apply_decision(turn, candidates, data, skip_requested=skip_requested, unique=unique)
+
+    def _apply_decision(self, turn, candidates, data, *, skip_requested=False, unique=None):
         result=self.service.apply_resolved_user_decision(self.context,{'requestId':fresh_id('decision'),'userMessageId':self.user_id,'userContent':turn['userMessage']['content'],'status':data.get('status'),'decisions':data.get('decisions')},synthetic=self.host.client_factory is not None)['data']
         if result['status']=='clarify':
             ids=list(dict.fromkeys(s['suggestionId'] for p in candidates for s in p['suggestions']))
+            if unique is None:
+                unique = len(ids) == 1
             text = ('当前只有这条待确认建议。你希望采用它，还是继续调整？也可以说明具体修改要求。'
                     if unique else '请说明要采用、拒绝或调整哪一条改写；也可以直接指出需要保留的内容。')
             self._reply(text,'change_question',ids[:10])
@@ -434,21 +461,25 @@ class Runtime:
             return True
         return False
 
-    async def _analyze_next(self, turn):
+    async def _analyze_next(self, turn, out=None):
         from app.agent_goal import sync
-        from app.agent_progress import CONTINUE, KEEP_NEXT, plain, plan, record, label, completion
+        from app.agent_progress import CONTINUE, KEEP_NEXT, REVIEW_KINDS, announce, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
+        from app.resume_structure import SECTION_TYPES
         sync(self)
-        progress = plan(self)
-        if not progress['blocks']:
-            self._reply('当前还没有可整理的简历段落。可以先上传简历，或粘贴基本信息、经历、自我评价等任一部分。', 'question')
-            return 'completed'
-        if progress['pending']:
-            self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
-            return 'completed'
         command = plain(turn['userMessage']['content'])
         from app.agent_edit_scope import named_sections, whole_resume_request
         named = named_sections(turn['userMessage']['content'])
+        if named and all(SECTION_TYPES.get(name) == 'profile' for name in named):
+            self._reply('基本信息按原文保留，不参与改写。姓名、联系方式等如需调整，请在编辑器里直接修改。')
+            return 'completed'
+        progress = plan(self)
+        if not progress['blocks']:
+            self._reply('当前简历没有可改写的段落；基本信息、教育、获奖按原文保留。可以上传简历，或粘贴项目／工作经历、技能、自我评价等内容。', 'question')
+            return 'completed'
+        if progress['pending'] and (out is None or out.intent not in {'meta', 'chitchat'}):
+            self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
+            return 'completed'
         keep_next = command in KEEP_NEXT
         if keep_next and progress['waiting']:
             record(self, progress['waiting'], completed=True)
@@ -468,7 +499,6 @@ class Runtime:
             return 'completed'
         store = GuardedStateStore(self)
         existing = load_session(store, self.sid)
-        awaiting_goal = bool(existing and existing[0].awaiting_goal)
         if forced and not progress['remaining'] and not named and not self.revision_target:
             self._reply(completion(progress))
             return 'completed'
@@ -491,9 +521,18 @@ class Runtime:
             doc, revision = existing
             doc.current_focus_id = focus['blockId']
             save_session(store, self.sid, doc, revision)
-        if awaiting_goal and focus in progress['blocks']:
-            index = progress['blocks'].index(focus) + 1
-            self._reply(f'现在进入第 {index} 段「{_block_title(focus["markdown"])}」的修改。')
+        # 先问岗位的那一轮不播报段名：播报应紧接在真正的段内问题或建议之前。
+        session_doc = existing[0] if existing else None
+        asking_goal = (not (session_doc and session_doc.goal) and not (session_doc and session_doc.goal_asked)
+                       and self.repo.get_session(self.context)['directionStatus'] != 'provided')
+        if not asking_goal and progress['announced'] != focus['blockId']:
+            title = _block_title(focus['markdown'])
+            if progress['sectionKinds'].get(focus['blockId']) in REVIEW_KINDS:
+                index = progress['blocks'].index(focus) + 1
+                self._reply(f'现在进入第 {index} 段「{title}」的修改。')
+            else:
+                self._reply(f'现在进入「{title}」的修改。')
+            announce(self, focus['blockId'])
         if self.budget.status()['remainingCents'] == 0:
             self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
             return 'completed'
@@ -504,7 +543,8 @@ class Runtime:
         outcome = 'completed'
         async for event in stream_run(session_id=self.sid, text=turn['userMessage']['content'], repo=adapter, store=store, llm=self.llm,
                 request_id=self.request_id, message_id=self.user_id, run_id=self.context.run_id,
-                expected_state_revision=self.context.expected_state_revision, start_analysis=forced):
+                expected_state_revision=self.context.expected_state_revision, start_analysis=forced,
+                decision=out):
             with self.repo._operation(self.context):
                 pass
             if event.type == 'suggestion':
@@ -540,6 +580,8 @@ class Runtime:
             if outcome == 'waiting_user':
                 self.waiting = True
             self._reply(notices[-1])
+            if progress['pending'] and out is not None and out.intent in {'meta', 'chitchat'}:
+                self._remind_pending_once(progress['pending'], notices[-1])
         elif section and outcome == 'completed':
             record(self, section['focus_id'], completed=True)
             following = plan(self)
@@ -566,6 +608,99 @@ class Runtime:
                         + '当前稿与已保存回答保留。可以补充或纠正具体事实，或回复“保留原文，继续下一段”。')
         return 'limited' if outcome == 'limited' and not saved and not questions else 'completed'
 
+    async def _route(self, turn):
+        from app.agent.adapters.a_repo import ARepoAdapter
+        from app.agent.memory import load_session
+        from app.agent_progress import label, plan
+        from app.agent_router import build_user_prompt, classify
+        from app.agent.router import router_brief
+        from app.agent.route import normalize
+        from app.agent_state import GuardedStateStore
+        from app.material_tools import MaterialTools
+        try:
+            store = GuardedStateStore(self)
+            ctx = ARepoAdapter(tools=MaterialTools(self.repo, self.context),
+                               context=self.context, repository=self.repo,
+                               session_id=self.sid).get_session_context(self.sid)
+            loaded = load_session(store, self.sid)
+            if loaded and loaded[0].current_focus_id:
+                ctx.session.current_focus_id = loaded[0].current_focus_id
+            brief = router_brief(store, ctx, awaiting_goal=bool(loaded and loaded[0].awaiting_goal))
+            progress = plan(self)
+        except RepositoryError:
+            return None
+        suggestions = [
+            {'id': s['suggestionId'],
+             'title': next((label(b) for b in progress['blocks']
+                            if b['blockId'] == s['target']['blockId']), s['target']['blockId']),
+             'after': s['after'][:300]}
+            for p in turn['candidatePrompts'] for s in p['suggestions']
+        ]
+        recent = [f"{m.role}: {m.text[:200]}" for m in ctx.messages[-6:]]
+        user = build_user_prompt(
+            message=turn['userMessage']['content'],
+            blocks=brief['blocks'], focus_id=brief['focus_id'], question=brief['question'],
+            suggestions=suggestions, recent=recent,
+        )
+        result = await classify(self.llm, user=user, run_id=self.context.run_id)
+        if result.output is None:
+            self._emit('warning', {'code': 'router_fallback',
+                                   'fallback_reason': result.fallback_reason,
+                                   'attempts': result.attempts, 'confidence': None})
+            return None
+        ids = {s['suggestionId'] for p in turn['candidatePrompts'] for s in p['suggestions']}
+        return normalize(result.output, message=turn['userMessage']['content'],
+                         docs=brief['docs'], phases=brief['phases'], suggestion_ids=ids)
+
+    def _consume_disposition(self, turn, out) -> bool:
+        if out is None:
+            return False
+        item = out
+        if out.mixed and out.mixed[0].disposition:
+            item = out.model_copy(update={'disposition': out.mixed[0].disposition})
+        if item.disposition == 'pause':
+            self._reply('已暂停后续处理。已保存的当前稿和待确认建议保留；需要时可回复“继续”。')
+            return True
+        if item.disposition == 'suppress':
+            from app.agent_social import handle as handle_social
+            # 守卫的返回值必须透传：有待确认建议时 ack 要交回 _decisions，
+            # 否则这一轮既没有回复、也没有落决定（复发过的 bug）。
+            return handle_social(self, turn, kind=item.suppress_kind or 'ack')
+        if item.disposition == 'resolve':
+            return self._resolve_pending(turn, item)
+        return False
+
+    def _residual(self, out):
+        if out is None or not out.mixed:
+            return out
+        rest = out.mixed[1:]
+        base = out.model_copy(update={'disposition': None, 'suppress_kind': None, 'mixed': rest})
+        if rest and rest[0].intent:
+            base = base.model_copy(update={
+                'intent': rest[0].intent,
+                'target_experience_id': rest[0].target_experience_id or base.target_experience_id,
+                'quote': rest[0].quote or base.quote,
+            })
+        return base
+
+    def _resolve_pending(self, turn, out) -> bool:
+        item = out.pending_resolution
+        if item is None or item.decision is None:
+            # 判定不清时不做任何写，交给 _decisions 的澄清口径。
+            return False
+        candidates = [p for p in turn['candidatePrompts']
+                      if p['state'] == 'reply_saved' and p['suggestions']]
+        prompt = next((p for p in candidates
+                       if any(s['suggestionId'] == item.suggestion_id for s in p['suggestions'])), None)
+        if prompt is None:
+            return False
+        data = {'status': 'resolved',
+                'decisions': [{'promptMessageId': prompt['promptMessageId'],
+                               'suggestionId': item.suggestion_id,
+                               'decision': item.decision,
+                               'feedback': item.feedback or ''}]}
+        return self._apply_decision(turn, candidates, data)
+
     async def run(self):
         try:
             outcome='completed'
@@ -591,12 +726,25 @@ class Runtime:
             turn=self.service.get_chat_turn_context(self.context,self.user_id)
             if turn.get('decisionReceipt'):
                 self._reply('这条答复的决定已经处理，请查看当前稿。')
-            elif await self._materials(turn) or await self._decisions(self.service.get_chat_turn_context(self.context,self.user_id)) or await handle_text(self,self.service.get_chat_turn_context(self.context,self.user_id)):
+            elif await self._materials(turn) or await handle_text(self, turn):
                 pass
             elif not self.repo.get_draft(self.context)['blocks']:
                 self._reply(self._missing_draft_message(),'question')
             else:
-                outcome = await self._analyze_next(self.service.get_chat_turn_context(self.context, self.user_id))
+                out = await self._route(turn)
+                if self._consume_disposition(turn, out):
+                    outcome = 'completed'
+                else:
+                    out = self._residual(out)
+                    turn = self.service.get_chat_turn_context(self.context, self.user_id)
+                    if await self._decisions(turn, out):
+                        pass
+                    else:
+                        turn = self.service.get_chat_turn_context(self.context, self.user_id)
+                        if await handle_text(self, turn):
+                            pass
+                        else:
+                            outcome = await self._analyze_next(turn, out)
             self.finish('done','limited' if outcome=='limited' else 'waiting_user' if self.waiting else 'completed')
         except asyncio.CancelledError:
             self.finish('interrupted','cancelled',check=False)
@@ -635,6 +783,7 @@ class Runtime:
             connection.execute('UPDATE runs SET status=?,error_code=? WHERE run_id=? AND status=\'running\'',(run_status,None if status=='done' else outcome,self.context.run_id))
             connection.execute('UPDATE sessions SET status=? WHERE session_id=? AND status=\'running\'',('idle' if status=='done' else run_status,self.sid))
         self.queue.put_nowait(event)
+        return event
 
 
 def create_agent_router(host):
@@ -647,12 +796,27 @@ def create_agent_router(host):
             runtime=host.active.get((session_id,row['request_id'])) if created else None
             if runtime:
                 runtime.task=asyncio.create_task(asyncio.wait_for(runtime.run(),timeout=180))
+                finished=False
                 try:
                     while True:
                         event=await runtime.queue.get()
                         if event is None:
                             break
+                        finished = finished or event['type'] == 'done'
                         yield f"event: {event['type']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                    # run() 的 finally 先投递 None 再抛出异常，所以任务结束不等于客户端拿到了结果。
+                    failure=(await asyncio.gather(runtime.task,return_exceptions=True))[0]
+                    if isinstance(failure,BaseException) and not isinstance(failure,asyncio.CancelledError):
+                        logger.error('agent run ended before a final event',exc_info=(type(failure),failure,failure.__traceback__))
+                    if not finished:
+                        # 最后兜底：不能在缺少 done 的情况下结束请求，否则会话会永久停在 running。
+                        try:
+                            event=runtime.finish('failed','agent_failed',check=False)
+                        except Exception:
+                            logger.exception('could not finalize an unfinished run')
+                        else:
+                            if event:
+                                yield f"event: done\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
                 finally:
                     if not runtime.task.done():
                         runtime.task.cancel()

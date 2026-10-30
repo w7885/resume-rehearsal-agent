@@ -1,7 +1,9 @@
 """State-aware courtesy without model calls, edits or accidental decisions."""
+from contextlib import nullcontext
 from types import SimpleNamespace
 import json
 import unittest
+from unittest.mock import patch
 
 from app import db
 from app.agent_social import social_kind, handle
@@ -111,3 +113,28 @@ class SocialIntentTests(unittest.TestCase):
     def test_pending_material_intake_keeps_its_original_flow(self):
         runtime = SimpleNamespace(_pending=lambda: [{'materialId': 'pending'}])
         self.assertFalse(handle(runtime, {'userMessage': {'content': '好的'}}))
+
+    def test_injected_ack_still_defers_to_pending_material_intake(self):
+        runtime = SimpleNamespace(_pending=lambda: [{'materialId': 'pending'}])
+        self.assertFalse(handle(runtime, {'userMessage': {'content': '好的'}}, kind='ack'))
+
+    def test_injected_ack_still_defers_to_pending_suggestion(self):
+        class Repo:
+            def _operation(self, _ctx):
+                connection = SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: None))
+                return nullcontext((connection, None))
+
+            def get_session_context(self, _ctx):
+                return {'draft': {'blocks': [{'blockId': 'blk_1'}]}}
+
+        runtime = SimpleNamespace(
+            _pending=lambda: [], repo=Repo(), context='ctx', sid='sid',
+            _reply=lambda *a, **k: self.fail('injected ack was swallowed as courtesy'))
+
+        import app.agent_social as social
+        with patch.object(social, 'plan',
+                          lambda _: {'pending': [{'suggestionId': 'sg_1'}], 'blocks': [{}],
+                                     'remaining': [{}], 'review': []}):
+            # 不是词表里的写法：只有模型把它判成 ack 才会走到这条守卫。
+            self.assertFalse(handle(runtime, {'userMessage': {'content': '收到啦', 'messageId': 'm1'}},
+                                   kind='ack'))

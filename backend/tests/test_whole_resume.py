@@ -87,7 +87,7 @@ class WholeResumeTests(unittest.TestCase):
         host.client_factory = lambda runtime, budget: SectionClient(runtime)
         return session, host, ids
 
-    def test_default_review_covers_every_section_and_only_acceptance_writes(self):
+    def test_default_review_covers_experience_skills_and_summary_only(self):
         session, host, ids = self.setup_whole()
         original = self.conversation(session)['draft']['markdown']
         self.turn(session, '检查整份简历', 'start')
@@ -109,8 +109,9 @@ class WholeResumeTests(unittest.TestCase):
                 self.turn(session, answer, f'answer-{i}')
             else:
                 break
-        self.assertEqual(seen, ids)
-        self.assertEqual(self.count('suggestion_decisions'), 6)
+        # 基本信息（ids[0]）、教育背景（ids[1]）、获奖经历（ids[5]）按原文保留，不进入检查顺序。
+        self.assertEqual(seen, [ids[2], ids[3], ids[4]])
+        self.assertEqual(self.count('suggestion_decisions'), 3)
         self.assertIn('本轮简历检查已完成', self.conversation(session)['messages'][-1]['content'])
         self.assertIn('test@example.com', self.conversation(session)['draft']['markdown'])
         with db.database(self.path, read_only=True) as c:
@@ -122,6 +123,14 @@ class WholeResumeTests(unittest.TestCase):
             for ref in b['sourceRefs']:
                 source = repo.read_source_snapshot(RequestContext(session['sessionId']), ref['sourceId'], ref['sourceRevision'])['source']
                 self.assertIn(ref['quote'], source['text'])
+
+    def test_explicitly_named_education_is_still_processed(self):
+        session, host, ids = self.setup_whole()
+        self.turn(session, '请修改教育背景', 'education')
+        self.assertEqual([p['target']['blockId'] for p in self.pending(session)], [ids[1]])
+        announced = [m['content'] for m in self.conversation(session)['messages']
+                     if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')]
+        self.assertEqual(announced, ['现在进入「教育背景」的修改。'])
 
     def test_named_summary_can_use_project_evidence_without_touching_other_sections(self):
         session, host, ids = self.setup_whole()
@@ -155,14 +164,22 @@ class WholeResumeTests(unittest.TestCase):
             self.send(session, request, request_id=f'scope-{i}')
             self.assertEqual(resolve_scope(repo, RequestContext(session['sessionId'])), expected)
 
-    def test_skip_current_information_suggestion_keeps_original_and_advances(self):
+    def test_skip_current_section_suggestion_keeps_original_and_advances(self):
         session, host, ids = self.setup_whole()
         before = self.conversation(session)['draft']['markdown']
         self.turn(session, '检查整份简历', 'start')
-        self.assertEqual(self.pending(session)[0]['target']['blockId'], ids[0])
+        # 经历段先确认职责和实际变化，才给出建议。
+        for attempt in range(3):
+            last = self.conversation(session)['messages'][-1]
+            if (last.get('assistant') or {}).get('kind') != 'question':
+                break
+            text = '老师录入时间从半小时缩短到五分钟。' if '实际变化' in last['content'] else '我负责查询功能的代码实现。'
+            self.turn(session, text, f'answer-{attempt}')
+        self.assertEqual(self.pending(session)[0]['target']['blockId'], ids[2])
         self.turn(session, '跳过这一节', 'skip')
         self.assertEqual(self.conversation(session)['draft']['markdown'], before)
-        self.assertEqual(self.pending(session)[0]['target']['blockId'], ids[1])
+        # 下一段是专业技能，直接给建议，不问职责和上线效果。
+        self.assertEqual([p['target']['blockId'] for p in self.pending(session)], [ids[3]])
         with db.database(self.path, read_only=True) as c:
             self.assertEqual(c.execute('SELECT decision FROM suggestion_decisions').fetchone()[0], 'reject')
 

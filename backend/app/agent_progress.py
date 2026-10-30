@@ -9,6 +9,8 @@ from app.resume_structure import section_kinds, heading, section_kind
 
 CONTINUE = {'继续', '继续修改', '下一步', '下一段', '接着改', '继续优化', '继续改写'}
 STOP = {'停止', '暂停', '先暂停', '先停一下', '先到这里', '暂时不改了', '不继续了'}
+# 默认按段检查的范围。教育、获奖按原文保留，只有用户点名时才进入。
+REVIEW_KINDS = frozenset({'project', 'work', 'skills', 'summary'})
 KEEP_NEXT = {'保留原文，继续下一段', '保留原文继续下一段', '保留原文，继续', '跳过当前段', '跳过这段', '跳过这一节', '跳过这节', '跳过这部分'}
 
 
@@ -57,7 +59,7 @@ def _key(session):
 
 def _load(connection, session):
     row = connection.execute("SELECT doc_json FROM agent_state WHERE session_id=? AND scope='session' AND key=?", (session['session_id'], _key(session))).fetchone()
-    return json.loads(row[0]) if row else {'reviewed': {}, 'waiting': None}
+    return json.loads(row[0]) if row else {'reviewed': {}, 'waiting': None, 'announced': None}
 
 
 def _signature(block, sources):
@@ -71,8 +73,11 @@ def plan(runtime):
     if allowed == set():
         raise RepositoryError('edit_scope_ambiguous', '无法唯一定位指定项目，请明确要修改的项目。')
     blocks = [b for b in context['draft']['blocks'] if allowed is None or b['blockId'] in allowed]
-    kinds = section_kinds([b['markdown'] for b in blocks])
-    blocks = [b for b, kind in zip(blocks, kinds) if kind is not None]
+    sections = section_kinds([b['markdown'] for b in blocks])
+    # 基本信息按原文保留；教育、获奖不进默认检查顺序，用户点名范围仍可处理。
+    pairs = [(b, kind) for b, kind in zip(blocks, sections)
+             if kind in REVIEW_KINDS or (allowed is not None and kind not in (None, 'profile'))]
+    blocks, kinds = [b for b, _ in pairs], [kind for _, kind in pairs]
     with runtime.repo._operation(runtime.context) as (connection, session):
         progress = _load(connection, session)
         done, remaining, review = [], [], []
@@ -99,7 +104,8 @@ def plan(runtime):
             remaining.sort(key=lambda b: b['blockId'] != waiting)
         return {'blocks': blocks, 'done': done, 'remaining': remaining, 'review': review,
                 'waiting': waiting, 'blocked': progress.get('blocked'),
-                'sectionKinds': dict(zip([b['blockId'] for b in blocks], [k for k in kinds if k is not None])),
+                'announced': progress.get('announced'),
+                'sectionKinds': dict(zip([b['blockId'] for b in blocks], kinds)),
                 'pending': pending, 'limitedScope': allowed is not None, 'sources': context['sources']}
 
 
@@ -114,8 +120,20 @@ def record(runtime, block_id, *, completed=False, blocked=False):
         progress['blocked'] = block_id if blocked else None
         if completed:
             progress['reviewed'][block_id] = {'signature': _signature(block, context['sources'])}
-        connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json,revision) VALUES (?,'session',?,?,1) ON CONFLICT(session_id,scope,key) DO UPDATE SET doc_json=excluded.doc_json,revision=agent_state.revision+1",
-                           (runtime.sid, _key(session), json.dumps(progress, ensure_ascii=False)))
+        _save(connection, session, progress, runtime.sid)
+
+
+def announce(runtime, block_id):
+    """Remember which segment was announced so the same one is not repeated."""
+    with runtime.repo._operation(runtime.context, write=True) as (connection, session):
+        progress = _load(connection, session)
+        progress['announced'] = block_id
+        _save(connection, session, progress, runtime.sid)
+
+
+def _save(connection, session, progress, session_id):
+    connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json,revision) VALUES (?,'session',?,?,1) ON CONFLICT(session_id,scope,key) DO UPDATE SET doc_json=excluded.doc_json,revision=agent_state.revision+1",
+                       (session_id, _key(session), json.dumps(progress, ensure_ascii=False)))
 
 
 def completion(plan):

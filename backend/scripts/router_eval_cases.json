@@ -1,0 +1,39 @@
+[
+  {"message": "先别改了", "expect": {"disposition": "pause"}},
+  {"message": "今天就到这里吧", "expect": {"disposition": "pause"}},
+  {"message": "暂时不改了，我晚点再说", "expect": {"disposition": "pause"}},
+  {"message": "停一下，先别动", "expect": {"disposition": "pause"}},
+  {"message": "先暂停", "expect": {"disposition": "pause"}},
+
+  {"message": "太感谢了", "expect": {"disposition": "suppress", "suppress_kind": "thanks"}},
+  {"message": "谢谢你，辛苦了", "expect": {"disposition": "suppress", "suppress_kind": "thanks"}},
+  {"message": "多谢多谢", "expect": {"disposition": "suppress", "suppress_kind": "thanks"}},
+  {"message": "嗯嗯", "expect": {"disposition": "suppress", "suppress_kind": "ack"}},
+  {"message": "好的", "expect": {"disposition": "suppress", "suppress_kind": "ack"}},
+
+  {"message": "就按这个来", "expect": {"disposition": "resolve"}},
+  {"message": "这条我接受", "expect": {"disposition": "resolve"}},
+  {"message": "不要这条，保持原样", "expect": {"disposition": "resolve"}},
+  {"message": "还是太口语了，再正式一点", "expect": {"disposition": "resolve"}},
+  {"message": "好的这段采用，然后看下一段", "expect": {"disposition": "resolve", "mixed": 2}},
+
+  {"message": "继续", "expect": {"disposition": "resume"}},
+  {"message": "接着看下一段", "expect": {"disposition": "resume"}},
+  {"message": "下一步", "expect": {"disposition": "resume"}},
+
+  {"message": "第二段太啰嗦了", "expect": {"intent": "focus"}},
+  {"message": "改一下项目二", "expect": {"intent": "focus"}},
+  {"message": "看看实习那一段", "expect": {"intent": "focus"}},
+  {"message": "把教育经历也改改", "expect": {"intent": "focus"}},
+
+  {"message": "这一段为什么不建议写精通？", "expect": {"intent": "meta"}},
+  {"message": "你为什么问这个", "expect": {"intent": "meta"}},
+  {"message": "这个评价标准是什么", "expect": {"intent": "meta"}},
+
+  {"message": "我负责测试用例执行与结果记录", "expect": {"intent": "answer"}},
+  {"message": "老师录入时间从半小时缩短到五分钟", "expect": {"intent": "answer"}},
+
+  {"message": "不想回答这个", "expect": {"intent": "refuse"}},
+  {"message": "我记错了，其实是协助测试", "expect": {"intent": "correct"}},
+  {"message": "这段没做过，跳过吧", "expect": {"intent": "skip"}}
+]

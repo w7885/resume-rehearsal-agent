@@ -90,6 +90,23 @@ class GoalAndConfirmationTests(unittest.TestCase):
         self.assertIn('这次想投什么岗位', self.conversation(session)['messages'][-1]['content'])
         self.assertEqual(host.decision_contexts, [])
 
+    def test_outer_router_sees_the_pending_goal_question(self):
+        session, _, host, _ = self.ready(False)
+        host.route_prompts = []
+
+        class RecordingClient(TargetClient):
+            async def route(self, **kwargs):
+                self.runtime.host.route_prompts.append(kwargs['user'])
+                return await super().route(**kwargs)
+
+        host.client_factory = lambda runtime, budget: RecordingClient(runtime)
+        goal = self.send(session, '临床内科医师', request_id='goal-visible')
+        self.analyze(session, goal, 'goal-visible')
+        self.assertIn('这次想投什么岗位', host.route_prompts[-1])
+        value = self.conversation(session)
+        self.assertEqual(value['session']['targetDirection'], '临床内科医师')
+        self.assertNotIn('这次想投什么岗位', value['messages'][-1]['content'])
+
     def test_goal_answer_announces_first_segment_before_its_question(self):
         session, _, host, _ = self.ready(False)
         goal = self.send(session, '临床内科医师', request_id='goal-answer')

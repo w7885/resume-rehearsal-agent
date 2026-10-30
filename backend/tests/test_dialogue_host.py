@@ -50,7 +50,7 @@ class DialogueHostTests(unittest.TestCase):
             before = self.memory(session, ids[0])
             draft = self.conversation(session)['draft']
             sources = self.count('source_blocks')
-            self.semantic_client({'action':'meta','reply':'这里是在核对当前项目中保留的代码或文档。'})
+            self.semantic_client({'intent':'meta','reply':'这里是在核对当前项目中保留的代码或文档。'})
             for i, text in enumerate(('你说的是哪项内容', '这个问题我没理解', '？')):
                 user, events = self.turn(session, text, f'clarify-{i}')
                 current = self.memory(session, ids[0])
@@ -69,7 +69,7 @@ class DialogueHostTests(unittest.TestCase):
         with patch.object(httpx.AsyncHTTPTransport, 'handle_async_request', side_effect=AssertionError('offline')):
             session, host, ids = self.setup_recovery()
             draft = self.conversation(session)['draft']
-            self.semantic_client({'action':'meta','answers_pending':True,'answer_quote':recovery.EVIDENCE,
+            self.semantic_client({'intent':'meta','answers_pending':True,'answer_quote':recovery.EVIDENCE,
                                   'reply':'问的是当前项目保留的依据，不要求你提供额外成果。'})
             text=recovery.EVIDENCE+'你问的是哪个项目？'
             self.turn(session,text,'mixed')
@@ -86,7 +86,7 @@ class DialogueHostTests(unittest.TestCase):
         with patch.object(httpx.AsyncHTTPTransport, 'handle_async_request', side_effect=AssertionError('offline')):
             session, host, ids=self.setup_recovery()
             before=self.memory(session,ids[0]); sources=self.count('source_blocks')
-            self.semantic_client({'action':'meta','answers_pending':True,'answer_quote':'我熟练掌握Python。'})
+            self.semantic_client({'intent':'meta','answers_pending':True,'answer_quote':'我熟练掌握Python。'})
             self.turn(session,'我不熟练掌握Python。你问哪个项目？','bad-quote')
             self.assertEqual(self.memory(session,ids[0]).questions,before.questions)
             self.assertEqual(self.count('source_blocks'),sources)
@@ -95,7 +95,7 @@ class DialogueHostTests(unittest.TestCase):
         with patch.object(httpx.AsyncHTTPTransport, 'handle_async_request', side_effect=AssertionError('offline')):
             session, host, ids=self.setup_recovery()
             before=self.memory(session,ids[0]);quote='我使用Python实现了查询模块。'
-            self.semantic_client({'action':'meta','answers_pending':False,'answer_quote':quote,
+            self.semantic_client({'intent':'meta','answers_pending':False,'answer_quote':quote,
                                   'reply':'实现方式已保留，当前是在核对留存材料。'})
             self.turn(session,quote+'你为什么问这个？','other-slot')
             after=self.memory(session,ids[0])
