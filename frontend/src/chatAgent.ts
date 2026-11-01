@@ -4,6 +4,7 @@ import { ApiError, requestId } from './api.ts';
 export class ChatAgentOperation {
   readonly id = requestId();
   runId?: string;
+  progressMessage = '';
   private controller?: AbortController;
   private running?: Promise<void>;
   private completed = false;
@@ -69,6 +70,8 @@ export class ChatAgentOperation {
             }
             lastSequence = event.sequence; generation = event.generation; this.runId = event.runId;
           }
+          if (event.type === 'progress' && typeof event.payload.message === 'string') this.progressMessage = event.payload.message.slice(0, 180);
+          if (event.type === 'done') this.progressMessage = '';
           this.notify();
           if (event.type === 'done') {
             done = true;

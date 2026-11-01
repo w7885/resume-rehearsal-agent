@@ -212,3 +212,19 @@
 .cp-evidence-list h3 { font-size:14px; color:#335b45; margin:0 0 12px; }
 .cp-evidence { border-left:2px solid #c4d6c9; padding-left:12px; margin:14px 0; }
 .cp-evidence blockquote { margin:0; color:#526b59; white-space:pre-wrap; font-size:13px; line-height:1.8; }
+
+/* Web permission is confirmed separately from resume/business revisions. */
+.cp-web-control { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; padding:4px 0 10px; color:var(--cp-muted); font-size:12px; }
+.cp-web-control > span { flex:1 1 180px; line-height:1.6; overflow-wrap:anywhere; }
+.cp-page .cp-web-toggle { display:inline-flex; align-items:center; gap:7px; min-height:44px; border:1px solid var(--cp-line); white-space:nowrap; }
+.cp-web-toggle strong { font-size:12px; font-weight:500; }
+.cp-page .cp-web-on { background:#eaf1ec; color:var(--cp-accent); border-color:#b4cbbd; }
+.cp-page .cp-web-retry { min-height:44px; text-decoration:underline; }
+.cp-external-references { margin-top:12px; padding:10px 12px; border:1px solid var(--cp-line); border-radius:8px; font-size:12px; color:#505b54; overflow-wrap:anywhere; }
+.cp-external-references summary { cursor:pointer; padding:8px 0; min-height:28px; color:var(--cp-accent); }
+.cp-external-references section { margin-top:12px; padding-top:10px; border-top:1px solid var(--cp-line); }
+.cp-external-references a { display:inline-block; padding:8px 0; color:var(--cp-accent); text-decoration:underline; }
+.cp-external-references p { line-height:1.7; margin:5px 0; }
+.cp-external-references blockquote { white-space:pre-wrap; margin:8px 0 0; max-height:220px; overflow:auto; padding-left:10px; border-left:2px solid #b4cbbd; line-height:1.7; }
+.cp-external-references summary:focus-visible,.cp-external-references a:focus-visible { outline:2px solid #427eae; outline-offset:3px; }
+@media (max-width:600px) { .cp-web-control > span { flex-basis:100%; order:2; } .cp-web-control .cp-web-retry { margin-left:auto; } }

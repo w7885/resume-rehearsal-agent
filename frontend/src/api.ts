@@ -12,7 +12,8 @@ export async function readHealth(signal: AbortSignal): Promise<Health> {
   return { status: body.status, model_configured: body.model_configured };
 }
 
-import type { ChatMaterial, ChatMessageResult, ChatSession, Conversation, Detail, DraftResult, Session, Source } from './types';
+import { isExternalReferences } from './chatWeb.ts';
+import type { WebSettings, ChatMaterial, ChatMessageResult, ChatSession, Conversation, Detail, DraftResult, Session, Source } from './types';
 
 export class ApiError extends Error {
   code: string;
@@ -41,7 +42,7 @@ function isDetail(value: unknown): value is Detail {
     (record.materials as unknown[]).every(m => object(m) && ['materialId', 'name', 'role', 'parseStatus', 'useStatus', 'mediaType'].every(k => typeof m[k] === 'string')) &&
     (record.suggestions as unknown[]).every(s => object(s) && typeof s.suggestionId === 'string' && typeof s.before === 'string' && typeof s.after === 'string' && typeof s.reason === 'string' &&
       ['replace', 'insert_after', 'delete'].includes(String(s.operation)) && ['pending', 'accepted', 'rejected', 'invalidated'].includes(String(s.status)) &&
-      object(s.target) && typeof s.target.blockId === 'string' && integer(s.target.expectedBlockRevision) && references(s.sourceRefs) && Array.isArray(s.gaps) && s.gaps.every(g => typeof g === 'string') &&
+      object(s.target) && typeof s.target.blockId === 'string' && integer(s.target.expectedBlockRevision) && references(s.sourceRefs) && isExternalReferences(s.externalReferences) && Array.isArray(s.gaps) && s.gaps.every(g => typeof g === 'string') &&
       (s.decision === undefined || (object(s.decision) && typeof s.decision.feedback === 'string' && typeof s.decision.decision === 'string'))) &&
     (record.issues as unknown[]).every(i => object(i) && typeof i.issueId === 'string' && typeof i.summary === 'string' && typeof i.status === 'string' && typeof i.isCurrent === 'boolean' && references(i.sourceRefs)) &&
     (record.events as unknown[]).every(e => object(e) && typeof e.runId === 'string' && integer(e.sequence) && typeof e.type === 'string' && typeof e.mode === 'string' && object(e.payload) && (e.payload.message === undefined || typeof e.payload.message === 'string'));
@@ -53,6 +54,7 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
     const response = await fetch(url, { method, signal: controller.signal, cache: 'no-store',
       headers: body === undefined && raw === undefined ? undefined : { 'Content-Type': raw ? raw.type || 'application/octet-stream' : 'application/json' },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
+    if (response.status === 404 && url.endsWith('/web-settings')) throw new ApiError('当前后端不支持联网设置。', 'not_found');
     const envelope: unknown = await response.json().catch(() => {
       if (response.status >= 500) throw new ApiError('后端暂时无法响应，保存结果未确认。请保留输入，恢复连接后重试。', 'service_unavailable');
       throw new ApiError('服务返回格式异常；请保留输入，按原操作重试。', 'invalid_response');
@@ -142,7 +144,7 @@ function isChatMessage(value: unknown) {
     typeof value.content === 'string' && typeof value.kind === 'string' && typeof value.createdAt === 'string' && integer(value.sequence) &&
     ['legacy', 'chat'].includes(String(value.inputChannel)) && typeof value.historical === 'boolean' && Array.isArray(value.attachments) && value.attachments.every(isChatMaterial) &&
     (value.replyToMessageId===undefined||value.replyToMessageId===null||typeof value.replyToMessageId==='string') &&
-    (value.assistant===undefined||value.assistant===null||object(value.assistant)&&['reply','question','change_question'].includes(String(value.assistant.kind))&&['host','synthetic'].includes(String(value.assistant.mode))&&typeof value.assistant.replyToUserMessageId==='string'&&(value.assistant.questionState===null||['awaiting_reply','reply_saved','outdated','history'].includes(String(value.assistant.questionState)))&&Array.isArray(value.assistant.sourceRefs)&&value.assistant.sourceRefs.every(isReference));
+    (value.assistant===undefined||value.assistant===null||object(value.assistant)&&['reply','question','change_question'].includes(String(value.assistant.kind))&&['host','synthetic'].includes(String(value.assistant.mode))&&typeof value.assistant.replyToUserMessageId==='string'&&(value.assistant.questionState===null||['awaiting_reply','reply_saved','outdated','history'].includes(String(value.assistant.questionState)))&&Array.isArray(value.assistant.sourceRefs)&&value.assistant.sourceRefs.every(isReference)&&isExternalReferences(value.assistant.externalReferences));
 }
 function isConversation(value: unknown): value is Conversation {
   if (!object(value)) return false;
@@ -171,3 +173,8 @@ export async function uploadChatMaterial(sid: string, payload: { requestId: stri
   if (!isChatMaterial(material)) throw new ApiError('附件元信息不完整，请按原发送重试。', 'invalid_response');
   return material;
 }
+
+export type WebSettingsWrite = { requestId: string; enabled: boolean; expectedWebSettingsRevision: number };
+const isWebSettings = (v: unknown) => object(v) && typeof v.enabled === 'boolean' && integer(v.webSettingsRevision);
+export const readWebSettings = (sid: string) => http<WebSettings>(`${path(sid)}/web-settings`, 'GET', undefined, isWebSettings);
+export const writeWebSettings = (sid: string, payload: WebSettingsWrite) => http<WebSettings>(`${path(sid)}/web-settings`, 'PATCH', payload, isWebSettings);

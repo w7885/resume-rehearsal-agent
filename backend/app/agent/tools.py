@@ -24,6 +24,7 @@ from app.agent.schemas import (
     RecordIssueArgs,
     SaveFactsArgs,
     SearchEvidenceArgs,
+    SearchTargetContextArgs,
     ToolName,
     ToolStep,
 )
@@ -39,6 +40,12 @@ class ToolSpec:
 
 
 TOOL_SPECS: dict[ToolName, ToolSpec] = {
+    "search_target_context": ToolSpec(
+        "search_target_context",
+        "仅在本会话联网可用且岗位资料不足时获取外部参考。target_id只能取服务端当前目标编号；不传简历、自由查询、URL或权限。已有完整JD时不重复查岗位要求。",
+        SearchTargetContextArgs,
+        '{"target_id":"服务端当前targetId","purpose":"job_requirements"}',
+    ),
     "read_material": ToolSpec(
         "read_material",
         "按字符位置补读本会话来源原文，每份每次最多2000字符。优先一次读一个来源；有后文时按next_offset继续，引用须使用返回的原句和来源版本。",
@@ -84,10 +91,11 @@ TOOL_SPECS: dict[ToolName, ToolSpec] = {
 }
 
 
-def tool_spec_text() -> str:
+def tool_spec_text(*, web_enabled=False) -> str:
     return "\n".join(
         f"- `{spec.name}`：{spec.description} 参数：`{spec.hint}`"
         for spec in TOOL_SPECS.values()
+        if spec.name != 'search_target_context' or web_enabled
     )
 
 
@@ -201,6 +209,21 @@ async def _get_experience_memory(
     }
 
 
+def _literal_fact_source(current, statement):
+    statement=statement.strip().strip('。；;')
+    uncertain=re.compile(r'如果|假如|假设|是否|能否|可否|计划|打算|希望|想写|备考|不确定|记不清|可能|[?？]')
+    negative=re.compile(r'没有|并非|不是|不具备|不掌握|不熟悉|不精通|不了解|不擅长|不会|没用过|没做过|尚未|暂无|未(?:曾|使用|取得|获得|具有|持有|拥有|掌握|熟悉|精通|参与|负责|完成|上线)')
+    if not statement:return None
+    for source in current.sources:
+        if source.kind not in {'resume','supplement'}:continue
+        for clause in re.split(r'[\n，,。；;！!]|但是|不过|然而|但',source.text):
+            clause=clause.strip()
+            if statement not in clause or uncertain.search(clause):continue
+            if negative.search(clause) and not negative.search(statement):continue
+            return SourceRef(source_id=source.source_id,source_revision=source.source_revision,quote=clause)
+    return None
+
+
 async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
     doc, revision = _require_experience(ctx, args.experience_id)
     current = ctx.repo.get_session_context(ctx.session_id)
@@ -208,6 +231,8 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
     correction = bool(message and re.search(r'更正|纠正|说错|不对|不是.{0,40}而是|应为|应改为', message.text))
     active = {f.id: f for f in doc.facts if f.status == 'active'}
     for fact in args.facts:
+        if any(ref.source_id.startswith('external-') for ref in fact.source_refs):
+            raise RepoError('invalid_input', '外部岗位参考不能成为个人事实来源。')
         if fact.supersedes_fact_ids and (not correction or any(
                 fid not in active or active[fid].slot != fact.slot for fid in fact.supersedes_fact_ids)):
             raise RepoError('invalid_input', '替代事实必须对应用户明确纠正的同一维度事实编号。')
@@ -217,6 +242,13 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
             matches = [s for s in current.sources if s.kind == 'supplement' and s.text == message.text]
             if matches:
                 fact.source_refs = [SourceRef(source_id=s.source_id, source_revision=s.source_revision, quote=s.text) for s in matches[:1]]
+        if current.web_context.get('references') or current.web_context.get('personalFactMode')=='literal_source':
+            # A model reading web requirements must not promote them into factual
+            # memory. Bind a literal personal statement before merge_facts.
+            support = _literal_fact_source(current,fact.statement)
+            if support is None:
+                raise RepoError('invalid_input', '存在外部参考时，新事实必须使用可核对的个人原句。')
+            fact.source_refs = [support]
     added = merge_facts(doc, args.facts, ctx.message_id)
     if added:
         save_experience(ctx.store, ctx.session_id, doc, revision)
@@ -240,6 +272,7 @@ async def _propose_change(
     if args.before is not None and args.before.strip() != snapshot.before.strip():
         raise RepoError('stale_anchor', '建议旧文与已固定的输入快照不一致。', False)
     doc, revision = _require_experience(ctx, args.target)
+    external = {'external_reference_ids': args.external_reference_ids} if args.external_reference_ids else {}
     suggestion = ctx.repo.save_suggestion(
         session_id=ctx.session_id,
         experience_id=args.target,
@@ -250,6 +283,7 @@ async def _propose_change(
         source_refs=args.source_refs,
         gaps=args.gaps,
         snapshot=snapshot,
+        **external,
     )
     doc.last_suggestion_id = suggestion.suggestion_id
     doc.last_run_outcome = "waiting_user"
@@ -264,7 +298,15 @@ async def _propose_change(
     }
 
 
+async def _search_target_context(args: SearchTargetContextArgs, ctx: ToolContext):
+    handler = getattr(ctx.repo, 'search_target_context', None)
+    if handler is None:
+        raise RepoError('web_unavailable', '当前入口未接入联网工具。', False)
+    return await handler(args.target_id, args.purpose)
+
+
 _EXECUTORS = {
+    "search_target_context": _search_target_context,
     "read_material": _read_material,
     "search_evidence": _search_evidence,
     "list_experiences": _list_experiences,

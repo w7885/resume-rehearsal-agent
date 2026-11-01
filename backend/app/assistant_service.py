@@ -94,8 +94,13 @@ def validate_reply_target(connection,session,message_id):
 def metadata_view(repo,connection,session,message_id):
     meta=connection.execute('SELECT * FROM assistant_messages WHERE session_id = ? AND message_id = ?',(session['session_id'],message_id)).fetchone()
     if meta is None:return None
-    return {'kind':meta['kind'],'mode':meta['mode'],'replyToUserMessageId':meta['user_message_id'],
+    value = {'kind':meta['kind'],'mode':meta['mode'],'replyToUserMessageId':meta['user_message_id'],
             'questionState':question_state(repo,connection,session,meta),'sourceRefs':json.loads(meta['source_refs_json'])}
+    from app.web_citations import citation_view
+    external = citation_view(connection, session['session_id'], message_id=message_id)
+    if external:
+        value['externalReferences'] = external
+    return value
 
 
 def prompt_snapshot(repo,connection,session,message_id):
@@ -125,7 +130,7 @@ def get_turn_context(service,context,user_id):
 
 def save_assistant(service,context,payload,synthetic=False):
     host_only(context)
-    _keys(payload,{'requestId','userMessageId','content','kind','suggestionIds'},{'sourceRefs'})
+    _keys(payload,{'requestId','userMessageId','content','kind','suggestionIds'},{'sourceRefs','externalReferenceIds','webTargetPrompt'})
     for key in ('requestId','userMessageId'):
         if len(_text(payload[key],key))>128:raise RepositoryError('invalid_input','消息标识过长。')
     content=_text(payload['content'],'助手正文')
@@ -149,6 +154,15 @@ def save_assistant(service,context,payload,synthetic=False):
             mid=_id('message')
             connection.execute("INSERT INTO messages(message_id,session_id,role,content,kind,resume_generation,input_channel,reply_to_message_id,saved_before_revision,saved_after_revision) VALUES (?,?,'assistant',?,'message',?,'chat',?,?,?)",(mid,context.session_id,content,session['current_resume_generation'],payload['userMessageId'],session['state_revision'],session['state_revision']))
             connection.execute('INSERT INTO assistant_messages VALUES (?,?,?,?,?,?,?,?,?,?)',(context.session_id,mid,payload['userMessageId'],context.run_id,kind,'synthetic' if synthetic else 'host',session['state_revision'],session['draft_revision'],session['current_resume_generation'],json.dumps(references,ensure_ascii=False)))
+            if 'webTargetPrompt' in payload:
+                if kind!='question':
+                    raise RepositoryError('invalid_input','公开目标澄清必须保存为询问。')
+                from app.web_target import record_prompt
+                record_prompt(connection,session,mid,payload['webTargetPrompt'])
+            external_ids = payload.get('externalReferenceIds', [])
+            if 'externalReferenceIds' in payload:
+                from app.web_citations import link_assistant
+                link_assistant(connection, session, mid, external_ids)
             for proposal in proposals:
                 snapshot={key:proposal[key] for key in ('suggestionId','operation','target','before','after','sourceRefs')}
                 connection.execute('INSERT INTO assistant_suggestion_links VALUES (?,?,?,?)',(context.session_id,mid,proposal['suggestionId'],json.dumps(snapshot,ensure_ascii=False)))

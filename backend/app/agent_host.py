@@ -44,6 +44,7 @@ class AgentHost:
         self.service, self.repo = service, service.repository
         self.client_factory = client_factory
         self.active = {}
+        self.web_service_factory = None  # trusted test injection, never an HTTP input
 
     @property
     def enabled(self):
@@ -72,6 +73,7 @@ class AgentHost:
             connection.execute("UPDATE runs SET status='interrupted',error_code='host_restarted' WHERE status='running'")
             connection.execute("UPDATE sessions SET status='interrupted' WHERE status='running'")
             connection.execute("UPDATE agent_run_requests SET status='interrupted',outcome='host_restarted' WHERE status='running'")
+            connection.execute("UPDATE web_requests SET status='unknown',error_code='host_restarted' WHERE status='pending'")
             # Unknown in-flight provider requests are not free after restart.
             pending = connection.execute("SELECT coalesce(sum(reserved_cents),0) FROM model_budget_reservations WHERE status='reserved'").fetchone()[0]
             if pending:
@@ -185,10 +187,19 @@ class HostAdapter(ARepoAdapter):
                 quotes = [ref.quote for block in ctx.draft_blocks for ref in block.source_refs if ref.source_id == source.source_id]
                 if source.kind == 'resume' and quotes and not cross_section_evidence:
                     source.text = '\n'.join(dict.fromkeys(quotes))
+        if self.runtime.web_bridge is not None:
+            ctx.web_context = self.runtime.web_bridge.view()
+            with self.runtime.repo._operation(self.runtime.context) as (connection,session):
+                used_web = connection.execute('''SELECT 1 FROM external_references e JOIN web_requests w
+                    ON w.session_id=e.session_id AND w.request_id=e.request_id
+                    WHERE w.session_id=? AND w.resume_generation=? LIMIT 1''',
+                    (session_id,session['current_resume_generation'])).fetchone()
+            if used_web:
+                ctx.web_context['personalFactMode'] = 'literal_source'
         return ctx
 
     def save_suggestion(self, session_id, experience_id, operation, before, after, reason, source_refs, gaps,
-                        *, snapshot=None):
+                        *, snapshot=None, external_reference_ids=None):
         if self.phase_suggestion_saved:
             from app.agent.ports import RepoError
             raise RepoError('suggestion_limit', '本轮已生成一条建议，先等待用户确认。', False)
@@ -199,10 +210,21 @@ class HostAdapter(ARepoAdapter):
                 raise RepositoryError('scope_violation', '建议目标不属于用户指定的项目。', False)
             from app.agent_edit_scope import validate_project_refs
             validate_project_refs(self.runtime.repo, self.runtime.context, experience_id, source_refs)
+        refs = external_reference_ids
+        if refs is None and self.runtime.web_bridge is not None:
+            refs = self.runtime.web_bridge.citation_ids()
         result = super().save_suggestion(session_id, experience_id, operation, before, after,
-                                         reason, source_refs, gaps, snapshot=snapshot)
+                                         reason, source_refs, gaps, snapshot=snapshot,
+                                         external_reference_ids=refs)
         self.phase_suggestion_saved = True
         return result
+
+    async def search_target_context(self, target_id, purpose):
+        from app.agent.ports import RepoError
+        try:
+            return await self.runtime.web_bridge.lookup(target_id,purpose)
+        except RepositoryError as error:
+            raise RepoError(error.code,error.message,error.recoverable) from None
 
     @property
     def tools(self):
@@ -243,6 +265,7 @@ class Runtime:
         self.advance_after_accept = False
         self.advance_after_skip = False
         self.revision_target = None
+        self.web_bridge = None
         self._reminded_this_run = False
 
     def _emit(self, kind, payload, connection=None):
@@ -261,11 +284,25 @@ class Runtime:
         connection.execute('INSERT INTO agent_stream_events VALUES (?,?,?,?,?)', (self.sid,self.request_id,sequence,self.context.run_id,json.dumps(event,ensure_ascii=False)))
         return event
 
-    def _reply(self, text, kind='reply', ids=(), materials=None):
+    def _reply(self, text, kind='reply', ids=(), materials=None, external_reference_ids=None):
         self.serial += 1
         key = hashlib.sha256(f'{self.request_id}:{self.serial}'.encode()).hexdigest()
-        result = self.service.save_assistant_message(self.context,{'requestId':f'host-{key}','userMessageId':self.user_id,
-            'content':text,'kind':kind,'suggestionIds':list(ids)},synthetic=self.host.client_factory is not None)['data']['message']
+        external = external_reference_ids
+        if external is None:
+            external = self.web_bridge.citation_ids() if self.web_bridge is not None else []
+        if self.web_bridge is not None and self.web_bridge.notice:
+            text = self.web_bridge.notice + '\n\n' + text
+            self.web_bridge.notice = ''
+        payload = {'requestId':f'host-{key}','userMessageId':self.user_id,
+                   'content':text,'kind':kind,'suggestionIds':list(ids)}
+        if self.web_bridge is not None and self.web_bridge.pending_target and kind=='question':
+            goal,_,revision=self.web_bridge.state()
+            payload['webTargetPrompt']={'goalHash':goal['hash'],'webSettingsRevision':revision}
+        if external:
+            payload['externalReferenceIds'] = external
+            text += '\n\n外部资料仅作岗位内容参考，招聘状态未核实。'
+            payload['content'] = text
+        result = self.service.save_assistant_message(self.context,payload,synthetic=self.host.client_factory is not None)['data']['message']
         with self.repo._operation(self.context,write=True) as (connection,_):
             if materials:
                 connection.execute('INSERT INTO agent_material_prompts VALUES (?,?,?)', (self.sid,result['messageId'],json.dumps(materials,ensure_ascii=False)))
@@ -537,7 +574,19 @@ class Runtime:
             self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
             return 'completed'
         self._emit('progress', {'message': '正在检查当前段落。'})
+        from app.agent_web import AgentWebBridge
+        if self.web_bridge is None:
+            self.web_bridge = AgentWebBridge(self)
+        target_reply = await self.web_bridge.consume_target_reply(turn)
+        if target_reply == 'clarify':
+            from app.agent_web import TARGET_QUESTION
+            self._reply(TARGET_QUESTION,'question')
+            return 'completed'
+        if target_reply:
+            forced=True  # a company/role answer is not a personal interview fact
         saved, notices, questions, warnings = [], [], [], []
+        question_external_ids = []
+        section_external_ids = []
         section = None
         active_focus = focus
         outcome = 'completed'
@@ -554,6 +603,7 @@ class Runtime:
                 active_focus = next((b for b in progress['blocks'] if b['blockId'] == target), active_focus)
             elif event.type == 'question':
                 questions.append(event.payload.get('text', ''))
+                question_external_ids = event.payload.get('external_reference_ids', [])
             elif event.type == 'clarification':
                 questions.append(event.payload.get('question', '请明确要处理的段落。'))
             elif event.type == 'notice' and event.payload.get('text'):
@@ -562,6 +612,7 @@ class Runtime:
                 warnings.append(event.payload)
             elif event.type == 'section_finished':
                 section = event.payload
+                section_external_ids = event.payload.get('external_reference_ids', [])
             elif event.type == 'error':
                 if not saved:
                     raise RepositoryError('agent_failed', '下一步分析未完成，已保存的改写不会回滚。')
@@ -575,7 +626,7 @@ class Runtime:
             self._reply('建议表述为：\n\n' + '\n\n'.join(p['after'] for p in proposals) + '\n\n是否采用？也可以说明需要保留或调整的地方。', 'change_question', saved)
         elif questions:
             record(self, active_focus['blockId'])
-            self._reply(questions[-1], 'question')
+            self._reply(questions[-1], 'question', external_reference_ids=question_external_ids or None)
         elif notices:
             if outcome == 'waiting_user':
                 self.waiting = True
@@ -588,7 +639,7 @@ class Runtime:
             reason = section.get('summary', '').strip()[:300]
             text = '本段本轮保留原文。' + (reason + '\n' if reason else '\n')
             text += ('下一步检查' + label(following['remaining'][0]) + '，回复“继续”即可接着处理。') if following['remaining'] else completion(following)
-            self._reply(text)
+            self._reply(text, external_reference_ids=section_external_ids or None)
         elif any(w.get('code') == 'budget_exhausted' for w in warnings):
             self._reply('剩余额度不足以生成下一条建议。已采用的内容已保存；当前稿仍可预览或导出。')
         elif outcome == 'focused':

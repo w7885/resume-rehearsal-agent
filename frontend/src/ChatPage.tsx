@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './ChatIcons';
 import * as api from './api';
+import { WebSettingsController } from './webSettings';
+import { WebControl, ExternalReferences } from './ChatWebControls';
 import { ChatSendOperation } from './chatSend';
 import { ChatAgentOperation } from './chatAgent';
 import { ChatDeleteOperation } from './chatDelete';
@@ -17,7 +19,7 @@ import type { ChatMaterial, ChatMessage, ChatSession, Conversation } from './typ
 import './chat.css';
 
 type ComposerDraft = { text: string; attachments: ChatAttachment[]; replyToMessageId?: string };
-type Pending = { key: string; operation: ChatSendOperation };
+type Pending = { key: string; operation: ChatSendOperation; initialWebEnabled?: boolean };
 const EMPTY: ComposerDraft = { text: '', attachments: [] };
 const sizeLabel = (bytes: number) => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MiB` : `${Math.ceil(bytes / 1024)} KiB`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作未确认成功，请保留输入后重试。';
@@ -35,6 +37,11 @@ export default function ChatPage() {
   const [error, setError] = useState('');
   const [agentTask, setAgentTask] = useState<ChatAgentOperation | null>(null);
   const [, setProgress] = useState(0);
+  const webRef = useRef<WebSettingsController | null>(null);
+  if (!webRef.current) webRef.current = new WebSettingsController(() => setProgress(value => value + 1));
+  const web = webRef.current;
+  const [newWebEnabled, setNewWebEnabled] = useState(false);
+  const agentWebChoice = useRef<{ sid: string; enabled: boolean } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [draftOpen, setDraftOpen] = useState(() => window.innerWidth >= 1000);
   const [inspecting, setInspecting] = useState<Inspection | null>(null);
@@ -50,8 +57,10 @@ export default function ChatPage() {
   const key = conversation?.session.sessionId ?? 'new';
   const draft = drafts[key] ?? EMPTY;
   const selections = pending?.key === key ? pending.operation.attachments() : draft.attachments;
+  const webEntry = web.get(key);
+  const webUnsettled = !!webEntry.pending || ['loading','saving','error'].includes(webEntry.phase);
   const readOnly = conversation?.session.mode === 'mock';
-  const baseUnavailable = loading || sending || !!pending || !!deleteTarget || !!renameTarget || !!readOnly;
+  const baseUnavailable = webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget || !!readOnly;
   const voice = useVoiceInput(key, baseUnavailable, (target, text) => {
     const previous = draftsRef.current, current = previous[target] ?? EMPTY;
     const next = { ...previous, [target]: { ...current, text: appendVoiceText(current.text, text) } };
@@ -79,6 +88,7 @@ export default function ChatPage() {
   const install = (value: Conversation | null) => {
     editor.activate(value); setInspecting(null);
     active.current = value; setConversation(value); setUrl(value?.session.sessionId ?? null);
+    if (value) void web.load(value.session.sessionId);
   };
   const refreshList = async () => { setSessions(await api.listChatSessions()); };
   const scrollToEnd = () => requestAnimationFrame(() => thread.current?.scrollTo({ top: thread.current.scrollHeight,
@@ -103,30 +113,35 @@ export default function ChatPage() {
     return () => { live = false; };
   }, []);
   useEffect(() => {
+    const refresh = () => { const sid = active.current?.session.sessionId; if (sid) void web.load(sid); };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
+  useEffect(() => {
     const element = composer.current;
     if (element) { element.style.height = 'auto'; element.style.height = `${Math.min(element.scrollHeight, 150)}px`; }
   }, [draft.text, key]);
   useEffect(() => {
     const protect = (event: BeforeUnloadEvent) => {
-      if (voice.blocking || editor.ref.current?.hasUnsettled() || pending || (renameTarget && (renameTarget.operation || renameName.trim() !== renameTarget.session.title)) || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
+      if (webUnsettled || voice.blocking || editor.ref.current?.hasUnsettled() || pending || (renameTarget && (renameTarget.operation || renameName.trim() !== renameTarget.session.title)) || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', protect); return () => window.removeEventListener('beforeunload', protect);
-  }, [drafts, pending, voice.blocking, renameTarget, renameName]);
+  }, [drafts, pending, voice.blocking, renameTarget, renameName, webUnsettled]);
 
   const navigate = async (sid: string | null) => {
-    if (locked.current || pendingRef.current) return;
+    if (locked.current || pendingRef.current || webUnsettled) return;
     voice.cancel();
     setAgentTask(null);
     locked.current = true; setLoading(true); setError('');
     try {
       await editor.flush();
-      install(sid ? await api.readConversation(sid) : null); setHistoryOpen(false);
+      install(sid ? await api.readConversation(sid) : null); if (!sid) setNewWebEnabled(false); setHistoryOpen(false);
       await refreshList(); requestAnimationFrame(() => { thread.current?.scrollTo({ top: 0 }); composer.current?.focus(); });
     } catch (failure) { setError(errorText(failure)); }
     finally { locked.current = false; setLoading(false); }
   };
   const send = async () => {
-    if (locked.current || loading || readOnly || voice.blocking || (!pendingRef.current && !draft.text.trim() && !draft.attachments.length)) return;
+    if (locked.current || webUnsettled || loading || readOnly || voice.blocking || (!pendingRef.current && !draft.text.trim() && !draft.attachments.length)) return;
     locked.current = true; setSending(true); setError('');
     let task = pendingRef.current;
     try {
@@ -137,8 +152,9 @@ export default function ChatPage() {
           setProgress(value => value + 1);
           if (operation.session) setUrl(operation.session.sessionId);
         }, draft.replyToMessageId);
-        task = { key, operation }; pendingRef.current = task; setPending(task);
+        task = { key, operation, ...(key === 'new' ? { initialWebEnabled: newWebEnabled } : {}) }; pendingRef.current = task; setPending(task);
       }
+      const initialWebEnabled = task.initialWebEnabled;
       const result = await task.operation.run();
       const value = await api.readConversation(task.operation.session!.sessionId);
       install(value);
@@ -147,10 +163,14 @@ export default function ChatPage() {
       pendingRef.current = null; setPending(null);
       await refreshList().catch(() => {}); scrollToEnd();
       setAgentTask(null);
+      if (!value.capabilities.agentAvailable) await web.prepare(value.session.sessionId, initialWebEnabled);
       if (value.capabilities.agentAvailable) {
-        const analysis = new ChatAgentOperation(value.session.sessionId, result.message.messageId, value.session.stateRevision);
+        const analysis = new ChatAgentOperation(value.session.sessionId, result.message.messageId, value.session.stateRevision, () => setProgress(value => value + 1));
         setAgentTask(analysis);
+        agentWebChoice.current = initialWebEnabled === undefined ? null : { sid: value.session.sessionId, enabled: initialWebEnabled };
         try {
+          await web.prepare(value.session.sessionId, initialWebEnabled);
+          agentWebChoice.current = null;
           await analysis.run();
           setAgentTask(null);
         } catch (failure) {
@@ -169,6 +189,8 @@ export default function ChatPage() {
     if (!agentTask || locked.current) return;
     locked.current = true; setSending(true); setError('');
     try {
+      await web.prepare(agentTask.sessionId, agentWebChoice.current?.sid === agentTask.sessionId ? agentWebChoice.current.enabled : undefined);
+      agentWebChoice.current = null;
       await agentTask.run();
       install(await api.readConversation(agentTask.sessionId)); setAgentTask(null); scrollToEnd();
     } catch (failure) { setError(errorText(failure)); }
@@ -334,9 +356,9 @@ export default function ChatPage() {
     {historyOpen && <button className="cp-shade" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)} />}
     <aside className={`cp-history ${historyOpen ? 'cp-history-open' : ''}`} aria-label="会话历史">
       <div className="cp-brand"><span className="cp-logo">历</span><strong>历历在练</strong><button className="cp-icon cp-mobile-close" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)}><Icon name="close" /></button></div>
-      <button className="cp-new" disabled={loading || sending || !!pending || !!deleteTarget || !!renameTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
+      <button className="cp-new" disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
       <div className="cp-history-label">已保存的会话</div>
-      <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
+      <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
       <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
@@ -346,13 +368,17 @@ export default function ChatPage() {
       <header className="cp-chat-header"><div className="cp-header-title"><button className="cp-icon cp-menu" aria-label="展开会话列表" onClick={() => setHistoryOpen(true)}><Icon name="menu" /></button><h1>{conversation?.session.title ?? '新对话'}</h1><span className="cp-preview-badge">{readOnly ? '模拟历史' : '本机保存'}</span></div><div className="cp-live-header-tools"><button className="cp-icon" aria-label="重新读取会话" title="重新读取会话" disabled={loading || sending || !!pending} onClick={() => { void navigate(conversation?.session.sessionId ?? null); }}><Icon name="chat" size={17} /></button><button className={`cp-draft-toggle ${draftOpen ? 'cp-selected' : ''}`} aria-label="切换当前稿" title="当前稿" aria-pressed={draftOpen} onClick={() => setDraftOpen(!draftOpen)}><Icon name="panel" size={18} /><span>当前稿</span></button></div></header>
       <div className="cp-thread" ref={thread}>
         {loading && !conversation && <p className="cp-live-system" role="status">正在读取本机历史…</p>}
-        {conversation?.messages.length ? <div className="cp-message-list"><div className="cp-chat-date">已保存的原始对话</div>{conversation.messages.map(message => <article key={message.messageId} className={`cp-message cp-${message.role}`} aria-label={message.role === 'user' ? '已保存用户消息' : '已保存助手消息'}>{message.role === 'assistant' && <div className="cp-agent-avatar" aria-hidden="true">历</div>}<div className="cp-message-content">{message.historical && <span className="cp-live-historical">历史内容 · 不自动作为当前事实</span>}{message.assistant?.mode === 'synthetic' && <span className="cp-live-historical">构造示例 · 非真实 Agent 回复</span>}{message.role === 'user' && message.replyToMessageId && <span className="cp-replied-to">回复：{conversation.messages.find(item => item.messageId === message.replyToMessageId)?.content.slice(0, 70) ?? '已保存的询问'}</span>}<div className="cp-message-text">{message.content && message.content.split('\n\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>{message.attachments.map(material => <button className="cp-attachment" key={material.materialId} onClick={() => setInspecting(material)}><span className="cp-file-symbol"><Icon name="attach" size={18} /></span><span>{material.name}<small>{sizeLabel(material.byteSize)}{material.current ? '' : ' · 历史附件'}</small></span><Icon name="chevron" size={15} /></button>)}{message.assistant && <div className="cp-reply-tools">{!!message.assistant.sourceRefs.length && <button onClick={() => setInspecting({replyMessage:message})}>查看依据</button>}{message.assistant.questionState === 'awaiting_reply' && <button disabled={unavailable} aria-pressed={draft.replyToMessageId === message.messageId} onClick={() => selectReply(message)}>回复这条询问</button>}</div>}</div></article>)}{(readOnly || !conversation.capabilities.agentAvailable) && <p className="cp-live-system">{readOnly ? '这是旧版模拟会话，仅恢复原始记录；请新建对话保存个人材料。' : '消息与原件已保存。分析服务当前未启用，可以继续保存材料和编辑当前稿。'}</p>}</div>
+        {conversation?.messages.length ? <div className="cp-message-list"><div className="cp-chat-date">已保存的原始对话</div>{conversation.messages.map(message => <article key={message.messageId} className={`cp-message cp-${message.role}`} aria-label={message.role === 'user' ? '已保存用户消息' : '已保存助手消息'}>{message.role === 'assistant' && <div className="cp-agent-avatar" aria-hidden="true">历</div>}<div className="cp-message-content">{message.historical && <span className="cp-live-historical">历史内容 · 不自动作为当前事实</span>}{message.assistant?.mode === 'synthetic' && <span className="cp-live-historical">构造示例 · 非真实 Agent 回复</span>}{message.role === 'user' && message.replyToMessageId && <span className="cp-replied-to">回复：{conversation.messages.find(item => item.messageId === message.replyToMessageId)?.content.slice(0, 70) ?? '已保存的询问'}</span>}<div className="cp-message-text">{message.content && message.content.split('\n\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>{message.attachments.map(material => <button className="cp-attachment" key={material.materialId} onClick={() => setInspecting(material)}><span className="cp-file-symbol"><Icon name="attach" size={18} /></span><span>{material.name}<small>{sizeLabel(material.byteSize)}{material.current ? '' : ' · 历史附件'}</small></span><Icon name="chevron" size={15} /></button>)}{message.assistant && <ExternalReferences references={message.assistant.externalReferences} />}{message.assistant && <div className="cp-reply-tools">{!!message.assistant.sourceRefs.length && <button onClick={() => setInspecting({replyMessage:message})}>查看依据</button>}{message.assistant.questionState === 'awaiting_reply' && <button disabled={unavailable} aria-pressed={draft.replyToMessageId === message.messageId} onClick={() => selectReply(message)}>回复这条询问</button>}</div>}</div></article>)}{(readOnly || !conversation.capabilities.agentAvailable) && <p className="cp-live-system">{readOnly ? '这是旧版模拟会话，仅恢复原始记录；请新建对话保存个人材料。' : '消息与原件已保存。分析服务当前未启用，可以继续保存材料和编辑当前稿。'}</p>}</div>
           : <div className="cp-welcome"><span className="cp-welcome-mark">历</span><h2>从你的经历开始</h2><p>说说你的求职方向，或先上传简历。<br />文字和原件会保存在本机，刷新后可以继续。</p><p className="cp-live-capability">发送消息或附件后，可在这里查看本次处理状态。</p></div>}
       </div>
       <div className="cp-composer-area">
+        <WebControl entry={webEntry} enabled={key === 'new' ? newWebEnabled : webEntry.settings?.enabled ?? false} staged={key === 'new'}
+          disabled={loading || !!pending || !!deleteTarget || !!renameTarget || !!readOnly || (sending && !agentTask)}
+          onToggle={() => { agentWebChoice.current = null; if (key === 'new') setNewWebEnabled(value => !value); else void web.change(key, !webEntry.settings?.enabled); }}
+          onRetry={() => { if (key !== 'new') void web.retry(key); }} />
         {error && <div className="cp-live-error" role="alert"><p>{error}</p>{pending && <div><button disabled={sending || loading} onClick={() => { void send(); }}>{pending.operation.isMessageSaved() ? '重试读取已保存会话' : '重试原发送'}</button>{pending.operation.canReturnToEditing() && <button disabled={sending || loading} onClick={() => { void returnToEditing(); }}>返回编辑</button>}</div>}</div>}
         {!!conversation?.materials.length && <button className="cp-live-library" disabled={sending} onClick={() => setInspecting('library')}><Icon name="attach" size={14} />查看本会话已保存附件（{conversation.materials.length}）</button>}
-        {agentTask && <div className="cp-reply-tools">{sending ? <button onClick={() => { void agentTask.stop().catch(failure => setError(errorText(failure))); }}>停止处理</button> : <button onClick={() => { void retryAgent(); }}>重试分析</button>}<span>原消息已保存</span></div>}
+        {agentTask && <div className="cp-reply-tools">{sending ? <button onClick={() => { void agentTask.stop().catch(failure => setError(errorText(failure))); }}>停止处理</button> : <button onClick={() => { void retryAgent(); }}>重试分析</button>}<span role="status">{sending ? agentTask.progressMessage || 'Agent 正在处理，原消息已保存…' : '原消息已保存'}</span></div>}
         <div className="cp-composer">
           {replyTarget && <div className="cp-reply-selection"><span>回复：{replyTarget.content.slice(0, 80)}</span><button disabled={unavailable} aria-label="取消回复关联" onClick={() => editDraft({ replyToMessageId: undefined })}><Icon name="close" size={14} /></button></div>}
           {!!selections.length && <div className="cp-selected-files">{selections.map(item => <span key={item.localId}><Icon name="attach" size={14} />{item.material?.name ?? item.file?.name}{item.material ? ' · 原件已保存' : ''}<button disabled={unavailable} aria-label={`移除附件 ${item.material?.name ?? item.file?.name}`} onClick={() => editDraft({ attachments: draft.attachments.filter(value => value.localId !== item.localId) })}><Icon name="close" size={13} /></button></span>)}</div>}

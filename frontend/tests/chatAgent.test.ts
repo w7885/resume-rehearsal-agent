@@ -84,3 +84,15 @@ test('default browser transport preserves the global fetch receiver', async () =
   try { await new ChatAgentOperation('s', 'm', 7).run(); }
   finally { globalThis.fetch = original; }
 });
+
+
+test('validated search progress notifies UI and clears at completion', async () => {
+  const seen: string[] = [];
+  let operation: ChatAgentOperation;
+  operation = new ChatAgentOperation('s', 'm', 1, () => seen.push(operation.progressMessage), async (_, init) => {
+    const id = JSON.parse(String(init?.body)).requestId;
+    return stream(packet(id, 'progress', 1, {message:'正在查找目标岗位资料。'}) + packet(id, 'progress', 2, {message:'正在读取岗位来源。'}) + packet(id, 'done', 3, {outcome:'completed'}));
+  });
+  await operation.run();
+  assert.deepEqual(seen,['正在查找目标岗位资料。','正在读取岗位来源。','']);
+});

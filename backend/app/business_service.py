@@ -89,6 +89,11 @@ class BusinessService:
         from app.chat_service import create_chat_session
         return self._mutate("sessions", "create_chat_session", payload, payload["requestId"], create_chat_session)
 
+    def update_web_settings(self, session_id, payload):
+        return self._mutate(f"session:{session_id}", "update_web_settings", payload, payload['requestId'],
+            lambda repo: repo.update_web_settings(RequestContext(session_id), enabled=payload['enabled'],
+                expected_revision=payload['expectedWebSettingsRevision']), session_id)
+
     def save_chat_message(self, session_id, payload):
         from app.chat_service import save_chat_message
         return self._mutate(f"session:{session_id}", "save_chat_message", payload, payload["requestId"],

@@ -408,7 +408,8 @@ class AgentDatabaseTests(unittest.TestCase):
             connection.execute("INSERT INTO agent_state(session_id,scope,key,doc_json) VALUES ('b','budget','day','{\"spent_cents\":1234}')")
             before=tuple(connection.execute('SELECT * FROM agent_state').fetchone())
             result=db.initialize_database(connection)
-            self.assertEqual(result['schemaVersion'],12)
+            from app.db import SCHEMA_VERSION
+            self.assertEqual(result['schemaVersion'], SCHEMA_VERSION)
             self.assertEqual(tuple(connection.execute('SELECT * FROM agent_state').fetchone()),before)
             self.assertEqual(connection.execute('SELECT content FROM messages').fetchone()[0],'原话')
             self.assertEqual(connection.execute('SELECT mode FROM sessions').fetchone()[0],'local')

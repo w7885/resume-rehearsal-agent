@@ -16,6 +16,7 @@ ToolName = Literal[
     "save_facts",
     "record_issues",
     "propose_change",
+    "search_target_context",
 ]
 
 
@@ -28,6 +29,12 @@ class ReadMaterialArgs(BaseModel):
 class SearchEvidenceArgs(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=5, ge=1, le=10)
+
+
+class SearchTargetContextArgs(BaseModel):
+    model_config = {'extra':'forbid','strict':True}
+    target_id: str = Field(min_length=1, max_length=80)
+    purpose: Literal['job_requirements','company_background','terminology'] = 'job_requirements'
 
 
 class ListExperiencesArgs(BaseModel):
@@ -55,6 +62,7 @@ class ProposeChangeArgs(BaseModel):
     reason: str = ""
     source_refs: list[SourceRef] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    external_reference_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class ToolStep(BaseModel):

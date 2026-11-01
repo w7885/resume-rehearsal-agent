@@ -453,3 +453,14 @@ Agent 处理范围扩展为 project／work／profile／education／skills／summ
 `PATCH /api/sessions/{sessionId}/title` 接收requestId、expectedStateRevision、title。title去首尾空格后为1～50个Unicode字符，禁止换行/控制字符；处理中返回run_busy，版本过期或请求回执冲突按既有规则拒绝。成功只更新chat_title和stateRevision，不改变direction、材料、消息、简历或已确认事实。
 
 `OPTIONS /api/sessions/{sessionId}/title`返回Allow: PATCH, OPTIONS，供前端只读发现能力；旧后端不展示可用入口。未知写入结果重试同一requestId/title/revision，不自动换版本或覆盖新名称；保存后侧栏/页头同步，取消不写入。
+
+
+## 会话联网与外部岗位参考
+
+会话联网默认关闭，GET/PATCH /api/sessions/{sessionId}/web-settings使用独立webSettingsRevision；修改请求携带requestId、enabled、expectedWebSettingsRevision，不用展示名或普通stateRevision代替。全局WEB_SEARCH_ENABLED及服务端凭证、项目预算同时就绪后才可用。
+
+Agent只通过受控search_target_context工具请求job_requirements/company_background/terminology，target_id来自服务端；不允许客户端传自由query、个人简历或任意URL。火山Global搜索、按需Fetch、目标字段/招聘类型/查询隐私核对与单次/全项目预算共同生效。外部网页按不可信数据处理，不能授权调用、改个人事实或代替用户JD。
+
+外部参考与个人source_refs隔离，在消息和建议中独立展示，招聘状态未核实不能宣称正在招聘；关闭联网、目标/JD或权限变化后拒绝旧引用采用。完整用户JD/有效参考可复用，取证不足请补JD。网页个人事实隔离是联网必要保护，不改变563868d的通用处理范围或通用事实编辑规则。
+
+新增schema13～15只在隔离验证库执行；此提交不代表升级正式数据库或切换当前服务，也未加入Flash非思考适配、历史目标恢复/自动取证等额外本地实现。
