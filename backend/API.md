@@ -446,3 +446,10 @@ Agent 处理范围扩展为 project／work／profile／education／skills／summ
 基本信息中的邮箱与电话号码格式可整理，实际值新增或改变需用户原句支持。学历、证书、技能等级和绝对优势表述保留新增依据检查；该检查不是完备的语义真实性证明。只修改现有章节按标题／别名解析，项目序号继续使用项目专用索引；缺少或无法唯一定位的窄范围不默认为允许整份写入。显式再次修改已处理章节可重新生成建议，不被完成状态阻挡。
 
 一回合仍最多一条新待确认建议；采用后按范围接续。“跳过这一节”等明确保留指令在唯一有效建议下进入 reject 事务，保持当前稿后接续；多目标歧义继续澄清。部分段落没有需要改进的内容时可说明保留，不为了逐节处理而强行制造修改。真实模型各类段落的改写质量仍需独立评测。
+
+
+## 会话展示名重命名
+
+`PATCH /api/sessions/{sessionId}/title` 接收requestId、expectedStateRevision、title。title去首尾空格后为1～50个Unicode字符，禁止换行/控制字符；处理中返回run_busy，版本过期或请求回执冲突按既有规则拒绝。成功只更新chat_title和stateRevision，不改变direction、材料、消息、简历或已确认事实。
+
+`OPTIONS /api/sessions/{sessionId}/title`返回Allow: PATCH, OPTIONS，供前端只读发现能力；旧后端不展示可用入口。未知写入结果重试同一requestId/title/revision，不自动换版本或覆盖新名称；保存后侧栏/页头同步，取消不写入。

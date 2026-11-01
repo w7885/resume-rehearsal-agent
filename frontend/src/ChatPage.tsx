@@ -4,7 +4,8 @@ import * as api from './api';
 import { ChatSendOperation } from './chatSend';
 import { ChatAgentOperation } from './chatAgent';
 import { ChatDeleteOperation } from './chatDelete';
-import { DeleteSessionDialog, SessionHistoryRow } from './ChatSessionActions';
+import { DeleteSessionDialog, RenameSessionDialog, SessionHistoryRow } from './ChatSessionActions';
+import { ChatRenameOperation, sessionTitleError } from './chatRename';
 import ChatDraftPanel from './ChatDraftPanel';
 import ChatInspector from './ChatInspector';
 import type { Inspection } from './ChatInspector';
@@ -39,6 +40,10 @@ export default function ChatPage() {
   const [inspecting, setInspecting] = useState<Inspection | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ session: ChatSession; operation: ChatDeleteOperation } | null>(null);
   const [deleting, setDeleting] = useState(false), [deleteError, setDeleteError] = useState('');
+  const [renameTarget, setRenameTarget] = useState<{ session: ChatSession; operation?: ChatRenameOperation } | null>(null);
+  const [renameName, setRenameName] = useState(''), [renameError, setRenameError] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [renameAvailable, setRenameAvailable] = useState(false);
   const composer = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const thread = useRef<HTMLDivElement>(null);
@@ -46,7 +51,7 @@ export default function ChatPage() {
   const draft = drafts[key] ?? EMPTY;
   const selections = pending?.key === key ? pending.operation.attachments() : draft.attachments;
   const readOnly = conversation?.session.mode === 'mock';
-  const baseUnavailable = loading || sending || !!pending || !!deleteTarget || !!readOnly;
+  const baseUnavailable = loading || sending || !!pending || !!deleteTarget || !!renameTarget || !!readOnly;
   const voice = useVoiceInput(key, baseUnavailable, (target, text) => {
     const previous = draftsRef.current, current = previous[target] ?? EMPTY;
     const next = { ...previous, [target]: { ...current, text: appendVoiceText(current.text, text) } };
@@ -54,7 +59,7 @@ export default function ChatPage() {
     requestAnimationFrame(() => composer.current?.focus());
   });
   const unavailable = baseUnavailable || voice.blocking;
-  const editor = useChatDraft(loading || sending || !!pending || !!deleteTarget, (sid, result) => {
+  const editor = useChatDraft(loading || sending || !!pending || !!deleteTarget || !!renameTarget, (sid, result) => {
     if (active.current?.session.sessionId !== sid) return;
     const next = { ...active.current, session: { ...active.current.session, ...result.session }, draft: result.draft };
     active.current = next; setConversation(next);
@@ -86,6 +91,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     let live = true;
+    void api.readRenameSupport().then(available => { if (live) setRenameAvailable(available); });
     void (async () => {
       try {
         const list = await api.listChatSessions(); if (!live) return; setSessions(list);
@@ -102,10 +108,10 @@ export default function ChatPage() {
   }, [draft.text, key]);
   useEffect(() => {
     const protect = (event: BeforeUnloadEvent) => {
-      if (voice.blocking || editor.ref.current?.hasUnsettled() || pending || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
+      if (voice.blocking || editor.ref.current?.hasUnsettled() || pending || (renameTarget && (renameTarget.operation || renameName.trim() !== renameTarget.session.title)) || Object.values(drafts).some(value => value.text.trim() || value.attachments.length)) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', protect); return () => window.removeEventListener('beforeunload', protect);
-  }, [drafts, pending, voice.blocking]);
+  }, [drafts, pending, voice.blocking, renameTarget, renameName]);
 
   const navigate = async (sid: string | null) => {
     if (locked.current || pendingRef.current) return;
@@ -273,14 +279,64 @@ export default function ChatPage() {
     } finally { locked.current = false; setDeleting(false); }
   };
 
+  const syncRenamedSession = (fresh: Conversation) => {
+    setSessions(previous => previous.map(item => item.sessionId === fresh.session.sessionId ? fresh.session : item));
+    if (active.current?.session.sessionId === fresh.session.sessionId) install(fresh);
+  };
+  const openRename = async (session: ChatSession) => {
+    if (locked.current || pendingRef.current || sending || loading || editor.snapshot.status === 'saving') return;
+    voice.cancel(); locked.current = true; setLoading(true); setError('');
+    try {
+      await editor.flush();
+      const fresh = await api.readConversation(session.sessionId);
+      if (fresh.session.status === 'running') throw new api.ApiError('会话正在处理中，请先完成或停止任务再重命名。', 'run_busy');
+      setRenameName(fresh.session.title); setRenameError(''); setRenameTarget({ session: fresh.session });
+    } catch (failure) { setError(errorText(failure)); }
+    finally { locked.current = false; setLoading(false); }
+  };
+  const cancelRename = async () => {
+    if (!renameTarget || renaming) return;
+    const target = renameTarget;
+    if (target.operation) {
+      locked.current = true; setRenaming(true);
+      try { syncRenamedSession(await api.readConversation(target.session.sessionId)); }
+      catch { setError('上次重命名结果尚未确认，请重新读取会话查看最新名称。'); }
+      finally { locked.current = false; setRenaming(false); }
+    }
+    setRenameTarget(null); setRenameError('');
+    requestAnimationFrame(() => document.getElementById(`session-actions-${target.session.sessionId}`)?.focus());
+  };
+  const confirmRename = async () => {
+    if (!renameTarget || locked.current || pendingRef.current || sending || sessionTitleError(renameName)) return;
+    const target = renameTarget;
+    const operation = target.operation ?? new ChatRenameOperation(target.session.sessionId, target.session.stateRevision, renameName);
+    setRenameTarget({ ...target, operation }); locked.current = true; setRenaming(true); setRenameError('');
+    try {
+      await operation.run();
+      const fresh = await api.readConversation(target.session.sessionId);
+      syncRenamedSession(fresh); setRenameTarget(null);
+      setError(fresh.session.title === renameName.trim() ? '' : '重命名请求已处理，会话随后又有更新，已显示最新名称。');
+      requestAnimationFrame(() => document.getElementById(`session-actions-${target.session.sessionId}`)?.focus());
+    } catch (failure) {
+      if (failure instanceof api.ApiError && ['stale_state', 'run_busy'].includes(failure.code)) {
+        try {
+          const fresh = await api.readConversation(target.session.sessionId);
+          syncRenamedSession(fresh);
+          setRenameTarget({ session: fresh.session });
+          setRenameError(failure.code === 'stale_state' ? '会话已更新，请核对当前名称后再次保存。' : failure.message);
+        } catch { setRenameError('无法读取最新状态，请取消后重新打开重命名；输入仍保留。'); }
+      } else setRenameError('保存结果尚未确认，请保留输入后重试。' + errorText(failure));
+    } finally { locked.current = false; setRenaming(false); }
+  };
+
   return <div className={`cp-page cp-live ${draftOpen ? 'cp-with-draft' : ''}`}>
     <a className="cp-skip" href="#live-composer">跳到对话输入框</a>
     {historyOpen && <button className="cp-shade" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)} />}
     <aside className={`cp-history ${historyOpen ? 'cp-history-open' : ''}`} aria-label="会话历史">
       <div className="cp-brand"><span className="cp-logo">历</span><strong>历历在练</strong><button className="cp-icon cp-mobile-close" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)}><Icon name="close" /></button></div>
-      <button className="cp-new" disabled={loading || sending || !!pending || !!deleteTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
+      <button className="cp-new" disabled={loading || sending || !!pending || !!deleteTarget || !!renameTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
       <div className="cp-history-label">已保存的会话</div>
-      <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={loading || sending || !!pending || !!deleteTarget || editor.snapshot.status === 'saving'} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} />)}</div>
+      <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
       <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
@@ -319,5 +375,6 @@ export default function ChatPage() {
     }} />}
 
     {deleteTarget && <DeleteSessionDialog session={deleteTarget.session} busy={deleting} error={deleteError} onCancel={cancelDelete} onConfirm={() => { void confirmDelete(); }} />}
+    {renameTarget && <RenameSessionDialog session={renameTarget.session} value={renameName} busy={renaming} locked={!!renameTarget.operation} error={renameError} onChange={setRenameName} onCancel={() => { void cancelRename(); }} onConfirm={() => { void confirmRename(); }} />}
   </div>;
 }

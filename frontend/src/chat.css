@@ -117,6 +117,8 @@
 .cp-session-menu { position:absolute; top:calc(100% + 2px); right:0; z-index:5; background:white; border:1px solid #dce2df; border-radius:9px; box-shadow:0 6px 20px #17312115; padding:4px; min-width:140px; }
 .cp-page .cp-session-menu button { display:flex; gap:9px; align-items:center; width:100%; min-height:44px; padding:8px 12px; color:#a13d35; text-align:left; }
 .cp-page .cp-session-menu button:hover { background:#fff3f1; }
+.cp-page .cp-session-menu .cp-session-rename { color:#285a4b; }
+.cp-page .cp-session-menu .cp-session-rename:hover { background:#edf4f0; }
 .cp-delete-dialog { width:min(410px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; box-sizing:border-box; border:1px solid #dce2df; border-radius:16px; padding:26px; color:#35433d; box-shadow:0 20px 70px #17312129; }
 .cp-delete-dialog::backdrop { background:#253d3060; }
 .cp-delete-dialog h2 { font-size:20px; margin:0 0 18px; }
@@ -127,6 +129,12 @@
 .cp-page .cp-delete-actions .cp-delete-confirm { background:#ad4238; border-color:#ad4238; color:white; }
 .cp-page .cp-delete-actions .cp-delete-confirm:hover { background:#91352d; }
 .cp-delete-error { color:#943c33; }
+.cp-rename-dialog label { display:block; font-size:14px; margin-bottom:8px; }
+.cp-rename-dialog input { width:100%; box-sizing:border-box; min-height:44px; padding:10px 12px; border:1px solid #aebfb5; border-radius:8px; font:inherit; color:inherit; }
+.cp-rename-dialog input:focus-visible { outline:2px solid #285a4b; outline-offset:2px; }
+.cp-rename-dialog .cp-rename-help,.cp-rename-dialog .cp-rename-current { font-size:12px; color:#65766b; }
+.cp-page .cp-delete-actions .cp-rename-confirm { background:#285a4b; border-color:#285a4b; color:white; }
+.cp-page .cp-delete-actions .cp-rename-confirm:hover { background:#1f493c; }
 .cp-session-more:focus-visible,.cp-session-menu button:focus-visible,.cp-delete-actions button:focus-visible { outline:2px solid #285a4b; outline-offset:2px; }
 @media(hover:none),(max-width:680px) { .cp-page .cp-session-more { opacity:1; } }
 .cp-live-header-tools { display:flex; align-items:center; gap:8px; }.cp-live-system { text-align:center; color:#6b786f; font-size:11px; line-height:1.9; margin:24px 0 0; }

@@ -87,6 +87,19 @@ export function uploadMaterial(sid: string, payload: { requestId: string; expect
   return http(`${path(sid)}/materials?${query}`, 'POST', undefined, undefined, new Blob([file], { type: file.name.toLowerCase().endsWith('.md') ? 'text/markdown' : file.type }));
 }
 export type SessionDeleteWrite = { requestId: string; expectedStateRevision: number; confirmed: true };
+export type SessionRenameWrite = { requestId: string; expectedStateRevision: number; title: string };
+/** Read-only method discovery; no session data is created or modified. */
+export async function readRenameSupport(): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: controller.signal });
+    return (response.ok || response.status === 405) && (response.headers.get('Allow') ?? '').split(',').some(method => method.trim() === 'PATCH');
+  } catch { return false; }
+  finally { clearTimeout(timeout); }
+}
+export const renameSession = (sid: string, payload: SessionRenameWrite) => http<ChatSession>(`${path(sid)}/title`, 'PATCH', payload,
+  v => isChatSession(v) && v.sessionId === sid && v.title === payload.title && v.stateRevision >= payload.expectedStateRevision);
 export const deleteSession = (sid: string, payload: SessionDeleteWrite) => http<{ sessionId: string; deleted: true }>(path(sid), 'DELETE', payload,
   v => object(v) && v.sessionId === sid && v.deleted === true);
 export const replaceDraft = (sid: string, payload: { requestId: string; expectedStateRevision: number; expectedDraftRevision: number; materialId: string; authorizationMessageId: string; confirmed: true; completeConfirmed: true }) => http<DraftResult>(`${path(sid)}/draft/replacement`, 'POST', payload, hasDraft);
