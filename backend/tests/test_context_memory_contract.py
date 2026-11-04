@@ -10,7 +10,7 @@ from app.agent.ports import SessionContext, SessionInfo, Message, SourceText, So
 from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep, SaveFactsArgs
 from app.agent.store import InMemoryStateStore
-from app.agent.tools import _save_facts, ToolContext
+from app.agent.tools import _literal_fact_source, _save_facts, ToolContext
 from app.agent_answer_sources import factual_answer
 from app.business_service import BusinessService
 from app.repository import Repository, RequestContext
@@ -20,6 +20,45 @@ import test_goal_and_confirmation as integration
 class MemoryContractTests(unittest.TestCase):
     def doc(self):
         return ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='实现姓名模糊查询和接口测试。')
+
+    def test_literal_fact_source_accepts_one_exact_multi_clause_sentence_only(self):
+        context = SessionContext(
+            session=SessionInfo(session_id='s'),
+            sources=[SourceText(
+                source_id='answer',
+                kind='supplement',
+                text='少做的一步：人工配置改为自动配置，验证周期缩短。实际反馈是技术负责人认可方案。',
+            )],
+        )
+        reference = _literal_fact_source(context, '人工配置改为自动配置，验证周期缩短')
+        self.assertEqual(reference.source_id, 'answer')
+        self.assertEqual(reference.quote, '人工配置改为自动配置，验证周期缩短')
+        self.assertIsNone(_literal_fact_source(
+            context, '人工配置改为自动配置，实际反馈是技术负责人认可方案',
+        ))
+
+    def test_external_context_saves_exact_multi_clause_personal_answer(self):
+        answer = '少做的一步：人工配置改为自动配置，验证周期缩短。'
+        statement = '人工配置改为自动配置，验证周期缩短'
+        store = InMemoryStateStore()
+        save_experience(store, 's', ExperienceDoc(
+            experience_id='p1', seq=1, kind='project', raw_text='参与推荐策略验证。',
+        ), None)
+        context = SimpleNamespace(
+            session=SessionInfo(session_id='s', experience_order=['p1']),
+            messages=[Message(message_id='m', role='user', text=answer)],
+            sources=[SourceText(source_id='answer', kind='supplement', text=answer)],
+            web_context={'references': [{'referenceId': 'external-1'}]},
+        )
+        repo = SimpleNamespace(get_session_context=lambda sid: context)
+        args = SaveFactsArgs(experience_id='p1', facts=[
+            NewFact(slot='effect', statement=statement),
+        ])
+        result = asyncio.run(_save_facts(args, ToolContext('s', repo, store, 'm')))
+        self.assertEqual(result['active_facts'], 1)
+        fact = load_experience(store, 's', 'p1')[0].facts[0]
+        self.assertEqual(fact.statement, statement)
+        self.assertEqual(fact.source_refs[0].quote, statement)
 
     def test_unrelated_negation_preserves_all_actions(self):
         doc = self.doc()

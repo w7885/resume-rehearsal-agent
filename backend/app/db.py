@@ -26,6 +26,9 @@ MIGRATIONS = (
     (10, Path(__file__).with_name("migrations") / "010_chat_decisions.sql"),
     (11, Path(__file__).with_name("migrations") / "011_agent_state.sql"),
     (12, Path(__file__).with_name("migrations") / "012_agent_host.sql"),
+    (13, Path(__file__).with_name("migrations") / "013_web_context.sql"),
+    (14, Path(__file__).with_name("migrations") / "014_web_request_budget.sql"),
+    (15, Path(__file__).with_name("migrations") / "015_external_assessments.sql"),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

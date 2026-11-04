@@ -164,6 +164,7 @@ class Repository:
                 "stateRevision": row["state_revision"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
                 "draftRevision": row["draft_revision"], "currentResumeGeneration": row["current_resume_generation"], "status": row["status"], "mode": row["mode"],
                 "title": row["chat_title"] or row["direction"], "directionStatus": row["direction_status"],
+                "webEnabled": bool(row["web_enabled"]), "webSettingsRevision": row["web_settings_revision"],
                 "targetDirection": row["direction"] if row["direction_status"] == "provided" else None}
 
     def create_session(self, direction: str):
@@ -180,6 +181,26 @@ class Repository:
     def get_session(self, context: RequestContext):
         with self._operation(context) as (_, session):
             return self._session(session)
+
+    def get_web_settings(self, context):
+        from app.web_storage import get_settings
+        return get_settings(self, context)
+
+    def update_web_settings(self, context, *, enabled, expected_revision):
+        from app.web_storage import update_settings
+        return update_settings(self, context, enabled=enabled, expected_revision=expected_revision)
+
+    def begin_web_request(self, context, **payload):
+        from app.web_storage import begin_request
+        return begin_request(self, context, **payload)
+
+    def finish_web_request(self, context, **payload):
+        from app.web_storage import finish_request
+        return finish_request(self, context, **payload)
+
+    def list_external_references(self, context):
+        from app.web_storage import list_references
+        return list_references(self, context)
 
     @staticmethod
     def _message(row):
@@ -480,10 +501,14 @@ class Repository:
             result["decision"] = {"decision": decision["decision"], "feedback": decision["feedback"], "createdAt": decision["created_at"]}
         if row["supersedes_suggestion_id"] is not None:
             result["supersedesSuggestionId"] = row["supersedes_suggestion_id"]
+        from app.web_citations import citation_view
+        external = citation_view(connection, row['session_id'], suggestion_id=row['suggestion_id'])
+        if external:
+            result['externalReferences'] = external
         return result
 
     def save_suggestion(self, context: RequestContext, proposal: dict, *, snapshot=None):
-        _keys(proposal, {"operation", "target", "before", "after", "reason", "sourceRefs", "gaps"}, {"supersedesSuggestionId"})
+        _keys(proposal, {"operation", "target", "before", "after", "reason", "sourceRefs", "gaps"}, {"supersedesSuggestionId", "externalReferenceIds"})
         _keys(proposal["target"], {"blockId", "expectedBlockRevision"})
         _integer(proposal["target"]["expectedBlockRevision"], "目标段落版本")
         operation = _choice(proposal["operation"], {"replace", "insert_after", "delete"}, "建议操作")
@@ -535,6 +560,9 @@ class Repository:
                     raise RepositoryError('stale_state', '引用不属于生成时固定的来源版本。', False)
             if not any(self._find_source(connection, context.session_id, ref["sourceId"], ref["sourceRevision"])["role"] in {"resume", "supplement"} for ref in refs):
                 raise RepositoryError("invalid_input", "岗位要求不能单独作为个人经历的改写依据。")
+            from app.web_citations import validate_company_claim
+            personal_quotes=[ref['quote'] for ref in refs if self._find_source(connection,context.session_id,ref['sourceId'],ref['sourceRevision'])['role'] in {'resume','supplement'}]
+            validate_company_claim(connection,session,proposal['after'],proposal['before'],personal_quotes)
             suggestion_id = _id("suggestion")
             connection.execute("INSERT INTO suggestions(suggestion_id, session_id, operation, target_block_id, expected_block_revision, expected_state_revision, before_text, after_text, reason, gaps_json, resume_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                (suggestion_id, context.session_id, operation, block["block_id"], block["block_revision"], session["state_revision"], proposal["before"], proposal["after"], proposal["reason"], json.dumps(proposal["gaps"], ensure_ascii=False), session["current_resume_generation"]))
@@ -542,6 +570,12 @@ class Repository:
                 connection.execute("UPDATE suggestions SET supersedes_suggestion_id = ? WHERE suggestion_id = ? AND session_id = ?", (supersedes, suggestion_id, context.session_id))
             for ref in refs:
                 connection.execute("INSERT INTO suggestion_sources VALUES (?, ?, ?, ?, ?)", (context.session_id, suggestion_id, ref["sourceId"], ref["sourceRevision"], ref["quote"]))
+            external_ids = proposal.get('externalReferenceIds', [])
+            if 'externalReferenceIds' in proposal:
+                if external_ids and context.run_id is None:
+                    raise RepositoryError('scope_violation', '外部引用必须由受信运行绑定。', False)
+                from app.web_citations import link_suggestion
+                link_suggestion(connection, session, suggestion_id, external_ids)
             return self._suggestion(connection, connection.execute("SELECT * FROM suggestions WHERE suggestion_id = ? AND session_id = ?", (suggestion_id, context.session_id)).fetchone())
 
     def get_suggestion(self, context: RequestContext, suggestion_id: str):

@@ -215,9 +215,10 @@ async def run_loop(
     total_completion = 0
     total_cost = 0
     decision_snapshot = None
+    decision_web_binding = None
 
     system_prompt = build_system_prompt() + "\n\n" + build_decide_prompt(
-        tool_spec_text()
+        tool_spec_text(web_enabled=bool(ctx.web_context.get('available')))
     )
     if emit_start:
         sink.emit("run_started", focus_experience_id=focus_id)
@@ -410,9 +411,13 @@ async def run_loop(
         return finish_result("waiting_user")
 
     async def ask_model(note: str) -> tuple[StepDecision | None, int, int, int]:
-        nonlocal decision_snapshot
+        nonlocal decision_snapshot, decision_web_binding
         decision_snapshot = capture_proposal_snapshot(
             ctx, focus_id, block_id=focus_doc.block_id if focus_doc else None, run_id=run_id)
+        web = ctx.web_context
+        decision_web_binding = ({'targetId':web.get('targetId'),'webSettingsRevision':web.get('webSettingsRevision'),
+                                 'ids':[r['referenceId'] for r in web.get('references',[])]}
+                                if web.get('references') else None)
         user = assemble_context(
             ctx, docs, phases, focus_id, session_goal=session_goal
         )
@@ -482,6 +487,14 @@ async def run_loop(
             if decision is None:
                 note = "上一次输出不是合法的动作 JSON，请只输出一个符合格式的 JSON 对象。"
                 continue
+
+            if decision_web_binding is not None:
+                latest_web = repo.get_session_context(session_id).web_context
+                if (not latest_web.get('available') or latest_web.get('targetId') != decision_web_binding['targetId']
+                        or latest_web.get('webSettingsRevision') != decision_web_binding['webSettingsRevision']
+                        or not set(decision_web_binding['ids']).issubset({r['referenceId'] for r in latest_web.get('references',[])})):
+                    sink.emit('warning',code='web_context_changed',message='联网参考或目标已变化，本次旧结果不写入。')
+                    return limited('web_context_changed','联网参考或目标已变化，当前稿及已保存回答保留。')
 
             if isinstance(decision, ToolStep) and decision.tool == 'propose_change':
                 try:
@@ -598,10 +611,18 @@ async def run_loop(
                 )
             )
             observation_text = json.dumps(observation, ensure_ascii=False)
+            if decision.tool == 'search_target_context' and observation.get('status')=='clarify_target':
+                sink.emit('clarification',question=observation['question'],code='web_target_missing')
+                return finish_result('waiting_user')
             # A bounded single-source read must reach the next decision intact;
             # clipping it at 600 characters defeats long-material recovery.
             single_material_page = (decision.tool == 'read_material'
                                     and len(observation.get('sources', [])) == 1)
+            if decision.tool == 'search_target_context':
+                # Current web contents come only from the permission-checked
+                # context. A closed epoch must not survive in tool history text.
+                observation_text = json.dumps({'status':observation.get('status'),
+                    'referenceIds':[r['referenceId'] for r in observation.get('references',[])]},ensure_ascii=False)
             history.append(
                 f"{step_number}. tool {decision.tool} "
                 f"{json.dumps(decision.args, ensure_ascii=False)[:300]} → "
@@ -635,6 +656,7 @@ async def run_loop(
                 text=question.text,
                 slot=decision.slot,
                 related_source_ids=decision.related_source_ids,
+                external_reference_ids=decision_web_binding['ids'] if decision_web_binding else [],
                 fallback=False,
             )
             return finish_result("waiting_user")
@@ -647,7 +669,8 @@ async def run_loop(
             if focus_doc is not None:
                 focus_doc.last_run_outcome = outcome
                 persist(focus_doc)
-            sink.emit('section_finished', focus_id=focus_id, outcome=outcome, summary=decision.summary[:400])
+            sink.emit('section_finished', focus_id=focus_id, outcome=outcome, summary=decision.summary[:400],
+                      external_reference_ids=decision_web_binding['ids'] if decision_web_binding else [])
             traces.append(
                 StepTrace(
                     seq=step_number,

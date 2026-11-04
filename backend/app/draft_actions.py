@@ -96,6 +96,8 @@ def apply_decision(repo, context, suggestion_id, payload):
         # Decisions cannot revive references to corrected or historical sources.
         refs = repo._refs(connection, context.session_id, proposal["sourceRefs"], required=True)
         if decision == "accept":
+            from app.web_citations import validate_adoption
+            validate_adoption(connection, session, suggestion_id)
             if not any(repo._find_source(connection, context.session_id, ref["sourceId"], ref["sourceRevision"])["role"] in {"resume", "supplement"} for ref in refs):
                 raise RepositoryError("invalid_input", "个人经历修改缺少个人材料依据。")
             if row["operation"] == "insert_after":

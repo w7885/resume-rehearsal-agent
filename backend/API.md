@@ -446,3 +446,25 @@ Agent 处理范围扩展为 project／work／profile／education／skills／summ
 基本信息中的邮箱与电话号码格式可整理，实际值新增或改变需用户原句支持。学历、证书、技能等级和绝对优势表述保留新增依据检查；该检查不是完备的语义真实性证明。只修改现有章节按标题／别名解析，项目序号继续使用项目专用索引；缺少或无法唯一定位的窄范围不默认为允许整份写入。显式再次修改已处理章节可重新生成建议，不被完成状态阻挡。
 
 一回合仍最多一条新待确认建议；采用后按范围接续。“跳过这一节”等明确保留指令在唯一有效建议下进入 reject 事务，保持当前稿后接续；多目标歧义继续澄清。部分段落没有需要改进的内容时可说明保留，不为了逐节处理而强行制造修改。真实模型各类段落的改写质量仍需独立评测。
+
+
+## 会话展示名重命名
+
+`PATCH /api/sessions/{sessionId}/title` 接收requestId、expectedStateRevision、title。title去首尾空格后为1～50个Unicode字符，禁止换行/控制字符；处理中返回run_busy，版本过期或请求回执冲突按既有规则拒绝。成功只更新chat_title和stateRevision，不改变direction、材料、消息、简历或已确认事实。
+
+`OPTIONS /api/sessions/{sessionId}/title`返回Allow: PATCH, OPTIONS，供前端只读发现能力；旧后端不展示可用入口。未知写入结果重试同一requestId/title/revision，不自动换版本或覆盖新名称；保存后侧栏/页头同步，取消不写入。
+
+
+## 会话联网与外部岗位参考
+
+会话联网默认关闭，GET/PATCH /api/sessions/{sessionId}/web-settings使用独立webSettingsRevision；修改请求携带requestId、enabled、expectedWebSettingsRevision，不用展示名或普通stateRevision代替。全局WEB_SEARCH_ENABLED及服务端凭证、项目预算同时就绪后才可用。
+
+从关闭切换到开启时，设置写入事务同时记录一次独立接续事件，不在PATCH中调用模型或搜索。`GET /api/sessions/{sessionId}/web-continuation` 只读返回 `sessionId` 和 `status`；存在事件时还返回服务端事件 `requestId`、`webSettingsRevision`、`expectedStateRevision`，已启动时可有 `runId`。状态为 `idle/pending/running/done/interrupted/failed`。客户端仅在当前会话、权限版本匹配且待接续时发起 `POST` 同路径，原样提交这三个绑定字段，返回与普通 `/runs` 一致的 SSE 格式。重复或未知结果重放原事件，不重新执行。当前运行未退出返回 `run_busy` 并保留待接续事件；关闭联网使旧事件与来源资格失效。
+
+接续事件绑定当前实际已保存的用户回合与版本，但不创建用户消息、不重放采用决定、不把上一条原话作为新的个人回答，也不自动生成改写建议。它只检查、补查岗位资料并保存核对结果；下一条正常消息使用已核对的资料。普通用户消息先进入运行时，可接管尚未执行的开关事件。刷新可恢复待执行事件，已中断或执行过的事件不会因刷新再次调用模型或搜索。已有运行取消及请求快照端点同样支持接续事件；原用户消息请求的唯一约束和数据库表结构保持不变。
+
+Agent只通过受控search_target_context工具请求job_requirements/company_background/terminology，target_id来自服务端；不允许客户端传自由query、个人简历或任意URL。火山Global搜索、按需Fetch、目标字段/招聘类型/查询隐私核对与单次/全项目预算共同生效。外部网页按不可信数据处理，不能授权调用、改个人事实或代替用户JD。
+
+外部参考与个人source_refs隔离，在消息和建议中独立展示，招聘状态未核实不能宣称正在招聘；关闭联网、目标/JD或权限变化后拒绝旧引用采用。完整用户JD/有效参考可复用，取证不足请补JD。网页个人事实隔离是联网必要保护，不改变563868d的通用处理范围或通用事实编辑规则。
+
+新增schema13～15只在隔离验证库执行；此提交不代表升级正式数据库或切换当前服务，也未加入Flash非思考适配、历史目标恢复/自动取证等额外本地实现。

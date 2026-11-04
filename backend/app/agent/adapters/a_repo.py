@@ -59,6 +59,7 @@ def _suggestion(row: Mapping[str, Any]) -> Suggestion:
         experience_id=target.get("blockId", ""),
         block_id=target.get("blockId"),
         expected_block_revision=target.get("expectedBlockRevision"),
+        external_reference_ids=[ref['referenceId'] for ref in row.get('externalReferences', [])],
         status=row["status"],
         operation=row.get("operation", "replace"),
         before=row.get("before"),
@@ -209,7 +210,7 @@ class ARepoAdapter:
         reason: str,
         source_refs: list[SourceRef],
         gaps: list[str],
-        *, snapshot: ProposalSnapshot | None = None,
+        *, snapshot: ProposalSnapshot | None = None, external_reference_ids=None,
     ) -> Suggestion:
         self._check(session_id)
         ctx = self.get_session_context(session_id)
@@ -269,6 +270,8 @@ class ARepoAdapter:
             raise RepoError('invalid_input', '不支持的建议操作。', False)
         if before is not None and before.strip() != snapshot.before.strip():
             raise RepoError('stale_state', '建议旧文已改变，不能套用最新正文。', True)
+        if external_reference_ids:
+            proposal['externalReferenceIds'] = list(external_reference_ids)
         return _suggestion(_unwrap(self.tools.propose_with_snapshot(proposal, snapshot)))
 
     def save_issues(self, session_id: str, issues: list[Issue]) -> list[str]:

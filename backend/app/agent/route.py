@@ -427,9 +427,14 @@ async def route_message(
         result.action = 'meta'
         result.reply = '这条消息包含需要核对的内容，先保留原问题；请明确哪部分是已发生的个人事实。'
     if has_pending_question and result.action == 'answer' and not result.answers_pending:
-        # 有待答问题却没说自己在回答，不能当回答消费掉。
-        result.action = 'meta'
-        result.reply = result.reply or '我还不能确定这条消息是否回答了当前问题，先核对你的意思。'
+        # The model can mark an explicit answer as action=answer while omitting
+        # answers_pending. Keep an explicit "different dimension/unanswered"
+        # explanation as meta, otherwise accept the validated answer span.
+        if result.answer_quote is not None and not result.reply:
+            result.answers_pending = True
+        else:
+            result.action = 'meta'
+            result.reply = result.reply or '我还不能确定这条消息是否回答了当前问题，先核对你的意思。'
     if has_pending_question and result.action == 'answer' and result.answer_quote is None:
         # Uncertainty/absence can answer a question without being new facts.
         # Mixed question text requires a separate, exact answer span.
@@ -576,7 +581,8 @@ def normalize(
     if out.suppress_kind and out.disposition != "suppress":
         out.suppress_kind = None
 
-    if out.reply and out.intent not in {"meta", "chitchat"}:
+    if (out.reply and out.intent not in {"meta", "chitchat"}
+            and not (out.intent == "answer" and not out.answers_pending)):
         out.reply = None
 
     if out.answer_quote and factual_quote(message, out.answer_quote) is None:

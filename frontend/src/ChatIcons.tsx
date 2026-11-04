@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
 
-type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron' | 'more' | 'trash' | 'mic' | 'stop';
+type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron' | 'more' | 'trash' | 'mic' | 'stop' | 'globe';
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
+    globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
     chat: <path d="M20 11.5a8 8 0 0 1-8 8H5l-3 2v-10a9 9 0 0 1 18 0Z" />,
     panel: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M15 4v16" /></>,

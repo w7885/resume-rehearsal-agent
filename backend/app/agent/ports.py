@@ -75,6 +75,7 @@ class Suggestion(BaseModel):
     created_at: str | None = None
     block_id: str | None = None
     expected_block_revision: int | None = None
+    external_reference_ids: list[str] = Field(default_factory=list)
 
 
 class Issue(BaseModel):
@@ -107,6 +108,7 @@ class SessionContext(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
     sources: list[SourceText] = Field(default_factory=list)
     revision_feedback: list[dict[str, Any]] = Field(default_factory=list)
+    web_context: dict[str, Any] = Field(default_factory=dict)
 
 
 def capture_proposal_snapshot(ctx: SessionContext, target_id: str, *, block_id=None, run_id=None):
@@ -176,7 +178,7 @@ class RepoPort(Protocol):
         reason: str,
         source_refs: list[SourceRef],
         gaps: list[str],
-        *, snapshot: ProposalSnapshot | None = None,
+        *, snapshot: ProposalSnapshot | None = None, external_reference_ids: list[str] | None = None,
     ) -> Suggestion: ...
 
     def save_issues(self, session_id: str, issues: list[Issue]) -> list[str]: ...

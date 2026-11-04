@@ -457,6 +457,12 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
         )
 
     experience_id = getattr(args, "experience_id", None) or getattr(args, "target", None)
+    if decision.tool == 'search_target_context':
+        web = state.session.web_context
+        if not web.get('available'):
+            return GuardResult(violation=Violation('web_unavailable','当前联网未生效。',False))
+        if args.target_id != web.get('targetId'):
+            return GuardResult(violation=Violation('wrong_web_target','搜索目标编号与当前会话不符。',False))
     if experience_id is not None and experience_id not in state.session.session.experience_order:
         return GuardResult(
             violation=Violation(

@@ -94,6 +94,19 @@ class Mutation(RequestId):
     expectedStateRevision: int = Field(ge=1, le=2**63 - 1)
 
 
+class RenameSession(Mutation):
+    title: str = Field(min_length=1, max_length=1000)
+
+    @field_validator('title')
+    @classmethod
+    def valid_title(cls, value):
+        from app.session_metadata import normalize_title
+        try:
+            return normalize_title(value)
+        except RepositoryError as error:
+            raise ValueError(error.message) from error
+
+
 class CreateSession(RequestId):
     direction: str = Field(min_length=1, max_length=120)
 
@@ -298,6 +311,17 @@ def get_session(session_id: str, request: Request):
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, payload: DeleteSession, request: Request):
     return _service(request).delete_session(session_id, payload.model_dump())
+
+
+@router.patch('/sessions/{session_id}/title')
+def rename_chat_session(session_id: str, payload: RenameSession, request: Request):
+    from app.session_metadata import rename_session
+    return rename_session(_service(request), session_id, payload.model_dump())
+
+
+@router.options('/sessions/{session_id}/title')
+def session_title_methods(session_id: str):
+    return Response(status_code=204, headers={'Allow': 'PATCH, OPTIONS'})
 
 
 @router.get("/sessions/{session_id}/messages")

@@ -38,6 +38,8 @@ def create_app(database_path=None, *, agent_client_factory=None):
     application.state.agent_client_factory = agent_client_factory
     application.add_middleware(LocalRequestGuard)
     application.include_router(router)
+    from app.web_router import router as web_router
+    application.include_router(web_router)
     from app.voice_router import router as voice_router
     application.include_router(voice_router)
     from app.agent_host import create_agent_router
