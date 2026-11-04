@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Icon } from './ChatIcons';
 import * as api from './api';
 import { ChatSendOperation } from './chatSend';
@@ -8,6 +9,9 @@ import { DeleteSessionDialog, SessionHistoryRow } from './ChatSessionActions';
 import ChatDraftPanel from './ChatDraftPanel';
 import ChatInspector from './ChatInspector';
 import type { Inspection } from './ChatInspector';
+import PanelResizer from './PanelResizer';
+import { PANEL_WIDTH_STORAGE_KEY, applyPanelWidths, clampPanelWidth, encodePanelWidths, parsePanelWidths } from './panelResize';
+import type { PanelKind, StoredPanelWidths } from './panelResize';
 import { useChatDraft } from './useChatDraft';
 import { useVoiceInput } from './useVoiceInput';
 import { appendVoiceText } from './voiceInput';
@@ -36,6 +40,12 @@ export default function ChatPage() {
   const [, setProgress] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [draftOpen, setDraftOpen] = useState(() => window.innerWidth >= 1000);
+  const [viewport, setViewport] = useState(() => window.innerWidth);
+  const [panelWidths, setPanelWidths] = useState<StoredPanelWidths>(() => {
+    try { return parsePanelWidths(window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY)); }
+    catch { return { history: null, draft: null }; }
+  });
+  const [panelResizing, setPanelResizing] = useState(false);
   const [inspecting, setInspecting] = useState<Inspection | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ session: ChatSession; operation: ChatDeleteOperation } | null>(null);
   const [deleting, setDeleting] = useState(false), [deleteError, setDeleteError] = useState('');
@@ -96,6 +106,16 @@ export default function ChatPage() {
     })();
     return () => { live = false; };
   }, []);
+  useEffect(() => {
+    const update = () => setViewport(window.innerWidth);
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  useEffect(() => {
+    if (panelWidths.history == null && panelWidths.draft == null) return;
+    try { window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, encodePanelWidths(panelWidths)); }
+    catch { /* Local width persistence is optional. */ }
+  }, [panelWidths]);
   useEffect(() => {
     const element = composer.current;
     if (element) { element.style.height = 'auto'; element.style.height = `${Math.min(element.scrollHeight, 150)}px`; }
@@ -273,7 +293,26 @@ export default function ChatPage() {
     } finally { locked.current = false; setDeleting(false); }
   };
 
-  return <div className={`cp-page cp-live ${draftOpen ? 'cp-with-draft' : ''}`}>
+  const draftColumn = draftOpen && viewport >= 1000;
+  const applied = applyPanelWidths(panelWidths, viewport, draftColumn);
+  const historyWidth = applied.history;
+  const draftWidth = applied.draft;
+  const historyLimits = applied.historyLimits;
+  const draftLimits = applied.draftLimits;
+  const panelStyle = {
+    ...(panelWidths.history == null ? {} : { '--cp-history-width': `${historyWidth}px` }),
+    ...(panelWidths.draft == null ? {} : { '--cp-draft-width': `${draftWidth}px` }),
+  } as CSSProperties;
+  const resizePanel = (kind: PanelKind, width: number) => {
+    setPanelWidths(previous => {
+      const current = applyPanelWidths(previous, viewport, draftColumn);
+      return kind === 'history'
+        ? { ...previous, history: clampPanelWidth('history', width, viewport, current.draft, draftColumn) }
+        : { ...previous, draft: clampPanelWidth('draft', width, viewport, current.history, true) };
+    });
+  };
+
+  return <div className={`cp-page cp-live ${draftOpen ? 'cp-with-draft' : ''} ${panelResizing ? 'cp-resizing' : ''}`} style={panelStyle}>
     <a className="cp-skip" href="#live-composer">跳到对话输入框</a>
     {historyOpen && <button className="cp-shade" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)} />}
     <aside className={`cp-history ${historyOpen ? 'cp-history-open' : ''}`} aria-label="会话历史">
@@ -285,6 +324,8 @@ export default function ChatPage() {
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
       <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
     </aside>
+
+    {viewport > 680 && <PanelResizer kind="history" label="调整会话列表宽度" current={historyWidth} min={historyLimits.min} max={historyLimits.max} onResize={width => resizePanel('history', width)} onActiveChange={setPanelResizing} />}
 
     <main className="cp-chat" aria-label="真实聊天保存与恢复">
       <header className="cp-chat-header"><div className="cp-header-title"><button className="cp-icon cp-menu" aria-label="展开会话列表" onClick={() => setHistoryOpen(true)}><Icon name="menu" /></button><h1>{conversation?.session.title ?? '新对话'}</h1><span className="cp-preview-badge">{readOnly ? '模拟历史' : '本机保存'}</span></div><div className="cp-live-header-tools"><button className="cp-icon" aria-label="重新读取会话" title="重新读取会话" disabled={loading || sending || !!pending} onClick={() => { void navigate(conversation?.session.sessionId ?? null); }}><Icon name="chat" size={17} /></button><button className={`cp-draft-toggle ${draftOpen ? 'cp-selected' : ''}`} aria-label="切换当前稿" title="当前稿" aria-pressed={draftOpen} onClick={() => setDraftOpen(!draftOpen)}><Icon name="panel" size={18} /><span>当前稿</span></button></div></header>
@@ -312,6 +353,7 @@ export default function ChatPage() {
       </div>
     </main>
 
+    {draftOpen && viewport >= 1000 && <PanelResizer kind="draft" label="调整当前稿宽度" current={draftWidth} min={draftLimits.min} max={draftLimits.max} onResize={width => resizePanel('draft', width)} onActiveChange={setPanelResizing} />}
     {draftOpen && <ChatDraftPanel key={key} conversation={conversation} snapshot={editor.snapshot} disabled={unavailable} onChange={text => editor.buffer?.setText(text)} onSave={() => { void saveDraft(); }} onRecover={keep => { void recoverDraft(keep); }} onClose={() => setDraftOpen(false)} onEvidence={() => setInspecting('evidence')} onOriginalMaterial={setInspecting} />}
     {inspecting && conversation && <ChatInspector inspecting={inspecting} conversation={conversation} unsaved={editor.snapshot.status !== 'saved'} disabled={unavailable} attached={selections.flatMap(item => item.material ? [item.material.materialId] : [])} onAdd={addSaved} onSelect={setInspecting} onClose={() => setInspecting(null)} beforeChange={editor.flush} onChanged={async () => {
       const fresh = await api.readConversation(conversation.session.sessionId);
