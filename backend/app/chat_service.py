@@ -48,11 +48,19 @@ def read_conversation(repo, context):
             JOIN source_blocks b ON b.session_id = r.session_id AND b.source_id = r.source_id AND b.source_revision = r.source_revision
             JOIN sessions s ON s.session_id = r.session_id
             WHERE r.session_id = ? AND d.is_current = 1 AND NOT ({_ACTIVE_SOURCE}) LIMIT 1""", (context.session_id,)).fetchone()
-        return {"session": repo._session(session), "messages": messages, "materials": materials,
+        value = {"session": repo._session(session), "messages": messages, "materials": materials,
                 "draft": repo._draft(connection, session),
                 "originalDraft": read_original_draft(connection, session),
                 "draftReviewRequired": bool(conflict or changed_evidence),
                 "capabilities": {"agentAvailable": False, "decisionExecutionAvailable": False}}
+        if session['mode'] == 'local':
+            latest = next((message for message in reversed(messages) if message['role'] == 'user'), None)
+            if (latest and latest['inputChannel'] == 'chat' and not latest['historical']
+                    and latest['savedAfterRevision'] == session['state_revision']
+                    and not connection.execute('SELECT 1 FROM agent_run_requests WHERE session_id=? AND user_message_id=?',
+                                               (context.session_id, latest['messageId'])).fetchone()):
+                value['pendingAnalysisMessageId'] = latest['messageId']
+        return value
 
 
 def save_chat_message(repo, context, payload):

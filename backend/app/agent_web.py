@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from app.agent.llm import LLMError
 from app.repository import RepositoryError
 from app.web_citations import assess, cached_references, goal_state
-from app.web_provider import PublicTarget, WebProviderError, reference_identity
+from app.web_provider import PublicTarget, WebProviderError, reference_identity, same_posting_url
 from app.web_search import WebSearchService
 
 PURPOSES = {'job_requirements', 'company_background', 'terminology'}
@@ -129,7 +129,7 @@ class AgentWebBridge:
         job_evidence = ('user_jd' if jd_complete else 'verified_job_reference'
                         if any(ref.get('purpose') == 'job_requirements' for ref in refs) else 'missing')
         self.exposed_ids = [x['referenceId'] for x in refs]
-        return {'available':True,'status':'ready' if goal['direction'] or goal['jd'] else 'needs_target',
+        return {'available':True,'status':'ready' if goal['direction'] or goal['jd'] or goal['clarifiedTarget'] else 'needs_target',
                 'targetId':goal['targetId'],'hasUserJD':bool(goal['jd']),
                 'webSettingsRevision':revision,
                 'userJDComplete':jd_complete, 'jobEvidenceStatus':job_evidence, 'references':refs,
@@ -266,7 +266,7 @@ class AgentWebBridge:
             self.pending_target=True
             return 'clarify'
 
-    def _verdict(self, target, ref, proof, purpose):
+    def _verdict(self, target, ref, proof, purpose, *, partial_body=False):
         if ref['hiringStatus'] in ('closed','conflict'):
             return ref['hiringStatus']
         if proof.match != 'matched':
@@ -285,7 +285,7 @@ class AgentWebBridge:
             return 'mismatch'
         if target.location and not _same(target.location,proof.location_quote):
             return 'mismatch'
-        if not _same(target.employment_type,proof.type_quote):
+        if (target.employment_type or not partial_body) and not _same(target.employment_type,proof.type_quote):
             return 'mismatch'
         kind_patterns = {'实习': r'实习|\bintern(?:ship)?\b', '校园招聘': r'校招|校园招聘|\bcampus\b',
                          '正式招聘': r'正式|全职|\bfull[ -]?time\b|\bpermanent\b'}
@@ -295,9 +295,59 @@ class AgentWebBridge:
             return 'mismatch'
         if target.posting_id and target.posting_id.casefold() not in proof.posting_id_quote.casefold():
             return 'mismatch'
-        if len(proof.duties_quote.strip())<6 or len(proof.requirements_quote.strip())<6:
+        if partial_body:
+            # New intake policy: a snippet can discover a candidate, never
+            # qualify it. body_verified is supplied only by the stored-request
+            # check in intake_body_verdict, never by a model response.
+            quotes = [proof.duties_quote, proof.requirements_quote]
+            if not ref.get('_body_verified') or not any(
+                    len(quote.strip()) >= 6 and quote in ref['content'] for quote in quotes):
+                return 'needs_body'
+        elif len(proof.duties_quote.strip())<6 or len(proof.requirements_quote.strip())<6:
             return 'needs_body'
         return 'accepted'
+
+    def intake_body_verdict(self, target, reference_id, proof):
+        """Qualify new intake body without publishing or rebinding citations."""
+        from app import web_intake
+        from app.web_candidates import _reference
+        from app.web_storage import _reference as public_reference
+        from app.web_citations import has_status_conflict
+        if not isinstance(proof, Evidence) or proof.reference_id != reference_id:
+            raise WebProviderError('invalid_external_assessment')
+        with self.runtime.repo._operation(self.runtime.context) as (connection, session):
+            state = web_intake.load(connection, session['session_id'])
+            if (not state or not session['web_enabled']
+                    or state['intentHash'] != goal_state(connection, session)['baseHash']
+                    or state['permissionRevision'] != session['web_settings_revision']
+                    or state['resumeGeneration'] != session['current_resume_generation']):
+                raise RepositoryError('stale_state', '联网岗位依据已过期。')
+            row = _reference(connection, session, state, reference_id)
+            if row['operation'] != 'fetch':
+                return 'needs_body'
+            request = connection.execute('SELECT input_json FROM web_requests WHERE session_id=? AND request_id=?',
+                (session['session_id'], row['request_id'])).fetchone()
+            import json
+            payload = json.loads(request['input_json'])
+            if payload.get('sourceKind') != 'user_jd':
+                selected = next((item for item in state['candidates']
+                                 if item['candidateId'] == state['selectedCandidateId']), None)
+                explicit_link = False
+                if selected is None and state.get('linkBindingId'):
+                    from app.web_inputs import resolve_link
+                    explicit_link = same_posting_url(resolve_link(connection, session, state['linkBindingId']), row['url'])
+                if not explicit_link and (not selected or selected['referenceId'] not in state['confirmedThirdPartyReferenceIds']
+                        or not same_posting_url(selected['url'], row['url'])
+                        or target.company != selected['company'] or target.role != selected['role']
+                        or (selected['location'] and target.location != selected['location'])
+                        or (selected['employmentType'] and target.employment_type != selected['employmentType'])):
+                    return 'unconfirmed'
+            elif state['phase'] == 'awaiting_selection':
+                return 'unconfirmed'
+            if has_status_conflict(connection, session['session_id'], '', row):
+                return 'conflict'
+            ref = {**public_reference(row), '_body_verified': True}
+            return self._verdict(target, ref, proof, 'job_requirements', partial_body=True)
 
     async def _assess(self, goal, revision, target, refs, purpose):
         self.ensure(goal['hash'],revision)
@@ -312,7 +362,8 @@ class AgentWebBridge:
             '所有quote逐字来自该条title/content，缺少则空。职责/要求要属于同一岗位，不拼接同名职位。'
             'duties_quote/requirements_quote各取至少6字符的具体内容；type_quote指招聘类型，不能取任职条件中的实习经历优先。'
             '数组优先排列可对应的公司官网，再考虑可核对高校/招聘平台；source_host用于判断但不是权属保证，不声称官网身份已验证。'
-            'company_background/terminology只核对公司和内容相关性，不能覆盖用户JD。只输出assessments数组。',
+            'company_background/terminology只核对公司和内容相关性，不能覆盖用户JD。'
+            '只输出顶层JSON对象，唯一字段为assessments，其值是数组；不得输出裸数组或单条Evidence对象。',
             {'purpose':purpose,'target':{'company':target.company,'role':target.role,'location':target.location,
               'employment_type':target.employment_type,'posting_id':target.posting_id},'userJD':goal['jd'][:6000],
              'references':safe})

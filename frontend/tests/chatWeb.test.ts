@@ -1,11 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeExternalUrl, isExternalReferences, referenceNotice, referenceTime } from '../src/chatWeb.ts';
+import { externalTextSegments, safeExternalUrl, visibleMessageParagraphs, isExternalReferences, referenceNotice, referenceTime } from '../src/chatWeb.ts';
 import { readConversation, readWebSettings, writeWebSettings, ApiError } from '../src/api.ts';
 const ref={referenceId:'external-1',title:'<script>alert(1)</script>',url:'https://example.com/jobs/1',content:'岗位原文',retrievedAt:'2026-10-28T00:00:00Z',publishedAt:null,matchStatus:'matched',hiringStatus:'unknown',contentStatus:'partial'};
 test('reference links reject executable, credential and malformed URLs',()=>{
   for(const url of ['javascript:alert(1)','data:text/html,x','file:///C:/file','https://user:pass@example.com','broken']) assert.equal(safeExternalUrl(url),null);
   assert.equal(safeExternalUrl(ref.url),ref.url);
+});
+test('message text turns safe public URLs into links and preserves surrounding punctuation',()=>{
+  assert.deepEqual(externalTextSegments('来源：https://example.com/jobs/1。请核对'),[
+    {text:'来源：'},{text:'https://example.com/jobs/1',href:'https://example.com/jobs/1'},{text:'。请核对'}
+  ]);
+  assert.deepEqual(externalTextSegments('https://user:pass@example.com/private'),[
+    {text:'https://user:pass@example.com/private'}
+  ]);
+});
+test('legacy external-reference notice is hidden only from assistant messages',()=>{
+  const notice='外部资料仅作岗位内容参考，招聘状态未核实。';
+  assert.deepEqual(visibleMessageParagraphs(`回复正文\n\n${notice}`,'assistant'),['回复正文']);
+  assert.deepEqual(visibleMessageParagraphs(notice,'user'),[notice]);
 });
 test('external references remain optional for older saved conversations but malformed data is rejected',()=>{
   assert.equal(isExternalReferences(undefined),true);assert.equal(isExternalReferences([ref]),true);

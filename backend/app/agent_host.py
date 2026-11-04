@@ -39,6 +39,13 @@ class RunInput(BaseModel):
     expectedStateRevision: int = Field(ge=1, le=2**63-1)
 
 
+class WebControlInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    requestId: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]*$')
+    expectedStateRevision: int = Field(ge=1, le=2**63-1)
+    webSettingsRevision: int = Field(ge=1, le=2**63-1)
+
+
 class AgentHost:
     def __init__(self, service, client_factory=None):
         self.service, self.repo = service, service.repository
@@ -80,6 +87,12 @@ class AgentHost:
                 self.budget()._account(connection)
                 connection.execute("UPDATE model_budget_accounts SET spent_cents=spent_cents+? WHERE budget_id='project'", (pending,))
                 connection.execute("UPDATE model_budget_reservations SET actual_cents=reserved_cents,status='unknown' WHERE status='reserved'")
+            from app.web_target import _put
+            for row in connection.execute("SELECT session_id,key,doc_json FROM agent_state WHERE scope='session' AND key LIKE 'web_control:%'").fetchall():
+                value = json.loads(row['doc_json'])
+                if value['status'] == 'running':
+                    value.update(status='interrupted', outcome='host_restarted')
+                    _put(connection, row['session_id'], row['key'], value)
 
     def start(self, sid, payload):
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -99,6 +112,10 @@ class AgentHost:
             context = RequestContext(sid,payload['expectedStateRevision'])
             self.repo._check_context(connection,context)
             user_turn(connection,context,session,payload['userMessageId'])
+            from app.web_control import running, consume_for_message
+            if running(connection, sid) or any(key[0] == sid and getattr(runtime, 'control_event', False)
+                    and runtime.task and not runtime.task.done() for key, runtime in list(self.active.items())):
+                raise RepositoryError('run_busy', '本会话的联网接续尚未结束。')
             budget=self.budget()
             account=budget._account(connection)
             reserved=connection.execute("SELECT coalesce(sum(reserved_cents),0) FROM model_budget_reservations WHERE status='reserved'").fetchone()[0]
@@ -110,6 +127,7 @@ class AgentHost:
             run_id,generation = self._new_run(connection,session)
             connection.execute('INSERT INTO agent_run_requests VALUES (?,?,?,?,?,?,\'running\',NULL,?)', (sid,payload['requestId'],payload['userMessageId'],digest,run_id,run_id,session['current_resume_generation']))
             row = dict(connection.execute('SELECT * FROM agent_run_requests WHERE session_id=? AND request_id=?', (sid,payload['requestId'])).fetchone())
+            consume_for_message(connection, session)
         runtime = Runtime(self,row,RequestContext(sid,payload['expectedStateRevision'],run_id,generation))
         for (old_sid,_), previous in list(self.active.items()):
             if old_sid==sid and previous.task and previous.context.expected_state_revision!=payload['expectedStateRevision']:
@@ -131,11 +149,16 @@ class AgentHost:
         with self.repo._operation(RequestContext(sid)) as (connection, _):
             row = connection.execute('SELECT * FROM agent_run_requests WHERE session_id=? AND request_id=?', (sid,request_id)).fetchone()
             if row is None:
-                raise RepositoryError('source_not_found', '分析记录不存在。')
+                from app.web_control import snapshot
+                return snapshot(self, sid, request_id)
             events = [json.loads(r[0]) for r in connection.execute('SELECT payload_json FROM agent_stream_events WHERE session_id=? AND request_id=? ORDER BY sequence', (sid,request_id))]
             return {'requestId': request_id, 'runId': row['root_run_id'], 'status': row['status'], 'outcome': row['outcome'], 'events': events}
 
     async def cancel(self, run_id):
+        from app.web_control import cancel_if_control
+        controlled = await cancel_if_control(self, run_id)
+        if controlled is not None:
+            return controlled
         with database(self.repo.path) as connection, transaction(connection):
             row = connection.execute('SELECT * FROM agent_run_requests WHERE root_run_id=? OR current_run_id=?', (run_id,run_id)).fetchone()
             if row is None:
@@ -148,6 +171,8 @@ class AgentHost:
         runtime = self.active.get(key)
         if runtime and runtime.task:
             runtime.task.cancel()
+            if runtime.task is not asyncio.current_task():
+                await asyncio.gather(runtime.task, return_exceptions=True)
         return {'runId': run_id, 'status': 'interrupted' if row['status']=='running' else row['status']}
 
 
@@ -300,8 +325,6 @@ class Runtime:
             payload['webTargetPrompt']={'goalHash':goal['hash'],'webSettingsRevision':revision}
         if external:
             payload['externalReferenceIds'] = external
-            text += '\n\n外部资料仅作岗位内容参考，招聘状态未核实。'
-            payload['content'] = text
         result = self.service.save_assistant_message(self.context,payload,synthetic=self.host.client_factory is not None)['data']['message']
         with self.repo._operation(self.context,write=True) as (connection,_):
             if materials:
@@ -503,7 +526,8 @@ class Runtime:
         from app.agent_progress import CONTINUE, KEEP_NEXT, REVIEW_KINDS, announce, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
         from app.resume_structure import SECTION_TYPES
-        sync(self)
+        if not getattr(self, 'control_event', False):
+            sync(self)
         command = plain(turn['userMessage']['content'])
         from app.agent_edit_scope import named_sections, whole_resume_request
         named = named_sections(turn['userMessage']['content'])
@@ -562,6 +586,31 @@ class Runtime:
         session_doc = existing[0] if existing else None
         asking_goal = (not (session_doc and session_doc.goal) and not (session_doc and session_doc.goal_asked)
                        and self.repo.get_session(self.context)['directionStatus'] != 'provided')
+        if self.budget.status()['remainingCents'] == 0:
+            self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
+            return 'completed'
+        from app.agent_web import AgentWebBridge
+        if self.web_bridge is None:
+            self.web_bridge = AgentWebBridge(self)
+        from app.web_intake_host import handle as handle_web_intake
+        intake_outcome = await handle_web_intake(self, turn)
+        if intake_outcome == 'blocked':
+            return 'completed'
+        if intake_outcome in {'ready', 'resumed_ready'}:
+            forced = True
+            out = None
+            asking_goal = self.repo.get_session(self.context)['directionStatus'] != 'provided'
+            adapter = HostAdapter(self, focus['blockId'], enforce_focus=True)
+        elif intake_outcome == 'unchanged':
+            # Existing persisted target questions remain answerable after the
+            # upgrade; new candidate questions use the intake state instead.
+            target_reply = await self.web_bridge.consume_target_reply(turn)
+            if target_reply == 'clarify':
+                from app.agent_web import TARGET_QUESTION
+                self._reply(TARGET_QUESTION, 'question')
+                return 'completed'
+            if target_reply:
+                forced = True
         if not asking_goal and progress['announced'] != focus['blockId']:
             title = _block_title(focus['markdown'])
             if progress['sectionKinds'].get(focus['blockId']) in REVIEW_KINDS:
@@ -570,27 +619,14 @@ class Runtime:
             else:
                 self._reply(f'现在进入「{title}」的修改。')
             announce(self, focus['blockId'])
-        if self.budget.status()['remainingCents'] == 0:
-            self._reply('项目预算已用完，暂不生成下一条建议。已采用的内容和当前稿仍已保存，可继续预览或导出。')
-            return 'completed'
         self._emit('progress', {'message': '正在检查当前段落。'})
-        from app.agent_web import AgentWebBridge
-        if self.web_bridge is None:
-            self.web_bridge = AgentWebBridge(self)
-        target_reply = await self.web_bridge.consume_target_reply(turn)
-        if target_reply == 'clarify':
-            from app.agent_web import TARGET_QUESTION
-            self._reply(TARGET_QUESTION,'question')
-            return 'completed'
-        if target_reply:
-            forced=True  # a company/role answer is not a personal interview fact
         saved, notices, questions, warnings = [], [], [], []
         question_external_ids = []
         section_external_ids = []
         section = None
         active_focus = focus
         outcome = 'completed'
-        async for event in stream_run(session_id=self.sid, text=turn['userMessage']['content'], repo=adapter, store=store, llm=self.llm,
+        async for event in stream_run(session_id=self.sid, text='请继续检查当前简历。' if intake_outcome == 'ready' else turn['userMessage']['content'], repo=adapter, store=store, llm=self.llm,
                 request_id=self.request_id, message_id=self.user_id, run_id=self.context.run_id,
                 expected_state_revision=self.context.expected_state_revision, start_analysis=forced,
                 decision=out):
@@ -769,7 +805,9 @@ class Runtime:
                 self.finish('done', 'completed')
                 return
             from app.agent_social import handle as handle_social
-            if handle_social(self, turn):
+            from app.web_intake_host import owns_turn as owns_web_turn
+            web_owned = owns_web_turn(self, turn)
+            if not web_owned and handle_social(self, turn):
                 self.finish('done', 'waiting_user' if self.waiting else 'completed')
                 return
             from app.agent_image_intake import recognize
@@ -782,7 +820,7 @@ class Runtime:
             elif not self.repo.get_draft(self.context)['blocks']:
                 self._reply(self._missing_draft_message(),'question')
             else:
-                out = await self._route(turn)
+                out = None if web_owned else await self._route(turn)
                 if self._consume_disposition(turn, out):
                     outcome = 'completed'
                 else:
@@ -843,6 +881,24 @@ def create_agent_router(host):
     @router.post('/api/sessions/{session_id}/runs')
     async def start(session_id:str,body:RunInput):
         row,created=host.start(session_id,body.model_dump())
+        return managed_events(session_id, body, row, created)
+
+    @router.get('/api/sessions/{session_id}/web-continuation')
+    def web_status(session_id: str):
+        from app.web_control import status
+        return {'ok': True, 'data': status(host, session_id)}
+
+    @router.post('/api/sessions/{session_id}/web-continuation')
+    async def web_continue(session_id: str, body: WebControlInput):
+        from app.web_control import start as start_control
+        row, created = start_control(host, session_id, body.model_dump())
+        if row is None:
+            event = {'type': 'done', 'sessionId': session_id, 'requestId': body.requestId,
+                     'payload': {'outcome': 'completed', 'replayed': True}}
+            return StreamingResponse(iter(['event: done\ndata: ' + json.dumps(event) + '\n\n']), media_type='text/event-stream')
+        return managed_events(session_id, body, row, created)
+
+    def managed_events(session_id, body, row, created):
         async def events():
             runtime=host.active.get((session_id,row['request_id'])) if created else None
             if runtime:
@@ -888,6 +944,9 @@ def create_agent_router(host):
                         if not runtime.task.done():
                             runtime.task.cancel()
                         await asyncio.gather(runtime.task,return_exceptions=True)
+                    elif runtime and getattr(runtime, 'control_event', False):
+                        runtime.finish('interrupted', 'client_disconnected', check=False)
+                        host.active.pop((session_id, row['request_id']), None)
         return ManagedStream(events(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 
     @router.get('/api/sessions/{session_id}/agent-requests/{request_id}')

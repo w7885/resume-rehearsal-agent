@@ -21,7 +21,7 @@
 .cp-profile { border-top:1px solid #e3e6e3; padding:17px 8px 0; display:flex; align-items:center; gap:10px; font-size:12px; }
 .cp-profile-icon { display:grid; place-items:center; width:31px; height:31px; background:#e2e7e3; color:#56695d; border-radius:50%; }
 .cp-profile small { display:block; color:#858d87; font-size:10px; margin-top:3px; }
-.cp-chat { display:grid; grid-template-rows:70px minmax(0,1fr) auto; min-height:0; min-width:0; background:#fff; }
+.cp-chat { display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:70px minmax(0,1fr) auto; min-height:0; min-width:0; background:#fff; }
 .cp-chat-header { padding:0 28px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .cp-header-title { display:flex; align-items:center; gap:11px; min-width:0; }
 .cp-chat-header h1 { font-size:14px; font-weight:550; color:#535962; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:0; line-height:1.5; }
@@ -36,6 +36,9 @@
 .cp-message-content { min-width:0; max-width:100%; }
 .cp-message-text p,.cp-confirm-question { font-size:14px; line-height:1.95; color:#32373d; white-space:pre-wrap; overflow-wrap:anywhere; }
 .cp-message-text p+p { margin-top:12px; }
+.cp-message-text a { color:#285a4b; text-decoration:underline; text-underline-offset:2px; }
+.cp-message-text a:hover { color:#174533; }
+.cp-message-text a:focus-visible { outline:2px solid #427eae; outline-offset:2px; }
 .cp-user { justify-content:flex-end; padding-left:44px; }
 .cp-user .cp-message-content { background:#f0f2f4; border-radius:14px 14px 3px 14px; padding:13px 17px; max-width:94%; }
 .cp-page .cp-attachment { display:flex; align-items:center; gap:10px; padding:10px 12px; margin-top:12px; background:#fff; border:1px solid #e0e3e6; border-radius:8px; max-width:100%; text-align:left; }
@@ -52,7 +55,7 @@
 .cp-page .cp-composer textarea { width:100%; min-height:42px; max-height:150px; padding:4px 2px 8px; margin:0; resize:none; overflow-y:auto; border:0; border-radius:0; background:transparent; box-shadow:none; font-size:14px; line-height:1.75; color:#303c34; }
 .cp-page .cp-composer textarea:focus-visible { outline:none; }
 .cp-page .cp-composer textarea::placeholder { color:#707a73; }
-.cp-composer-tools { display:flex; align-items:center; gap:8px; }
+.cp-composer-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .cp-page .cp-voice-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:44px; min-width:44px; padding:7px 9px; color:#426150; background:transparent; border:1px solid transparent; border-radius:9px; font-size:12px; white-space:nowrap; }
 .cp-page .cp-voice-button.cp-recording { color:#9b3434; background:#fff0ef; border-color:#e3b8b4; }
 .cp-page .cp-voice-button:active:not(:disabled),.cp-page .cp-voice-action:active:not(:disabled) { background:#e4ebe6; }
@@ -220,11 +223,4 @@
 .cp-web-toggle strong { font-size:12px; font-weight:500; }
 .cp-page .cp-web-on { background:#eaf1ec; color:var(--cp-accent); border-color:#b4cbbd; }
 .cp-page .cp-web-retry { min-height:44px; text-decoration:underline; }
-.cp-external-references { margin-top:12px; padding:10px 12px; border:1px solid var(--cp-line); border-radius:8px; font-size:12px; color:#505b54; overflow-wrap:anywhere; }
-.cp-external-references summary { cursor:pointer; padding:8px 0; min-height:28px; color:var(--cp-accent); }
-.cp-external-references section { margin-top:12px; padding-top:10px; border-top:1px solid var(--cp-line); }
-.cp-external-references a { display:inline-block; padding:8px 0; color:var(--cp-accent); text-decoration:underline; }
-.cp-external-references p { line-height:1.7; margin:5px 0; }
-.cp-external-references blockquote { white-space:pre-wrap; margin:8px 0 0; max-height:220px; overflow:auto; padding-left:10px; border-left:2px solid #b4cbbd; line-height:1.7; }
-.cp-external-references summary:focus-visible,.cp-external-references a:focus-visible { outline:2px solid #427eae; outline-offset:3px; }
 @media (max-width:600px) { .cp-web-control > span { flex-basis:100%; order:2; } .cp-web-control .cp-web-retry { margin-left:auto; } }

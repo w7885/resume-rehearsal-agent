@@ -221,6 +221,14 @@ def _literal_fact_source(current, statement):
             if statement not in clause or uncertain.search(clause):continue
             if negative.search(clause) and not negative.search(statement):continue
             return SourceRef(source_id=source.source_id,source_revision=source.source_revision,quote=clause)
+        # Models can combine adjacent clauses from the same user sentence into
+        # one fact. Accept that exact span without crossing a sentence boundary
+        # or admitting omitted uncertainty/negation.
+        for sentence in re.split(r'[\n。；;！!]',source.text):
+            sentence=sentence.strip()
+            if statement not in sentence or uncertain.search(sentence):continue
+            if negative.search(sentence) and not negative.search(statement):continue
+            return SourceRef(source_id=source.source_id,source_revision=source.source_revision,quote=statement)
     return None
 
 

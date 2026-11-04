@@ -54,7 +54,7 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
     const response = await fetch(url, { method, signal: controller.signal, cache: 'no-store',
       headers: body === undefined && raw === undefined ? undefined : { 'Content-Type': raw ? raw.type || 'application/octet-stream' : 'application/json' },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
-    if (response.status === 404 && url.endsWith('/web-settings')) throw new ApiError('当前后端不支持联网设置。', 'not_found');
+    if (response.status === 404 && (url.endsWith('/web-settings') || url.endsWith('/web-continuation'))) throw new ApiError('当前后端不支持该联网功能。', 'not_found');
     const envelope: unknown = await response.json().catch(() => {
       if (response.status >= 500) throw new ApiError('后端暂时无法响应，保存结果未确认。请保留输入，恢复连接后重试。', 'service_unavailable');
       throw new ApiError('服务返回格式异常；请保留输入，按原操作重试。', 'invalid_response');
@@ -149,12 +149,15 @@ function isChatMessage(value: unknown) {
 function isConversation(value: unknown): value is Conversation {
   if (!object(value)) return false;
   const record: Record<string, unknown> = value;
+  const session = record.session;
   return hasDraft(value) && isChatSession(record.session) && Array.isArray(record.messages) && record.messages.every(isChatMessage) &&
     (record.originalDraft === undefined || record.originalDraft === null || object(record.originalDraft) &&
       record.originalDraft.sessionId === record.session.sessionId && record.originalDraft.resumeGeneration === record.session.currentResumeGeneration &&
       typeof record.originalDraft.markdown === 'string' && Array.isArray(record.originalDraft.sourceRefs) && record.originalDraft.sourceRefs.every(isReference) &&
       Array.isArray(record.originalDraft.materialIds) && record.originalDraft.materialIds.every(id => typeof id === 'string') && new Set(record.originalDraft.materialIds).size === record.originalDraft.materialIds.length) &&
     (record.draftReviewRequired === undefined || typeof record.draftReviewRequired === 'boolean') &&
+    (record.pendingAnalysisMessageId === undefined || typeof record.pendingAnalysisMessageId === 'string' &&
+      isChatSession(session) && record.messages.some(m => m.role === 'user' && m.messageId === record.pendingAnalysisMessageId && m.sessionId === session.sessionId)) &&
     Array.isArray(record.materials) && record.materials.every(isChatMaterial) && object(record.capabilities) &&
     typeof record.capabilities.agentAvailable === 'boolean' && typeof record.capabilities.decisionExecutionAvailable === 'boolean';
 }
@@ -177,4 +180,9 @@ export async function uploadChatMaterial(sid: string, payload: { requestId: stri
 export type WebSettingsWrite = { requestId: string; enabled: boolean; expectedWebSettingsRevision: number };
 const isWebSettings = (v: unknown) => object(v) && typeof v.enabled === 'boolean' && integer(v.webSettingsRevision);
 export const readWebSettings = (sid: string) => http<WebSettings>(`${path(sid)}/web-settings`, 'GET', undefined, isWebSettings);
+export const readWebContinuation = (sid: string) => http<import('./types').WebContinuation>(`${path(sid)}/web-continuation`, 'GET', undefined,
+  v => object(v) && v.sessionId === sid && ['idle','pending','running','done','interrupted','failed'].includes(String(v.status)) &&
+    (v.status === 'idle' || v.status === 'done' && !v.requestId ||
+      typeof v.requestId === 'string' && integer(v.webSettingsRevision) && integer(v.expectedStateRevision) &&
+      (v.runId === undefined || typeof v.runId === 'string')));
 export const writeWebSettings = (sid: string, payload: WebSettingsWrite) => http<WebSettings>(`${path(sid)}/web-settings`, 'PATCH', payload, isWebSettings);

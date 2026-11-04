@@ -16,6 +16,15 @@ def user_turn(connection,context,session,user_id):
     if row is None:
         raise RepositoryError('source_not_found','没有找到当前会话已保存的用户回合。')
     same_state = row['saved_after_revision'] == session['state_revision']
+    if context.run_id:
+        controlled = connection.execute("""SELECT 1 FROM agent_state WHERE session_id=?
+            AND scope='session' AND key LIKE 'web_control:%'
+            AND json_extract(doc_json,'$.currentRunId')=?""", (context.session_id, context.run_id)).fetchone()
+        if controlled:
+            from app.web_control import authorizes
+            if not authorizes(connection, session, context, user_id):
+                raise RepositoryError('stale_state', '联网接续事件的权限或版本已变化。')
+            same_state = True
     if not same_state:
         effect = connection.execute('SELECT * FROM agent_turn_effects WHERE session_id=? AND user_message_id=?', (context.session_id,user_id)).fetchone()
         same_state = bool(effect and effect['state_revision']==session['state_revision']

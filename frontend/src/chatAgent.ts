@@ -1,8 +1,11 @@
 import { ApiError, requestId } from './api.ts';
 
+export type WebControlRequest = { requestId: string; expectedStateRevision: number; webSettingsRevision: number };
+
 /** One saved user turn, one stable request. Never resends the raw chat message. */
 export class ChatAgentOperation {
-  readonly id = requestId();
+  readonly id: string = requestId();
+  get isStopConfirmed() { return this.stopConfirmed; }
   runId?: string;
   progressMessage = '';
   private controller?: AbortController;
@@ -17,10 +20,16 @@ export class ChatAgentOperation {
   readonly revision: number;
   private notify: () => void;
   private transport: typeof fetch;
+  private control?: WebControlRequest;
   constructor(sessionId: string, userMessageId: string, revision: number,
-    notify: () => void = () => {}, transport: typeof fetch = (input, init) => globalThis.fetch(input, init)) {
+    notify: () => void = () => {}, transport: typeof fetch = (input, init) => globalThis.fetch(input, init), control?: WebControlRequest) {
     this.sessionId = sessionId; this.userMessageId = userMessageId; this.revision = revision;
     this.notify = notify; this.transport = transport;
+    if (control) {
+      this.id = control.requestId;
+      this.control = { requestId: control.requestId, expectedStateRevision: control.expectedStateRevision,
+        webSettingsRevision: control.webSettingsRevision };
+    }
   }
 
   run(): Promise<void> {
@@ -32,9 +41,9 @@ export class ChatAgentOperation {
   }
   private async execute() {
     this.controller = new AbortController();
-    const response = await this.transport(`/api/sessions/${encodeURIComponent(this.sessionId)}/runs`, {
+    const response = await this.transport(`/api/sessions/${encodeURIComponent(this.sessionId)}/${this.control ? 'web-continuation' : 'runs'}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: this.controller.signal,
-      body: JSON.stringify({ requestId: this.id, userMessageId: this.userMessageId, expectedStateRevision: this.revision }),
+      body: JSON.stringify(this.control ?? { requestId: this.id, userMessageId: this.userMessageId, expectedStateRevision: this.revision }),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null);

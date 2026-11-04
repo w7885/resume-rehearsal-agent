@@ -1,4 +1,5 @@
 export type WebSettings = { enabled: boolean; webSettingsRevision: number };
+export type WebContinuation = { sessionId: string; status: 'idle' | 'pending' | 'running' | 'done' | 'interrupted' | 'failed'; requestId?: string; webSettingsRevision?: number; expectedStateRevision?: number; runId?: string };
 export type ExternalReference = { referenceId: string; title: string; url: string; content: string; retrievedAt: string; publishedAt: string | null; matchStatus: string; hiringStatus: string; contentStatus: string; hiringNotice?: string };
 export type Session = { sessionId: string; direction: string; stateRevision: number; draftRevision: number; currentResumeGeneration: number; status: string; mode: 'local' | 'mock'; updatedAt: string };
 export type SourceRef = { sourceId: string; sourceRevision: number; quote: string };
@@ -17,7 +18,7 @@ export type ChatMaterial = Material & { sessionId: string; byteSize: number; cur
 export type AssistantMetadata = { kind:'reply'|'question'|'change_question';mode:'host'|'synthetic';replyToUserMessageId:string;questionState:null|'awaiting_reply'|'reply_saved'|'outdated'|'history';sourceRefs:SourceRef[];externalReferences?:ExternalReference[] };
 export type ChatMessage = { messageId: string; sessionId: string; role: 'user' | 'assistant'; content: string; kind: string; sequence: number; createdAt: string; inputChannel: 'legacy' | 'chat'; historical: boolean; attachments: ChatMaterial[];replyToMessageId?:string|null;assistant?:AssistantMetadata|null };
 export type OriginalDraft = { sessionId: string; resumeGeneration: number; markdown: string; sourceRefs: SourceRef[]; materialIds: string[] };
-export type Conversation = { session: ChatSession; messages: ChatMessage[]; materials: ChatMaterial[]; draft: Draft; originalDraft?: OriginalDraft | null; draftReviewRequired?: boolean; capabilities: { agentAvailable: boolean; decisionExecutionAvailable: boolean } };
+export type Conversation = { session: ChatSession; messages: ChatMessage[]; materials: ChatMaterial[]; draft: Draft; originalDraft?: OriginalDraft | null; draftReviewRequired?: boolean; pendingAnalysisMessageId?: string; capabilities: { agentAvailable: boolean; decisionExecutionAvailable: boolean } };
 export type ChatMessageResult = { session: ChatSession; message: ChatMessage; stateRevision: number; draftRevision: number };
 export type MaterialPage = { page: number; status: 'pending' | 'ready' | 'failed'; width: number | null; height: number | null; errorCode: string | null; errorMessage: string | null };
 export type MaterialPages = { materialId: string; renderVersion: string; pageCount: number | null; limit: number; historical: boolean; recognitionAvailable: boolean; pages: MaterialPage[] };

@@ -106,6 +106,43 @@ def public_url_shape(url):
         raise WebProviderError('unsafe_url') from None
 
 
+@dataclass(frozen=True)
+class PublicSearchIntent:
+    """Public discovery hints; not an accepted or user-selected job target."""
+    company: str = ''
+    role: str = ''
+    direction: str = ''
+    location: str = ''
+    employment_type: str = ''
+    posting_id: str = ''
+
+    def __post_init__(self):
+        limits = {'company': 60, 'role': 80, 'direction': 80, 'location': 30,
+                  'employment_type': 20, 'posting_id': 64}
+        for name, maximum in limits.items():
+            value = getattr(self, name)
+            if not isinstance(value, str) or len(value) > maximum:
+                raise WebProviderError('invalid_public_target')
+            if re.search(r'[\r\n\x00-\x1f@{}<>]|https?://|(?<!\d)1[3-9]\d{9}(?!\d)', value, re.I):
+                raise WebProviderError('private_query_rejected')
+        if not (self.role.strip() or self.direction.strip()):
+            raise WebProviderError('missing_job_direction')
+
+    def query(self):
+        parts = [self.company, self.role or self.direction, self.location,
+                 self.employment_type, self.posting_id]
+        query = ' '.join(part.strip() for part in parts if part.strip())
+        if len(query) > 100:
+            raise WebProviderError('query_too_long')
+        return query
+
+    @property
+    def key(self):
+        import hashlib
+        import json
+        return hashlib.sha256(json.dumps(self.__dict__, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 async def resolve_host(host):
     values = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
     return [row[4][0] for row in values]
@@ -133,6 +170,17 @@ def reference_identity(url):
         if match:
             return 'shixiseng:' + match[1]
     return urlunsplit((parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip('/'), parsed.query, ''))
+
+
+def same_posting_url(expected, actual):
+    if reference_identity(expected) == reference_identity(actual):
+        return True
+    left, right = urlsplit(expected), urlsplit(actual)
+    if left.hostname != right.hostname:
+        return False
+    pattern = r'(?<!\w)(?:\d{6,}|inn_[A-Za-z0-9]+)(?!\w)'
+    ids_left, ids_right = re.findall(pattern, left.path), re.findall(pattern, right.path)
+    return len(ids_left) == len(ids_right) == 1 and ids_left == ids_right
 
 
 def normalized_reference(title, url, content, *, full_body=False, published_at=None):

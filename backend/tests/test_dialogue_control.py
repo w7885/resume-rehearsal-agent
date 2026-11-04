@@ -73,6 +73,18 @@ class DialogueControlTests(unittest.TestCase):
         self.assertEqual(doc.supplement_quotes['m1'], quote)
         self.assertEqual(doc.round, 0)
 
+    def test_answer_span_consumes_pending_question_when_boolean_was_omitted(self):
+        repo, store = self.ready(slot='effect')
+        quote = '少做的一步：以前验证策略要人工配置，平台上线后自动化了。实际反馈是技术总监认可方案。'
+        llm = FakeLLM(route_script=[intent('answer', answer_quote=quote, answers_pending=False,
+                                         meta_note='回答待答问题，补充少做的一步与实际反馈')],
+                      decide_script=[policy.FINISH])
+        policy.run_turn(repo, store, llm, quote)
+        doc = load_experience(store, policy.SESSION, 'exp_01')[0]
+        self.assertEqual(doc.questions[0].outcome, 'answered')
+        self.assertEqual(doc.questions[0].answer_quote, quote)
+        self.assertEqual(doc.supplement_quotes['m1'], quote)
+
     def test_invalid_or_uncertain_classification_never_defaults_to_answer(self):
         for decision in ({'intent': 'invented'}, intent('answer', confidence=0.2, answers_pending=True),
                          intent('answer'), intent('answer', answers_pending='yes'),

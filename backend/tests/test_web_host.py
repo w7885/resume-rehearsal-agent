@@ -3,6 +3,7 @@ import json
 import re
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -51,7 +52,13 @@ class WebAwareClient(integration.FakeClient):
 
 
 class WebHostTests(unittest.TestCase):
-    setUp=integration.AgentIntegrationTests.setUp
+    def setUp(self):
+        integration.AgentIntegrationTests.setUp(self)
+        # Preserve the legacy registered-tool/old-prompt regression suite in
+        # isolation. Default automatic intake has its own full Host suite.
+        legacy = patch('app.web_intake_host.handle', new=AsyncMock(return_value='unchanged'))
+        legacy.start()
+        self.addCleanup(legacy.stop)
     request=integration.AgentIntegrationTests.request
     version=integration.AgentIntegrationTests.version
     chat=integration.AgentIntegrationTests.chat
@@ -96,7 +103,7 @@ class WebHostTests(unittest.TestCase):
         prompt=value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'],'change_question',value)
         self.assertTrue(prompt['assistant']['externalReferences'])
-        self.assertIn('招聘状态未核实',prompt['content'])
+        self.assertNotIn('外部资料仅作岗位内容参考，招聘状态未核实。',prompt['content'])
         proposals=self.request('GET',f"/api/sessions/{session['sessionId']}")['json']['data']['suggestions']
         self.assertTrue(proposals[-1]['externalReferences'])
         self.assertFalse(any('external' in r['sourceId'] for r in proposals[-1]['sourceRefs']))

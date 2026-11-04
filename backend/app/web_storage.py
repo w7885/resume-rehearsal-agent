@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 
 from app.repository import RepositoryError, RequestContext, _choice, _id, _integer, _keys, _now, _text
+from app.web_provider import reference_identity
 
 
 def _settings(session):
@@ -36,6 +37,8 @@ def update_settings(repo, context, *, enabled, expected_revision):
                 raise RepositoryError('invalid_input', '联网设置版本已达到上限。')
             connection.execute('UPDATE sessions SET web_enabled=?,web_settings_revision=web_settings_revision+1 WHERE session_id=?',
                                (int(enabled), context.session_id))
+            from app.web_control import changed
+            changed(connection, session, enabled, expected_revision + 1)
             # Includes pending results of any previous permission epoch. This
             # does not cancel model work or mutate the original proposal context.
             connection.execute("UPDATE web_requests SET status='cancelled',error_code='web_settings_changed',completed_at=? WHERE session_id=? AND status='pending'",
@@ -56,7 +59,7 @@ def _require_permission(session, revision):
 
 
 def begin_request(repo, context, *, request_id, web_settings_revision, target_key, operation, payload,
-                  budget_reservation_id=None):
+                  budget_reservation_id=None, intake_binding=None):
     _require_run(context)
     _text(request_id, '搜索请求编号')
     _text(target_key, '搜索目标标识')
@@ -98,6 +101,13 @@ def begin_request(repo, context, *, request_id, web_settings_revision, target_ke
             raise RepositoryError('web_timeout', '本轮搜索已超过总时限。')
         if first and (first['target_key'] != target_key or first['web_settings_revision'] != web_settings_revision):
             raise RepositoryError('stale_state', '本轮搜索目标或联网权限已变化。')
+        if intake_binding is not None:
+            from app import web_intake
+            _keys(intake_binding, {'episodeId', 'revision'})
+            web_intake.claim_attempt(connection, session,
+                episode_id=intake_binding['episodeId'], expected_revision=intake_binding['revision'],
+                request_id=request_id, operation=operation, fingerprint=fingerprint,
+                url_identity=reference_identity(payload['url']) if operation == 'fetch' else None)
         connection.execute('''INSERT INTO web_requests
             (session_id,request_id,run_id,resume_generation,web_settings_revision,target_key,operation,provider,request_hash,input_json,created_at,scope_run_id,budget_reservation_id,deadline_at)
             VALUES (?,?,?,?,?,?,?,'volcengine',?,?,?,?,?,?)''',
