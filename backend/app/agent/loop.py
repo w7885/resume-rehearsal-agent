@@ -42,7 +42,12 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.store import AgentStateStore
-from app.agent.questions import guided_question, with_answer_guidance
+from app.agent.questions import (
+    guided_question,
+    needs_detail,
+    next_guide_variant,
+    with_answer_guidance,
+)
 from app.agent.section_policy import EXPERIENCE_KINDS, question as section_question
 from app.agent.tools import TOOL_SPECS, ToolContext, execute_tool, tool_spec_text
 
@@ -124,9 +129,16 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         if any(q.outcome in {'answered', 'declined'} and q.slot in {'details', 'strength', 'preference'} for q in doc.questions):
             return None, None
         return text, slot
+    if needs_detail(doc):
+        return guided_question(
+            doc, 'tech', variant=next_guide_variant(doc, 'tech'),
+        ), 'tech'
     effect = effect_state(doc)
     if effect == "followup":
-        return guided_question(doc, 'effect', effect_followup=True), "effect"
+        return guided_question(
+            doc, 'effect', effect_followup=True,
+            variant=next_guide_variant(doc, 'effect'),
+        ), "effect"
     active_slots = {fact.slot for fact in doc.facts if fact.status == "active"}
     active_slots.update(supported_experience_slots(doc))
     answered_slots = {q.slot for q in doc.questions if q.outcome in {'answered', 'declined'}}
@@ -135,7 +147,7 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
             continue
         if slot in doc.declined or slot in active_slots or slot in answered_slots:
             continue
-        text = guided_question(doc, slot)
+        text = guided_question(doc, slot, variant=next_guide_variant(doc, slot))
         return text, slot
     return None, None
 

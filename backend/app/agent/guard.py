@@ -16,7 +16,7 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.tools import TOOL_SPECS, parse_args
-from app.agent.questions import MAX_QUESTION_LENGTH
+from app.agent.questions import MAX_QUESTION_LENGTH, needs_detail
 from app.agent.section_policy import EXPERIENCE_KINDS
 from app.agent.claim_text import claim_comparison_text
 
@@ -51,14 +51,18 @@ _UNANSWERABLE = ("DAU", "日活", "代码行数", "后台数据", "数据库密�
 _ROLE_WORDS = ("负责人", "主管", "主导", "架构师", "leader", "牵头", "经理")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 _CN_NUMBER = re.compile(r"[一二三四五六七八九十百千万两]+(?=[个项条次人页年月天%])")
+_QUANTIFIER_TAILS = ("个", "项", "条", "页", "步", "次", "人")
 
 
 def _cn_numbers(text: str):
+    # 中文数量声明；"一项/一条/一步"是量词，"第一项"是序数，都不算数量。
     for match in _CN_NUMBER.finditer(text):
+        token = match.group()
         tail = text[match.end() : match.end() + 1]
-        if match.group() == "一" and tail in ("个", "次", "人"):
+        prefix = text[match.start() - 1 : match.start()]
+        if token == "一" and (tail in _QUANTIFIER_TAILS or prefix == "第"):
             continue
-        yield match.group()
+        yield token
 
 
 _PROPER_NOUN = re.compile(r"[A-Za-z][A-Za-z0-9+.#-]{2,}")
@@ -267,6 +271,18 @@ def _personal_change_evidence_parts(args: ProposeChangeArgs, state: GuardState) 
     return [original, *quotes]
 
 
+def _no_information(before: str, after: str) -> bool:
+    """改写只在“本人/负责/参与”等空壳词上有差异时，视为没有新增信息。"""
+    def normalize(value: str) -> str:
+        text = re.sub(r'[\s，。；：！？、,.!?;:（）()]', '', value or '')
+        for word in ('本人', '负责', '参与', '开发', '工作', '该', '项目', '的', '了', '进行', '相关'):
+            text = text.replace(word, '')
+        return text
+    # 只拦“变长且新增的只是空壳词”；纯删减（精简表达）和同长度替换（参与→负责）放行。
+    return (normalize(before) == normalize(after)
+            and len((after or '').strip()) > len((before or '').strip()))
+
+
 def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     text = step.message.strip()
     marks = text.count("？") + text.count("?")
@@ -274,9 +290,11 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         return Violation("question_shape", "问题必须恰好一个问号")
     if len(text) > MAX_QUESTION_LENGTH:
         return Violation("question_too_long", f"问题与回答提示合计不能超过 {MAX_QUESTION_LENGTH} 字")
-    if any(word in text for word in _CONJUNCTIONS):
+    # 问号后的回答提示（“比如省掉哪一步”）不是第二个问题，只检查问句本身。
+    question = re.split(r"[？?]", text, maxsplit=1)[0]
+    if any(word in question for word in _CONJUNCTIONS):
         return Violation("question_multi", "一次只能问一个点")
-    if len(_QUESTION_WORDS.findall(text)) > 1:
+    if len(_QUESTION_WORDS.findall(question)) > 1:
         return Violation("question_multi", "一次只能问一个点")
     if re.match(r'^(?:「[^」\n]*」|【[^】\n]*】|\[[^\]\n]*\]|“[^”\n]*”)\s*', text):
         return Violation("question_prefix", "直接自然提问，不在开头添加人名、标题或原文引用标签")
@@ -290,6 +308,13 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         return Violation("question_unanswerable", "不能要求用户查后台数据")
 
     if state.focus_doc is not None:
+        if needs_detail(state.focus_doc) and step.slot in {
+                'effect', 'context', 'evidence', 'result'}:
+            return Violation(
+                'ask_detail_first',
+                '职责刚确认，先追问具体做法或技术选型，再问效果。',
+                True,
+            )
         recent = state.focus_doc.questions[-3:]
         if any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
@@ -474,6 +499,13 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
         )
 
     if decision.tool == "propose_change":
+        # 只在“本人负责/参与”等空壳词上做差异的改写，等于没有新增信息。
+        if _no_information(args.before or state.focus_block_markdown, args.after):
+            return GuardResult(
+                violation=Violation(
+                    "no_information", "改写没有新增信息，请补充具体职责、动作或结果。", True
+                )
+            )
         if state.focus_doc is not None:
             if getattr(args, "target", None) != state.focus_doc.experience_id:
                 return GuardResult(

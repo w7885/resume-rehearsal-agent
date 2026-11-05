@@ -113,6 +113,17 @@ def _require_experience(ctx: ToolContext, experience_id: str) -> tuple[Experienc
     return loaded
 
 
+_SHELL_WORDS = ('是我负责的', '是我负责', '本人负责', '我负责', '我做的', '我参与的', '参与其中', '就是这样')
+
+
+def _is_shell_statement(statement: str) -> bool:
+    """去掉“是我负责的”这类空壳说法后没有实词，就视为没有新增信息。"""
+    value = re.sub(r'[\s，。；：！？、,.!?;:（）()]', '', statement or '')
+    for word in _SHELL_WORDS:
+        value = value.replace(word, '')
+    return len(value) < 2
+
+
 async def _read_material(args: ReadMaterialArgs, ctx: ToolContext) -> dict[str, Any]:
     sources = ctx.repo.read_material(ctx.session_id, args.source_ids)
     pages = []
@@ -207,22 +218,29 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
     message = next((m for m in current.messages if m.message_id == ctx.message_id and m.role == 'user'), None)
     correction = bool(message and re.search(r'更正|纠正|说错|不对|不是.{0,40}而是|应为|应改为', message.text))
     active = {f.id: f for f in doc.facts if f.status == 'active'}
+    kept, skipped = [], []
     for fact in args.facts:
         if fact.supersedes_fact_ids and (not correction or any(
                 fid not in active or active[fid].slot != fact.slot for fid in fact.supersedes_fact_ids)):
             raise RepoError('invalid_input', '替代事实必须对应用户明确纠正的同一维度事实编号。')
+        # 空壳回答（“是我负责的”）没有新增信息，不写成事实，避免后续产出同义反复建议。
+        if _is_shell_statement(fact.statement):
+            skipped.append(fact.statement)
+            continue
         # Link the actual saved answer, never model-generated memory, to its
         # admitted primary source. Uncertain answers have no admitted source.
         if message and fact.message_id in (None, ctx.message_id):
             matches = [s for s in current.sources if s.kind == 'supplement' and s.text == message.text]
             if matches:
                 fact.source_refs = [SourceRef(source_id=s.source_id, source_revision=s.source_revision, quote=s.text) for s in matches[:1]]
-    added = merge_facts(doc, args.facts, ctx.message_id)
+        kept.append(fact)
+    added = merge_facts(doc, kept, ctx.message_id) if kept else []
     if added:
         save_experience(ctx.store, ctx.session_id, doc, revision)
     return {
         "added": [fact.id for fact in added],
         "active_facts": len([f for f in doc.facts if f.status == "active"]),
+        "skipped_tautology": skipped,
     }
 
 

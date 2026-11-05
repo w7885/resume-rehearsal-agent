@@ -125,6 +125,28 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(_block_title(parts[1]), '学生信息管理系统 开发成员')
         self.assertEqual(_block_title(parts[2]), '个人博客网站 个人开发者')
 
+    def test_trailing_dates_split_entries_and_decorated_headings(self):
+        body = ('实习经历\n字节跳动（抖音）- AI产品开发实习生 2024年7月 - 至今\n- 动作甲\n'
+                '腾讯 - 产品策划实习生 2024年3月 - 2024年6月\n- 动作乙\n'
+                '</>个人项目\nSmartDataFlow - 独立开发 2024年2月\n- 动作丙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 4)
+        self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
+        self.assertFalse(any('动作乙' in p and '动作丙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work', 'project'])
+
+    def test_date_below_entry_title_starts_the_entry_at_the_title(self):
+        body = ('实习经历\n\n字节跳动（抖音） - AI产品开发实习生\n\n2024年7月 - 至今\n- 动作甲\n'
+                '腾讯 - 产品策划实习生\n\n2024年3月 - 2024年6月\n- 动作乙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 3)
+        self.assertTrue(parts[1].startswith('字节跳动'))
+        self.assertTrue(parts[2].startswith('腾讯'))
+        self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work'])
+
     def test_duplicate_or_rewritten_boundary_cannot_select_a_body(self):
         for content, a, b in [('重复\n正文\n重复', '重复', '重复'), (BODY, '模型改写的开头', BODY.splitlines()[-1])]:
             with self.subTest(a=a), self.assertRaises(RepositoryError):

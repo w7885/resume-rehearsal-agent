@@ -35,6 +35,13 @@ class SectionClient(proactive.ProactiveClient):
         if self.proposed:
             return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
         if doc.kind in {'project', 'work'}:
+            answered = [q for q in doc.questions if q.outcome in {'answered', 'declined'}]
+            if answered and answered[-1].slot in {'responsibility', 'tech'}:
+                last = answered[-1]
+                if not any(f.slot == last.slot and f.status == 'active' for f in doc.facts):
+                    return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                        'experience_id': target,
+                        'facts': [{'slot': last.slot, 'statement': last.answer_quote or '已确认'}]}})
             if not doc.questions:
                 return SimpleNamespace(data={'action': 'ask_user', 'message': '查询脚本中，你本人负责哪部分？', 'slot': 'responsibility'})
             effect = effect_state(doc)
@@ -168,12 +175,12 @@ class WholeResumeTests(unittest.TestCase):
         session, host, ids = self.setup_whole()
         before = self.conversation(session)['draft']['markdown']
         self.turn(session, '检查整份简历', 'start')
-        # 经历段先确认职责和实际变化，才给出建议。
-        for attempt in range(3):
+        # 经历段先确认职责、具体做法和实际变化，才给出建议。
+        for attempt in range(4):
             last = self.conversation(session)['messages'][-1]
             if (last.get('assistant') or {}).get('kind') != 'question':
                 break
-            text = '老师录入时间从半小时缩短到五分钟。' if '实际变化' in last['content'] else '我负责查询功能的代码实现。'
+            text = '老师录入时间从半小时缩短到五分钟。' if '变化' in last['content'] else '我负责查询功能的代码实现。'
             self.turn(session, text, f'answer-{attempt}')
         self.assertEqual(self.pending(session)[0]['target']['blockId'], ids[2])
         self.turn(session, '跳过这一节', 'skip')

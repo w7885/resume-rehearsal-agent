@@ -2,8 +2,9 @@
 import unittest
 from app.agent.guard import GuardState, check
 from app.agent.loop import _fallback_question
-from app.agent.memory import ExperienceDoc, Fact
+from app.agent.memory import ExperienceDoc, Fact, Question
 from app.agent.ports import SessionContext, SessionInfo
+from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep
 
 
@@ -27,7 +28,56 @@ class QuestionWordingTests(unittest.TestCase):
         question, slot = _fallback_question(doc)
         self.assertEqual(slot, 'action')
         self.assertIn('小任务', question)
-        self.assertIn('遇到的情况→采取的做法', question)
+        self.assertIn('挑一件具体的事说', question)
+
+    def terse_responsibility_doc(self):
+        doc = ExperienceDoc(
+            experience_id='p1', seq=1, kind='project', title='学生信息管理系统 开发成员',
+            raw_text='使用 Python 编写学生信息管理程序，实现学生信息的增加、删除、查询。',
+        )
+        doc.questions.append(Question(
+            id='q1', slot='responsibility', text='你负责哪部分？', fingerprint='f',
+            outcome='answered', answer_kind='answered', answer_quote='数据库表设计',
+        ))
+        doc.facts.append(Fact(
+            id='f1', slot='responsibility', statement='负责数据库表设计',
+            created_at='2026-01-01T00:00:00Z',
+        ))
+        return doc
+
+    def test_short_responsibility_answer_asks_detail_before_effect(self):
+        doc = self.terse_responsibility_doc()
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='test')),
+            focus_doc=doc, anchor_text=doc.raw_text,
+        )
+        result = check(AskStep(action='ask_user', message='这段经历交付后带来了什么实际变化？', slot='effect'), state)
+        self.assertEqual(result.violation.code, 'ask_detail_first')
+        tech = guided_question(doc, 'tech')
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message=tech, slot='tech'), state).violation,
+            tech,
+        )
+
+    def test_fallback_asks_detail_before_effect(self):
+        doc = self.terse_responsibility_doc()
+        question, slot = _fallback_question(doc)
+        self.assertEqual(slot, 'tech')
+        self.assertIn('实际用到了什么工具或方法', question)
+
+    def test_detail_question_once_answered_unblocks_effect(self):
+        doc = self.terse_responsibility_doc()
+        doc.questions.append(Question(
+            id='q2', slot='tech', text='用了什么技术？', fingerprint='f2',
+            outcome='answered', answer_kind='answered', answer_quote='Python + SQLite',
+        ))
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='test')),
+            focus_doc=doc, anchor_text=doc.raw_text,
+        )
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message='这段经历交付后带来了什么实际变化？', slot='effect'), state).violation
+        )
 
     def test_natural_question_needs_no_verbatim_excerpt(self):
         result = check(AskStep(action='ask_user', message='你具体负责哪部分工作？', slot='responsibility'), self.state())
@@ -46,3 +96,80 @@ class QuestionWordingTests(unittest.TestCase):
         state.focus_doc.declined = ['responsibility']
         result = check(AskStep(action='ask_user', message='你具体负责哪部分工作？', slot='responsibility'), state)
         self.assertEqual(result.violation.code, 'question_declined')
+
+    def test_fallback_question_uses_rotated_variant(self):
+        doc = self.state().focus_doc
+        doc.questions.append(Question(id='q1', slot='responsibility', text='你负责哪部分？', fingerprint='f'))
+        question, slot = _fallback_question(doc)
+        self.assertEqual(slot, 'responsibility')
+        self.assertIn('说一件你亲手做过的', question)
+
+    def test_answer_hint_after_question_mark_is_not_a_second_question(self):
+        result = check(AskStep(action='ask_user', message='学生信息管理系统做完后带来了什么变化？比如省掉哪一步或收到哪条反馈。', slot='effect'), self.state())
+        self.assertIsNone(result.violation)
+
+    def test_two_question_words_in_the_question_are_still_multi(self):
+        result = check(AskStep(action='ask_user', message='你是怎么发现什么问题这件事的？', slot='action'), self.state())
+        self.assertEqual(result.violation.code, 'question_multi')
+
+
+class GuideVariationTests(unittest.TestCase):
+    """引导文案按槽位和重试次数轮换，不再逐字复用。"""
+
+    def doc(self):
+        return ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+
+    def test_first_asks_alternate_by_slot(self):
+        doc = self.doc()
+        responsibility = with_answer_guidance('你负责哪部分？', doc, 'responsibility')
+        action = with_answer_guidance('你做了什么？', doc, 'action')
+        self.assertIn('没参与的不用补充', responsibility)
+        self.assertIn('挑一件具体的事说', action)
+
+    def test_same_slot_retry_switches_guide(self):
+        doc = self.doc()
+        first = with_answer_guidance('你做了什么？', doc, 'action')
+        doc.questions.append(Question(id='q1', slot='action', text='你做了什么？', fingerprint='f'))
+        second = with_answer_guidance('你做了什么？', doc, 'action')
+        self.assertIn('挑一件具体的事说', first)
+        self.assertIn('遇到的情况→采取的做法', second)
+
+    def test_model_question_with_its_own_hint_is_kept(self):
+        doc = self.doc()
+        text = '接口测试里你做了哪部分？可以从测试用例或联调中选一项。'
+        self.assertEqual(with_answer_guidance(text, doc, 'responsibility'), text)
+
+    def test_guided_question_variants_stay_bounded(self):
+        doc = self.doc()
+        for slot in ('responsibility', 'action', 'effect', 'context', 'evidence', 'tech'):
+            for variant in (0, 1):
+                with self.subTest(slot=slot, variant=variant):
+                    text = guided_question(doc, slot, variant=variant)
+                    self.assertEqual(text.count('？'), 1)
+                    self.assertLessEqual(len(text), 120)
+
+    def test_effect_followup_has_two_variants(self):
+        doc = self.doc()
+        texts = {
+            guided_question(doc, 'effect', effect_followup=True, variant=variant)
+            for variant in (0, 1)
+        }
+        self.assertEqual(len(texts), 2)
+
+    def test_every_generated_question_passes_the_guard(self):
+        doc = self.doc()
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='test')),
+            focus_doc=doc, anchor_text=doc.raw_text,
+        )
+        cases = [(slot, variant, False) for slot in
+                 ('responsibility', 'action', 'effect', 'context', 'evidence', 'tech')
+                 for variant in (0, 1)]
+        cases += [('effect', variant, True) for variant in (0, 1)]
+        for slot, variant, followup in cases:
+            text = guided_question(doc, slot, effect_followup=followup, variant=variant)
+            with self.subTest(slot=slot, variant=variant, followup=followup):
+                self.assertIsNone(
+                    check(AskStep(action='ask_user', message=text, slot=slot), state).violation,
+                    text,
+                )

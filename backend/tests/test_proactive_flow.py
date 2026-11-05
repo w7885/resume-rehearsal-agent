@@ -43,6 +43,12 @@ class ProactiveClient(integration.FakeClient):
             message = '你在项目二测试中具体执行了哪项测试？' if mode == 'question' else '这段经历中，你本人负责哪部分？'
             return SimpleNamespace(data={'action': 'ask_user', 'message': message, 'slot': 'responsibility', 'related_source_ids': [], 'rationale': '先确认个人职责'})
         if mode == 'noeffect':
+            if '你本人负责哪部分' in kwargs['user'] and '[responsibility]' not in kwargs['user']:
+                return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                    'experience_id': block_id, 'facts': [{'slot': 'responsibility', 'statement': '负责测试用例执行与结果记录'}]}})
+            if '工具或方法' in kwargs['user'] and '[tech]' not in kwargs['user']:
+                return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                    'experience_id': block_id, 'facts': [{'slot': 'tech', 'statement': '使用 Python 和 SQLite'}]}})
             if '这段经历上线或交付后' not in kwargs['user']:
                 return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
             if '没上线也可以' not in kwargs['user']:
@@ -383,6 +389,7 @@ class ProactiveFlowTests(unittest.TestCase):
         host.modes[ids[0]] = 'noeffect'
         self.turn(session, '继续', 'first')
         self.turn(session, '我负责测试用例执行与结果记录。', 'resp')
+        self.turn(session, 'Python 和 SQLite。', 'tech')
         self.turn(session, '没有上线，只在本地运行。', 'effect-1')
         self.assertEqual(self.pending(session), [])
         self.turn(session, '确实没有别的变化。', 'effect-2')
