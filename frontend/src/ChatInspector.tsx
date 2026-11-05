@@ -57,7 +57,13 @@ export default function ChatInspector({ inspecting, conversation, unsaved, disab
         {!!conversation.materials.length && <details className="cp-correction-tools"><summary>修正材料文字</summary><label className="cp-sr-only" htmlFor="correction-material">选择待核对材料</label><select id="correction-material" value={correctionId} disabled={guarded} onChange={event => setCorrectionId(event.target.value)}><option value="">选择材料</option>{conversation.materials.map(item => <option key={item.materialId} value={item.materialId}>{item.name}</option>)}</select>{correcting && <MaterialText key={correcting.materialId} sid={conversation.session.sessionId} id={correcting.materialId} editable={!disabled && conversation.session.mode === 'local' && correcting.current} onGuard={setGuarded} beforeChange={beforeChange} onChanged={onChanged} />}</details>}
       </>
         : reply ? <div className="cp-evidence-list"><p>以下为这条回复当时关联的原文。</p>{reply.assistant?.sourceRefs.map((reference,index) => <Evidence key={index} sid={conversation.session.sessionId} reference={reference} />)}</div>
-        : material && <AttachmentContent key={material.materialId} sid={conversation.session.sessionId} material={material} />}
+        : material && <><AttachmentContent key={material.materialId} sid={conversation.session.sessionId} material={material} />
+          {['application/pdf', 'image/png', 'image/jpeg'].includes(material.mediaType) && <MaterialText
+            key={`${material.materialId}-text`} sid={conversation.session.sessionId} id={material.materialId}
+            editable={!disabled && conversation.session.mode === 'local' && material.current}
+            onGuard={setGuarded} beforeChange={beforeChange} onChanged={onChanged}
+          />}
+        </>}
 
   </dialog>;
 }
