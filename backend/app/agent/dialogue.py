@@ -31,11 +31,7 @@ def current_question(doc):
 def context_reply(doc, reply=None):
     if doc is None:
         return '请先明确要处理的简历段落；这条消息尚未作为经历回答。'
-    lines = [line.strip() for line in doc.raw_text.splitlines() if line.strip()]
-    # A mixed campus block may put the actual activity after grades/awards.
-    # Do not hide it by showing only the first metadata lines.
-    excerpt = '\n'.join(lines)[:600]
-    text = f'当前正在处理「{doc.title}」这一段，原文片段是：\n{excerpt}\n'
+    text = f'当前正在处理「{doc.title}」这一段。\n'
     if reply:
         text += reply.strip() + '\n'
     question = current_question(doc)

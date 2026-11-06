@@ -24,6 +24,11 @@ def split_markdown(markdown):
     Blank separators belong to the preceding block. Never infer identity from
     similar text; repeated equal blocks are intentionally treated as ambiguous.
     """
+    # The editor must not merge imported experiences on its next autosave.
+    # Keep the legacy paragraph splitter for unstructured/general Markdown.
+    from app.resume_structure import experience_boundaries, split_resume
+    if experience_boundaries(markdown):
+        return split_resume(markdown)
     blocks, current, fence, separator = [], [], None, False
     for line in markdown.splitlines(keepends=True):
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)

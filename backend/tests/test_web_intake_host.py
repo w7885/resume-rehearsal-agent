@@ -100,8 +100,8 @@ class IntakeHostTests(unittest.TestCase):
         self.assertTrue(value['messages'][-1]['assistant']['externalReferences'])
         self.assertEqual(len(self.sent), 2)
         messages = [m['content'] for m in value['messages']]
-        self.assertLess(next(i for i,t in enumerate(messages) if '已核对：' in t),
-                        next(i for i,t in enumerate(messages) if '现在进入' in t))
+        self.assertLess(next(i for i,t in enumerate(messages) if '已核对：' in t), len(messages) - 1)
+        self.assertFalse(any(t.startswith('现在进入') for t in messages))
         with database(self.path) as c:
             self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'ready')
 

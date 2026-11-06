@@ -482,20 +482,9 @@ _HEADER_LINE = re.compile(r"^(项目|工作|实习|教育|技能|校园|实践|�
 _DATE_PART = re.compile(r"^[\d.\-/年月日—–~～\s]+$")
 
 
-def _block_title(markdown: str) -> str:
-    from app.resume_structure import ENTRY_DATE, heading
-    for line in markdown.splitlines():
-        text = heading(line).lstrip("-* ").strip()
-        if not text or _HEADER_LINE.match(text):
-            continue
-        # Tabular PDFs put the date first, padded with spaces: drop it before naming.
-        columns = [part.strip() for part in re.split(r"\s{2,}", text) if part.strip()]
-        if len(columns) > 1 and ENTRY_DATE.match(columns[0]):
-            text = " ".join(columns[1:])
-        parts = [part.strip() for part in re.split(r"[｜|]", text) if part.strip()]
-        parts = [part for part in parts if not _DATE_PART.match(part)] or parts
-        return (parts[0] if parts else text)[:20]
-    return "未命名经历"
+def _block_title(markdown: str, kind='project') -> str:
+    from app.resume_structure import experience_title
+    return experience_title(markdown, kind)
 
 
 def sync_experiences(
@@ -517,7 +506,7 @@ def sync_experiences(
             continue
         order.append(block.block_id)
         from app.agent.section_policy import section_title
-        title = _block_title(block.markdown) if kind in {'project', 'work'} else section_title(block.markdown, kind)
+        title = _block_title(block.markdown, kind) if kind in {'project', 'work'} else section_title(block.markdown, kind)
         existing = load_experience(store, session_id, block.block_id)
         if existing is None:
             save_experience(
@@ -535,7 +524,7 @@ def sync_experiences(
                 ),
                 None,
             )
-        elif existing[0].kind != kind or existing[0].seq != len(order):
+        elif existing[0].kind != kind or existing[0].seq != len(order) or existing[0].title != title:
             if existing[0].kind in {'project', 'work'} and kind not in {'project', 'work'}:
                 for question in existing[0].questions:
                     if question.outcome == 'asked' and question.slot in {'responsibility', 'action', 'effect', 'result', 'tech'}:

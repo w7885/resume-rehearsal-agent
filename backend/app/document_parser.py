@@ -112,7 +112,9 @@ def extract_docx(raw):
                 try:
                     if (part != 'word/document.xml' or location or not single_column or not page_height
                             or any(isinstance(e, str) and e.strip() for e in events)
-                            or any(n.tag in {W + 'br', W + 'lastRenderedPageBreak', W + 'pageBreakBefore', W + 'sectPr'} for n in element.iter())):
+                            or any(n.tag in {W + 'br', W + 'lastRenderedPageBreak', W + 'sectPr'}
+                                   or (n.tag == W + 'pageBreakBefore' and n.get(W + 'val', 'true') not in {'0', 'false', 'off'})
+                                   for n in element.iter())):
                         raise ValueError('ambiguous page or flow')
                     for box, anchor in boxes:
                         if anchor is None:
@@ -150,16 +152,34 @@ def extract_docx(raw):
                         width, height = int(extent.get('cx')), int(extent.get('cy'))
                         if not (width > 0 and height > 0 and 0 <= y < y + height <= page_height):
                             raise ValueError('outside page')
-                        positioned.append((y, x, width, members))
+                        positioned.append((y, x, width, height, members))
                     # A shared horizontal lane excludes separate text columns.
                     # It still permits a short left/right personal-info area.
-                    if len(positioned) < 2 or max(p[1] for p in positioned) >= min(p[1] + p[2] for p in positioned):
-                        raise ValueError('separate columns or insufficient positions')
+                    if len(positioned) < 2:
+                        raise ValueError('insufficient positions')
+                    shared_lane = max(p[1] for p in positioned) < min(p[1] + p[2] for p in positioned)
+                    if not shared_lane:
+                        # A single top row of personal-info boxes can precede
+                        # full-width sections in the same anchoring paragraph.
+                        # Require identical tops, disjoint horizontal spans and
+                        # a clear vertical gap before a common body lane. Other
+                        # column layouts retain their original structure order.
+                        first_y = min(p[0] for p in positioned)
+                        top_row = sorted((p for p in positioned if p[0] == first_y), key=lambda p: p[1])
+                        body = [p for p in positioned if p[0] != first_y]
+                        if (len(top_row) != 2 or len(body) < 2
+                                or top_row[0][1] + top_row[0][2] > top_row[1][1]
+                                or max(p[0] + p[3] for p in top_row) > min(p[0] for p in body)
+                                or max(p[1] for p in body) >= min(p[1] + p[2] for p in body)
+                                or any(p[1] < min(b[1] for b in body)
+                                       or p[1] + p[2] > max(b[1] + b[2] for b in body)
+                                       for p in top_row)):
+                            raise ValueError('separate columns')
                 except (ValueError, TypeError):
                     c.warn('floating_order_unresolved', '文本框坐标、分页或分栏无法可靠比较，保留结构顺序；标题与正文归属需核对。')
                     return events
                 c.warn('floating_order', '同一锚定段落的文本框已按页面纵坐标排序；框内顺序保留，仍请核对原件。')
-                return [event for _, _, _, members in sorted(positioned, key=lambda p: (p[0], p[1])) for event in members]
+                return [event for _, _, _, _, members in sorted(positioned, key=lambda p: (p[0], p[1])) for event in members]
 
             def paragraph_events(element, graphic=False, anchor=None):
                 # Text boxes are separate paragraphs, never concatenated into
@@ -245,6 +265,17 @@ def extract_pdf(raw):
             if any(item.get_object().get('/Subtype') in {'/Image', '/Form'} for item in objects.values()):
                 c.warn('page_graphics', f'第 {index} 页含图片或嵌入图形，其中的文字可能未提取，请核对。')
             text = page.extract_text(extraction_mode='layout', layout_mode_space_vertically=False, layout_mode_strip_rotated=False) or ''
+            plain = None
+            if any(item.get_object().get('/Subtype') == '/Form' for item in objects.values()):
+                try:
+                    from app.pdf_text_layout import form_layout
+                    plain = page.extract_text() or ''
+                    recovered = form_layout(page, text, plain)
+                    if recovered != text:
+                        text = recovered
+                        c.warn('form_text_recovered', f'第 {index} 页已按嵌入对象的字体及页面变换恢复文字，请核对日期与经历归属。')
+                except Exception:
+                    c.warn('form_text_unresolved', f'第 {index} 页嵌入对象无法可靠展开，保留已有文字，请核对遗漏内容。')
             if not text.strip():
                 c.warn('empty_page', f'第 {index} 页未提取到文字，可能为空白或扫描页，请核对原件。')
                 continue
@@ -252,6 +283,20 @@ def extract_pdf(raw):
                 c.warn('encoding', f'第 {index} 页存在无法识别的字符，请核对数字、日期和职责。')
             if any(re.search(r'\S {4,}\S', line) for line in text.splitlines()):
                 c.warn('reading_order', f'第 {index} 页可能含表格或分栏，保留横向间距，请核对阅读顺序。')
+                from app.pdf_text_layout import reading_text
+                try:
+                    if plain is None:
+                        plain = page.extract_text() or ''
+                    from collections import Counter
+                    if Counter(char for char in plain if not char.isspace()) - Counter(char for char in text if not char.isspace()):
+                        c.warn('layout_text_gap', f'第 {index} 页两种提取模式的文字不一致，可能遗漏日期等内容，请核对原件或补充文字。')
+                    recovered = reading_text(text, plain)
+                    if recovered != text:
+                        c.warn('layout_recovered', f'第 {index} 页已按原始文本核对空格及可确认的列表栏序，复杂布局仍请核对原件。')
+                        text = recovered
+                except Exception:
+                    # Keep the original layout result if corroboration fails.
+                    c.warn('layout_unresolved', f'第 {index} 页未能核对布局，保留原提取顺序。')
             c.add(text, {'page': index, 'lineStart': 1, 'lineEnd': max(1, len(text.splitlines()))})
         except Exception:
             c.warn('page_failed', f'第 {index} 页提取失败，其他页结果保留；请转换该页或粘贴文字。')

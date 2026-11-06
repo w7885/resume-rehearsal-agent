@@ -44,7 +44,10 @@ def plain(text):
     return text.strip().rstrip('。！!').strip()
 
 
-def label(block):
+def label(block, kind=None):
+    if kind in {'project', 'work'}:
+        from app.resume_structure import experience_title
+        return experience_title(block['markdown'], kind)
     lines = [heading(line) for line in block['markdown'].splitlines() if line.strip()]
     if re.search(r'姓名|求职意向|电话|邮箱', '\n'.join(lines[:2])):
         return '基本信息与求职意向'
