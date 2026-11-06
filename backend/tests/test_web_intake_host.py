@@ -79,6 +79,24 @@ class IntakeHostTests(unittest.TestCase):
         self.assertNotEqual(events[-1]['payload']['outcome'], 'agent_failed', events)
         return user
 
+    def test_discovery_failure_and_empty_results_have_distinct_messages(self):
+        from unittest.mock import AsyncMock, patch
+        cases = [('failed', 'provider_network_error', '网络连接失败'),
+                 ('failed', 'provider_timeout', '响应超时'),
+                 ('limited', 'budget_exhausted', '预算限制'),
+                 ('unavailable', 'web_unavailable', '未配置或未启用'),
+                 ('empty', '', '本次搜索未取得可核对的候选')]
+        for status, code, phrase in cases:
+            with self.subTest(code=code):
+                session = self.ready()
+                with patch('app.web_search.WebSearchService.discover', new=AsyncMock(
+                        return_value={'status': status, 'code': code, 'references': []})):
+                    self.user_turn(session, '重试联网', 'result-' + status + code)
+                content = self.conversation(session)['messages'][-1]['content']
+                self.assertIn(phrase, content)
+                self.assertEqual(self.sent, [])
+                self.assertEqual(self.count('suggestions'), 0)
+
     def test_explore_waits_for_choice_before_any_section_announcement(self):
         session = self.ready()
         self.user_turn(session, '请按目标岗位整理技能。', 'explore')

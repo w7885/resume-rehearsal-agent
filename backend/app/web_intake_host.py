@@ -411,6 +411,17 @@ class Intake:
         self.r._emit('progress', {'message': '正在按你提供的公开求职意向查找岗位候选。'})
         result = await self.service.discover(self.r.context, intent,
             request_id=self.key('discovery'), web_settings_revision=revision)
+        if result.get('status') not in {'partial', 'empty', 'succeeded'}:
+            code = result.get('code', 'web_failed')
+            message = {
+                'provider_network_error': '本次搜索网络连接失败，尚未取得岗位候选。',
+                'provider_timeout': '本次搜索服务响应超时，尚未取得岗位候选。',
+                'budget_exhausted': '本次搜索受预算限制，尚未取得岗位候选。',
+                'web_unavailable': '本次搜索服务未配置或未启用，尚未取得岗位候选。',
+                'provider_rate_limited': '本次搜索服务请求受限，尚未取得岗位候选。',
+            }.get(code, '本次搜索服务未完成请求，尚未取得岗位候选。')
+            return self.ask(message + '不能据此判断没有合适岗位。可补充JD正文、回复“重试联网”或“通用修改”。',
+                            phase='failed', outcomeCode=code)
         return await self.offer(result.get('references', []))
 
 
