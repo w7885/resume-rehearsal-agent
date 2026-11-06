@@ -820,7 +820,7 @@ class Runtime:
                 self.finish('done', 'completed')
                 return
             from app.agent_social import handle as handle_social
-            from app.web_intake_host import resolve_ownership
+            from app.web_ownership import resolve_ownership
             web_owned = await resolve_ownership(self, turn)
             if not web_owned and handle_social(self, turn):
                 self.finish('done', 'waiting_user' if self.waiting else 'completed')

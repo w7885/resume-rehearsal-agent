@@ -42,6 +42,9 @@ class FakeClient:
         elif system.startswith('解析用户对改写'):
             prompt=value['candidatePrompts'][0]
             data={'status':'clarify','decisions':[]} if self.answer=='clarify' else {'status':'resolved','decisions':[{'promptMessageId':prompt['promptMessageId'],'suggestionId':prompt['suggestions'][0]['suggestionId'],'decision':self.answer,'feedback':value['userContent'] if self.answer=='revise' else ''}]}
+        elif system.startswith('判断这条用户消息在联网流程中的归属'):
+            # 共享 fake 默认按普通对话处理，避免联网场景下的归属判定拦截既有用例。
+            data={'decision':'normal','confidence':0.9}
         else:
             raise AssertionError('Unexpected fake JSON request')
         return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)

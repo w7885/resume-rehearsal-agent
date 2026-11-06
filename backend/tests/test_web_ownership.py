@@ -6,8 +6,7 @@ import unittest
 from app import web_intake
 from app.agent.llm import LLMError
 from app.web_citations import goal_state
-from app.web_intake_host import resolve_ownership
-from app.web_ownership import _model_ownership, classify_ownership, classify_text
+from app.web_ownership import _model_ownership, classify_ownership, classify_text, resolve_ownership
 from app.web_target import _put
 import test_web_storage
 

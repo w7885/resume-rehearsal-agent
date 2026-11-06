@@ -6,8 +6,6 @@ import asyncio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import web_candidates, web_intake
-# 运行时入口继续从 host 模块导入，判定实现留在 web_ownership。
-from app.web_ownership import resolve_ownership
 from app.agent.llm import LLMError
 from app.agent_web import Assessment, sufficient_jd
 from app.repository import Repository, RepositoryError, RequestContext, _ACTIVE_SOURCE
