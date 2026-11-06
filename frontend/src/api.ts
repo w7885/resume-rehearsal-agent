@@ -96,6 +96,7 @@ export async function readRenameSupport(): Promise<boolean> {
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await fetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: controller.signal });
+    if (response.status === 204) return true;
     return (response.ok || response.status === 405) && (response.headers.get('Allow') ?? '').split(',').some(method => method.trim() === 'PATCH');
   } catch { return false; }
   finally { clearTimeout(timeout); }

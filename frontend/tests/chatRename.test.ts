@@ -74,6 +74,8 @@ test('old backends do not advertise rename; method discovery is read-only', asyn
       return new Response(null, { status: 404 });
     };
     assert.equal(await readRenameSupport(), false);
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    assert.equal(await readRenameSupport(), true);
     globalThis.fetch = async () => new Response(null, { status: 204, headers: { Allow: 'PATCH, OPTIONS' } });
     assert.equal(await readRenameSupport(), true);
   } finally { globalThis.fetch = original; }
