@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { externalTextSegments, safeExternalUrl, visibleMessageParagraphs, isExternalReferences, referenceNotice, referenceTime } from '../src/chatWeb.ts';
+import { externalTextSegments, safeExternalUrl, visibleMessageParagraphs, isExternalReferences, referenceNotice, referenceTime, isLegacySegmentAnnouncement } from '../src/chatWeb.ts';
 import { readConversation, readWebSettings, writeWebSettings, ApiError } from '../src/api.ts';
 const ref={referenceId:'external-1',title:'<script>alert(1)</script>',url:'https://example.com/jobs/1',content:'岗位原文',retrievedAt:'2026-10-28T00:00:00Z',publishedAt:null,matchStatus:'matched',hiringStatus:'unknown',contentStatus:'partial'};
 test('reference links reject executable, credential and malformed URLs',()=>{
@@ -20,6 +20,16 @@ test('legacy external-reference notice is hidden only from assistant messages',(
   assert.deepEqual(visibleMessageParagraphs(`回复正文\n\n${notice}`,'assistant'),['回复正文']);
   assert.deepEqual(visibleMessageParagraphs(notice,'user'),[notice]);
 });
+test('only standalone legacy assistant segment announcements are hidden',()=>{
+  const old='现在进入第 1 段「字节跳动(抖音)」的修改。';
+  assert.equal(isLegacySegmentAnnouncement(old,'assistant'),true);
+  assert.equal(isLegacySegmentAnnouncement('现在进入「专业技能」的修改。','assistant'),true);
+  assert.equal(isLegacySegmentAnnouncement(old,'user'),false);
+  assert.equal(isLegacySegmentAnnouncement('当前正在处理「字节跳动(抖音)｜AI产品开发实习生」这一段。','assistant'),false);
+  assert.equal(isLegacySegmentAnnouncement(old+'\n你负责什么？','assistant'),false);
+  assert.equal(isLegacySegmentAnnouncement('为什么显示“'+old+'”？','assistant'),false);
+});
+
 test('external references remain optional for older saved conversations but malformed data is rejected',()=>{
   assert.equal(isExternalReferences(undefined),true);assert.equal(isExternalReferences([ref]),true);
   assert.equal(isExternalReferences([{...ref,content:42}]),false);assert.equal(isExternalReferences(null),false);

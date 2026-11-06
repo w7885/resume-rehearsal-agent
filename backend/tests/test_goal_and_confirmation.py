@@ -107,13 +107,14 @@ class GoalAndConfirmationTests(unittest.TestCase):
         self.assertEqual(value['session']['targetDirection'], '临床内科医师')
         self.assertNotIn('这次想投什么岗位', value['messages'][-1]['content'])
 
-    def test_goal_answer_announces_first_segment_before_its_question(self):
+    def test_goal_answer_reaches_question_without_segment_announcement(self):
         session, _, host, _ = self.ready(False)
         goal = self.send(session, '临床内科医师', request_id='goal-answer')
         self.analyze(session, goal, 'goal-answer')
         messages = self.conversation(session)['messages']
-        self.assertEqual(messages[-2]['role'], 'assistant')
-        self.assertIn('现在进入第 1 段', messages[-2]['content'])
+        self.assertFalse(any(m['role'] == 'assistant' and m['content'].startswith('现在进入')
+                             for m in messages))
+        self.assertEqual(self.conversation(session)['session']['targetDirection'], '临床内科医师')
         self.assertEqual(messages[-1]['assistant']['kind'], 'question')
 
     def test_yes_accepts_unique_suggestion_without_model_parsing_and_replays_once(self):

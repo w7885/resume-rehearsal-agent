@@ -2,7 +2,7 @@
 import re
 
 from app.repository import RepositoryError
-from app.resume_structure import DATE, ENTRY_DATE, PROJECT, block_kinds, section_kinds, SECTION_TYPES, heading, inline_kind
+from app.resume_structure import DATE, ENTRY_DATE, PROJECT, block_kinds, section_kinds, SECTION_TYPES, heading, inline_kind, dated_entry_header
 
 NUMBERS = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 ORDINAL = r'(?:第\s*([0-9一二两三四五六七八九十]+)\s*(?:个|项)?\s*项目|项目\s*([0-9一二两三四五六七八九十]+))'
@@ -41,7 +41,8 @@ def project_blocks(repo, context):
             if kind != 'project':
                 continue
             lines = [heading(line) for line in text.splitlines() if line.strip()]
-            if lines and (PROJECT.fullmatch(lines[0]) or inline_kind(lines[0]) == 'project' or DATE.match(lines[0]) or ENTRY_DATE.match(lines[0]) or
+            if lines and (PROJECT.fullmatch(lines[0]) or inline_kind(lines[0]) == 'project' or DATE.match(lines[0]) or ENTRY_DATE.match(lines[0]) or dated_entry_header(lines[0]) or
+                          (len(lines) > 1 and dated_entry_header(lines[0] + ' ' + lines[1])) or
                           (lines[0] in {'项目经历', '项目经验', 'Projects', '项目'} and len(lines) > 1) or
                           (text.lstrip().startswith('#') and re.search(r'系统|平台|工具|助手|App|应用', lines[0]))):
                 result.append(block)

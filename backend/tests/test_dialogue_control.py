@@ -171,7 +171,11 @@ class DialogueControlTests(unittest.TestCase):
         doc.title='学业成绩：绩点3.2'
         self.assertEqual(section_kinds([doc.raw_text]),['project'])
         self.assertIn('数学建模',guided_question(doc,'action'))
-        self.assertIn('数学建模',context_reply(doc))
+        reply = context_reply(doc)
+        self.assertIn(doc.title, reply)
+        self.assertNotIn('原文片段', reply)
+        self.assertNotIn('负责算法设计和代码实现', reply)
+        self.assertIn('负责算法设计和代码实现', doc.raw_text)
 
     def test_ambiguous_short_replies_use_semantics_instead_of_skip_or_confirm_shortcuts(self):
         for text in ('不知道','没有','好','可以'):

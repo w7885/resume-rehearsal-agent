@@ -23,6 +23,132 @@ ENTRY_DATE = re.compile(
     r'(?:\d{4}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)',
     re.I,
 )
+_MONTH = r'\d{4}\s*[.年/-]\s*\d{1,2}\s*月?'
+_PERIOD = re.compile(_MONTH + r'(?:\s*(?:[—–~～-]|至)\s*(?:' + _MONTH + r'|至今|现在|今|present))?', re.I)
+_BULLET = re.compile(r'^\s*(?:[-+*]\s+|[•▸●▪▶])')
+_PROSE = re.compile(r'[。；;！!？?，,]|负责|使用|参与|主导|完成|提升|降低|实现|上线|截至|截止|例如|比如')
+
+
+def _entry_title(text):
+    return bool(text and len(text) <= 110 and not _PROSE.search(text)
+                and not section_kind(text)[0] and not PROJECT.fullmatch(text))
+
+
+def dated_entry_header(line):
+    """A dated organization/project heading, not a dated responsibility sentence."""
+    if _BULLET.match(line):
+        return False
+    label = heading(line)
+    match = _PERIOD.search(label)
+    if match is None:
+        return False
+    before = label[:match.start()].strip(' \t｜|:：—-')
+    after = label[match.end():].strip(' \t｜|:：—-')
+    return bool(_entry_title(before or after) and not _PROSE.search(label))
+
+
+def experience_boundaries(text):
+    """Line indices only: never rewrite headings, dates, whitespace or quotes."""
+    lines = text.splitlines(keepends=True)
+    result, in_experience, fence = set(), False, None
+    for index, line in enumerate(lines):
+        token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
+        if token:
+            mark = token[1]
+            if fence is None:
+                fence = mark
+            elif mark[0] == fence[0] and len(mark) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        label = heading(line)
+        recognized, kind = section_kind(label)
+        if recognized:
+            in_experience = kind is not None
+            continue
+        if PROJECT.fullmatch(label) or inline_kind(label):
+            in_experience = True
+            continue
+        if not in_experience or _BULLET.match(line) or _PROSE.search(label):
+            continue
+        match = _PERIOD.search(label)
+        if match is not None and not label[:match.start()].strip(' \t｜|:：—-'):
+            # Dates may have a city/role suffix. Prefer a preceding title over
+            # splitting that title away; explicit project headings already cut.
+            previous = index - 1
+            while previous >= 0 and not lines[previous].strip():
+                previous -= 1
+            previous_label = heading(lines[previous]) if previous >= 0 else ''
+            if PROJECT.fullmatch(previous_label) or (previous >= 0
+                    and re.match(r'^\s{0,3}#{1,6}\s+', lines[previous])
+                    and _NAMED_ENTRY.search(previous_label)):
+                continue
+            if (previous >= 0 and not _BULLET.match(lines[previous])
+                    and _entry_title(heading(lines[previous]))
+                    and not _PERIOD.search(heading(lines[previous]))):
+                result.add(previous)
+            elif dated_entry_header(line):
+                result.add(index)
+        elif dated_entry_header(line):
+            result.add(index)
+    return result
+
+
+_ROLE_TITLE = re.compile(r'(?:实习生|工程师|经理|设计师|开发者|开发成员|负责人|助理|专员|后端开发|前端开发|独立开发|个人开发)$', re.I)
+_LOCATION = re.compile(r'^(?:工作地点\s*[:：].*|北京|上海|广州|深圳|杭州|成都|南京|武汉|西安|远程)$')
+
+
+def experience_title(markdown, kind='project'):
+    """A display label from original header fields, never an identity or fact key."""
+    fields, explicit = [], {}
+    for line in markdown.splitlines():
+        if not line.strip():
+            continue
+        if _BULLET.match(line):
+            break
+        label = heading(line)
+        compact = re.split(r'[:：]', label, maxsplit=1)
+        if (kind == 'project' and len(compact) == 2
+                and _NAMED_ENTRY.search(compact[0]) and not _PROSE.search(compact[0])):
+            label = compact[0].strip()
+        elif _PROSE.search(label):
+            break
+        if section_kind(label)[0]:
+            continue
+        if PROJECT.fullmatch(label):
+            parts = re.split(r'[:：｜|]', label, maxsplit=1)
+            if len(parts) == 1:
+                continue
+            label = parts[1].strip()
+        labeled = re.match(r'^(项目名称|公司名称|公司|实习岗位|岗位名称|岗位|职位)\s*[:：]\s*(.+)$', label)
+        if labeled:
+            explicit[labeled[1]] = _PERIOD.sub('', labeled[2]).strip(' \t｜|—–-')
+        label = re.sub(r'^(?:项目名称|公司名称|公司|实习岗位|岗位名称|岗位|职位)\s*[:：]\s*', '', label)
+        label = _PERIOD.sub('', label).strip(' \t｜|—–-')
+        if not label or _LOCATION.fullmatch(label):
+            continue
+        cells = [cell.strip() for cell in re.split(r'[｜|]|\s{2,}|\s+[-—–]\s+', label) if cell.strip()]
+        if kind == 'work':
+            cells = [part.strip() for cell in cells for part in re.split(r'\s*[-—–]\s*(?=[^\d])', cell) if part.strip()]
+        for cell in cells:
+            if _LOCATION.fullmatch(cell) or cell.startswith(('Github', 'GitHub', '演示视频')):
+                continue
+            # Some extractors retain just one separator between name and role.
+            pair = cell.rsplit(None, 1)
+            if len(pair) == 2 and _ROLE_TITLE.search(pair[1]):
+                fields.extend(pair)
+            else:
+                fields.append(cell)
+        if len(fields) >= 6:
+            break
+    roles = [field for field in fields if _ROLE_TITLE.search(field)]
+    names = [field for field in fields if not _ROLE_TITLE.search(field)]
+    if kind == 'work':
+        company = next((explicit[key] for key in ('公司名称', '公司') if explicit.get(key)), names[0] if names else '公司待确认')
+        role = next((explicit[key] for key in ('实习岗位', '岗位名称', '岗位', '职位') if explicit.get(key)), roles[0] if roles else '岗位待确认')
+        return f'{company}｜{role}'[:100]
+    return (explicit.get('项目名称') or (names[0] if names else '项目名称待确认'))[:80]
 
 # Section label -> interview kind. None means frozen: parsed, editable, never interviewed.
 _SECTION_KIND = {
@@ -172,7 +298,8 @@ def section_kinds(markdowns):
 def split_resume(text):
     """Keep each heading with its content; preserve every byte-equivalent character."""
     starts, offset, fence, in_experience = [0], 0, None, False
-    for line in text.splitlines(keepends=True):
+    entries = experience_boundaries(text)
+    for line_index, line in enumerate(text.splitlines(keepends=True)):
         token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
         if token:
             mark = token[1]
@@ -184,7 +311,7 @@ def split_resume(text):
             label = heading(line)
             section = bool(SECTION.fullmatch(label)) or bool(inline_kind(label)) or bool(re.match(r'^([^:：]+)[:：].+', label) and re.split(r'[:：]', label, maxsplit=1)[0].strip().lower() in SECTION_TYPES)
             project = bool(PROJECT.fullmatch(label))
-            dated_entry = in_experience and bool(ENTRY_DATE.match(label))
+            dated_entry = line_index in entries
             named_entry = in_experience and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(_NAMED_ENTRY.search(label))
             if (section or project or dated_entry or named_entry) and offset and text[starts[-1]:offset].strip():
                 starts.append(offset)
