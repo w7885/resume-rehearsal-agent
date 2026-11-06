@@ -291,6 +291,7 @@ class Runtime:
         self.advance_after_skip = False
         self.revision_target = None
         self.web_bridge = None
+        self.web_ownership = None
         self._reminded_this_run = False
 
     def _emit(self, kind, payload, connection=None):
@@ -819,8 +820,8 @@ class Runtime:
                 self.finish('done', 'completed')
                 return
             from app.agent_social import handle as handle_social
-            from app.web_intake_host import owns_turn as owns_web_turn
-            web_owned = owns_web_turn(self, turn)
+            from app.web_intake_host import resolve_ownership
+            web_owned = await resolve_ownership(self, turn)
             if not web_owned and handle_social(self, turn):
                 self.finish('done', 'waiting_user' if self.waiting else 'completed')
                 return
