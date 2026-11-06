@@ -24,14 +24,20 @@ def _clean(text):
     return (text or '').strip().rstrip('。！!')
 
 
+_TITLE_SIGNAL = re.compile(r'^\s{0,3}#{1,6}\s+|^\*\*.+\*\*$|[|｜]|\s{2,}')
+
+
 def _experience_title(markdown):
-    """只外发真正的标题行。_block_title 会把正文首行当标题，
-    含句读或过长的那行其实是简历正文，改用占位名。"""
+    """首行须有明确标题信号（Markdown 标题、加粗、表格分隔）才外发；
+    短正文行与标题无法区分，未识别就只给占位名，绝不能把正文送出本机。"""
     first = next((line.strip() for line in (markdown or '').splitlines()
                   if line.strip()), '')
-    if not first or len(first) > 40 or re.search(r'[，,。；;！？!?]', first):
+    if not first or not _TITLE_SIGNAL.search(first):
         return '未命名经历'
-    return _block_title(markdown)
+    title = re.split(r'\s{2,}|[|｜]', _block_title(markdown))[0].strip()
+    if not title or len(title) > 20 or re.search(r'[，,。；;！？!?]', title):
+        return '未命名经历'
+    return title
 
 
 def _selection_or_edit(value, state=None):

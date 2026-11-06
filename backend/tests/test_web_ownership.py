@@ -6,7 +6,8 @@ import unittest
 from app import web_intake
 from app.agent.llm import LLMError
 from app.web_citations import goal_state
-from app.web_ownership import _model_ownership, classify_ownership, classify_text, resolve_ownership
+from app.web_ownership import (_experience_title, _model_ownership, classify_ownership,
+                               classify_text, resolve_ownership)
 from app.web_target import _put
 import test_web_storage
 
@@ -35,6 +36,18 @@ class DeterministicOwnershipTests(unittest.TestCase):
 
     def test_number_outside_selection_is_not_a_selection(self):
         self.assertIsNone(classify_text('第二段', {'phase': 'ready', 'candidates': []}))
+
+    def test_experience_title_forwards_only_unambiguous_headings(self):
+        for markdown, expected in (
+                ('三人团队开发校园报名工具，我负责需求整理，协助页面开发。', '未命名经历'),
+                ('负责后端接口开发', '未命名经历'),
+                ('- 整理用户反馈并合并需求', '未命名经历'),
+                ('某大学 计算机科学与技术', '未命名经历'),
+                ('# 校园报名工具', '校园报名工具'),
+                ('**校园报名工具**', '校园报名工具'),
+                ('校园报名工具    2024.03', '校园报名工具')):
+            with self.subTest(markdown=markdown):
+                self.assertEqual(_experience_title(markdown), expected)
 
     def test_decline_and_deterministic_requests(self):
         self.assertEqual(classify_text('不查了', None), {'decision': 'decline'})
