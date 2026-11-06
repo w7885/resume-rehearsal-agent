@@ -1,3 +1,4 @@
+import { apiFetch } from './authTransport.ts';
 import { ApiError, requestId } from './api.ts';
 
 export type WebControlRequest = { requestId: string; expectedStateRevision: number; webSettingsRevision: number };
@@ -22,7 +23,7 @@ export class ChatAgentOperation {
   private transport: typeof fetch;
   private control?: WebControlRequest;
   constructor(sessionId: string, userMessageId: string, revision: number,
-    notify: () => void = () => {}, transport: typeof fetch = (input, init) => globalThis.fetch(input, init), control?: WebControlRequest) {
+    notify: () => void = () => {}, transport: typeof fetch = apiFetch, control?: WebControlRequest) {
     this.sessionId = sessionId; this.userMessageId = userMessageId; this.revision = revision;
     this.notify = notify; this.transport = transport;
     if (control) {

@@ -30,8 +30,9 @@ def error_response(code, message, status_code, *, recoverable=True, fields=None)
 
 class LocalRequestGuard:
     """Local host/origin checks and bounded bodies, before JSON parsing."""
-    def __init__(self, app):
+    def __init__(self, app, remote=False):
         self.app = app
+        self.remote = remote
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -40,7 +41,7 @@ class LocalRequestGuard:
         host = headers.get(b"host", "")
         origin = headers.get(b"origin")
         allowed_origins = {f"http://{hostname}:{port}" for hostname in ("127.0.0.1", "localhost") for port in (5173, 3001)}
-        if not re.fullmatch(r"(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?", host) or (origin and origin not in allowed_origins) or headers.get(b"sec-fetch-site") == "cross-site":
+        if not self.remote and (not re.fullmatch(r"(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?", host) or (origin and origin not in allowed_origins) or headers.get(b"sec-fetch-site") == "cross-site"):
             return await error_response("scope_violation", "只接受本机工作台的请求。", 403, recoverable=False)(scope, receive, send)
         method = scope["method"]
         if method not in {"POST", "PUT", "PATCH", "DELETE"}:

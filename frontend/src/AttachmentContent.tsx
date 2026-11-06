@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import * as api from './api';
 import { attachmentText, AttachmentImagePreview } from './attachmentPreview';
 import MarkdownPreview from './MarkdownPreview';
+import { ProtectedImage } from './ProtectedMedia';
 import type { ChatMaterial } from './types';
 
 function ImageContent({ sid, material }: { sid: string; material: ChatMaterial }) {
@@ -16,7 +17,7 @@ function ImageContent({ sid, material }: { sid: string; material: ChatMaterial }
   }, [operation, attempt]);
   const incomplete = !busy && value && (value.pages.some(page => page.status !== 'ready') || (value.pageCount ?? 0) > value.limit);
   return <div className="cp-attachment-content">
-    {value?.pages.filter(page => page.status === 'ready').map(page => <img key={`${page.page}-${attempt}`} src={`${api.materialPageUrl(sid, material.materialId, page.page)}?view=${attempt}`} alt="附件内容" onError={() => setBroken(true)} />)}
+    {value?.pages.filter(page => page.status === 'ready').map(page => <ProtectedImage key={`${page.page}-${attempt}`} url={`${api.materialPageUrl(sid, material.materialId, page.page)}?view=${attempt}`} onError={() => setBroken(true)} />)}
     {busy && <p className="cp-attachment-loading" role="status">正在打开附件…</p>}
     {(error || incomplete || broken) && <div className="cp-attachment-unavailable" role="alert"><p>部分内容暂时无法显示，可重试或下载原文件查看。</p><button onClick={() => setAttempt(value => value + 1)}>重试</button></div>}
   </div>;

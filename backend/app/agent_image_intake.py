@@ -30,5 +30,5 @@ async def recognize(runtime, user_content):
                 bound.save_source(RequestContext(runtime.sid, session['state_revision']), text=text, role='unknown', use_status='pending', origin={'kind': 'material', 'materialId': image['attachment_id'], 'page': 1, 'lineStart': 1, 'lineEnd': len(text.splitlines())})
             bound._touch(connection, runtime.sid)
             current = bound.get_session(RequestContext(runtime.sid))
-            connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)', (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
+            connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation', (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
         runtime._continue()

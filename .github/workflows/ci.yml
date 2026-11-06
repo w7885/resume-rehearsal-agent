@@ -39,3 +39,33 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: resume_test_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d resume_test_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      APP_MODE: local
+      AGENT_ENABLED: '0'
+      AGENT_BUDGET_CONFIRMED: '0'
+      PYTHONUTF8: '1'
+      RESUME_TEST_POSTGRES_URL: postgresql://postgres@127.0.0.1:5432/resume_test_ci
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m unittest discover -s tests -p test_postgres.py -v
+        working-directory: backend

@@ -1,7 +1,8 @@
+import { apiFetch } from './authTransport.ts';
 export type Health = { status: 'ok'; model_configured: boolean };
 
 export async function readHealth(signal: AbortSignal): Promise<Health> {
-  const response = await fetch('/api/health', { signal, cache: 'no-store' });
+  const response = await apiFetch('/api/health', { signal, cache: 'no-store' });
   if (!response.ok) throw new Error('服务暂时无法响应，请稍后重新检查。');
   const body: unknown = await response.json();
   if (
@@ -51,7 +52,7 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(url, { method, signal: controller.signal, cache: 'no-store',
+    const response = await apiFetch(url, { method, signal: controller.signal, cache: 'no-store',
       headers: body === undefined && raw === undefined ? undefined : { 'Content-Type': raw ? raw.type || 'application/octet-stream' : 'application/json' },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
     if (response.status === 404 && (url.endsWith('/web-settings') || url.endsWith('/web-continuation'))) throw new ApiError('当前后端不支持该联网功能。', 'not_found');
@@ -95,7 +96,7 @@ export async function readRenameSupport(): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: controller.signal });
+    const response = await apiFetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: controller.signal });
     if (response.status === 204) return true;
     return (response.ok || response.status === 405) && (response.headers.get('Allow') ?? '').split(',').some(method => method.trim() === 'PATCH');
   } catch { return false; }

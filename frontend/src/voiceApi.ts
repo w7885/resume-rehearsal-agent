@@ -1,9 +1,10 @@
+import { apiFetch } from './authTransport.ts';
 export type VoiceStatus = { available: boolean; language: string; maxSeconds: number; reason: string | null };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 async function request(url: string, signal: AbortSignal, audio?: Blob): Promise<Record<string, unknown>> {
   let response: Response;
-  try { response = await fetch(url, { method: audio ? 'POST' : 'GET', signal, cache: 'no-store',
+  try { response = await apiFetch(url, { method: audio ? 'POST' : 'GET', signal, cache: 'no-store',
     headers: audio ? { 'Content-Type': 'audio/wav' } : undefined, body: audio }); }
   catch (error) { if (signal.aborted) throw error; throw new Error('暂时无法连接本地语音服务，已有文字仍保留。'); }
   const result: unknown = await response.json().catch(() => null);

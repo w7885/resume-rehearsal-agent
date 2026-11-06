@@ -155,6 +155,13 @@ class AgentHost:
             return {'requestId': request_id, 'runId': row['root_run_id'], 'status': row['status'], 'outcome': row['outcome'], 'events': events}
 
     async def cancel(self, run_id):
+        from app.auth import current_user
+        if current_user.get() is not None:
+            with database(self.repo.path) as connection:
+                owner = connection.execute('SELECT session_id FROM runs WHERE run_id=?', (run_id,)).fetchone()
+                if owner is None:
+                    raise RepositoryError('source_not_found', '分析记录不存在。')
+                self.repo._check_context(connection, RequestContext(owner['session_id']))
         from app.web_control import cancel_if_control
         controlled = await cancel_if_control(self, run_id)
         if controlled is not None:
@@ -417,7 +424,7 @@ class Runtime:
                 bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial))
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
-            connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
+            connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
     REMINDER_PREFIX = '另有一条改写等你确认'

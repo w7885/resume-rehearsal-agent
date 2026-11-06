@@ -12,7 +12,7 @@ def _load(connection, session_id, key):
 
 def _put(connection, session_id, key, value):
     connection.execute('''INSERT INTO agent_state(session_id,scope,key,revision,doc_json) VALUES (?,'session',?,1,?)
-        ON CONFLICT(session_id,scope,key) DO UPDATE SET revision=revision+1,doc_json=excluded.doc_json''',
+        ON CONFLICT(session_id,scope,key) DO UPDATE SET revision=agent_state.revision+1,doc_json=excluded.doc_json''',
         (session_id,key,json.dumps(value,ensure_ascii=False)))
 
 
