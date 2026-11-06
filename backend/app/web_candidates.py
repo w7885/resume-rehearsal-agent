@@ -128,7 +128,8 @@ def record_prompt(connection, session, *, episode_id, expected_revision, message
     return state
 
 
-def select(connection, session, *, episode_id, expected_revision, user_message_id):
+def select(connection, session, *, episode_id, expected_revision, user_message_id,
+           choice_index=None):
     state = _state(connection, session, episode_id, expected_revision)
     prompt = state.get('candidatePrompt')
     row = connection.execute('''SELECT rowid,content,reply_to_message_id FROM messages WHERE session_id=?
@@ -140,19 +141,22 @@ def select(connection, session, *, episode_id, expected_revision, user_message_i
             or row['reply_to_message_id'] not in (None, prompt['messageId'])):
         raise RepositoryError('stale_state', '选择必须回复当前候选询问。')
     text = row['content'].strip().rstrip('。！!')
-    match = re.fullmatch(r'(?:我)?(?:就)?(?:选择|选)?(?:第)?\s*([123一二三])\s*(?:个|项|号)?(?:吧)?', text)
-    chosen = None
-    index = 0
-    if match:
-        index = int(match[1]) if match[1].isdigit() else {'一': 1, '二': 2, '三': 3}[match[1]]
-    if index and index <= len(state['candidates']):
-        chosen = state['candidates'][index - 1]
-    elif len(state['candidates']) == 1 and text in {'是', '是的', '就这个', '确认这个', '确认'}:
-        chosen = state['candidates'][0]
+    # 归属判定给出的编号优先：正文可能只是“帮我看看简历”，但用户点的就是某个候选。
+    if choice_index is not None:
+        if (type(choice_index) is not int
+                or not 1 <= choice_index <= len(state['candidates'])):
+            raise RepositoryError('ambiguous_selection', '请明确选择候选编号，或补充搜索条件。')
+        chosen = state['candidates'][choice_index - 1]
     else:
-        exact = [c for c in state['candidates'] if text in {
-            c['candidateId'], c['company'] + ' ' + c['role'], c['company'] + c['role']}]
-        chosen = exact[0] if len(exact) == 1 else None
+        # 与归属判定共用同一套选择解析，避免两处规则漂移。
+        index = parse_choice(text)
+        chosen = state['candidates'][index - 1] if index and index <= len(state['candidates']) else None
+        if chosen is None and len(state['candidates']) == 1 and text in _CONFIRM:
+            chosen = state['candidates'][0]
+        if chosen is None:
+            exact = [c for c in state['candidates'] if text in {
+                c['candidateId'], c['company'] + ' ' + c['role'], c['company'] + c['role']}]
+            chosen = exact[0] if len(exact) == 1 else None
     if chosen is None:
         raise RepositoryError('ambiguous_selection', '请明确选择候选编号，或补充搜索条件。')
     _reference(connection, session, state, chosen['referenceId'])

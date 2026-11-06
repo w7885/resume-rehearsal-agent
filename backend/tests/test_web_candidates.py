@@ -48,11 +48,12 @@ class CandidateTests(unittest.TestCase):
             return candidates.record_prompt(c, s, episode_id=state['episodeId'],
                 expected_revision=state['revision'], message_id='choice-prompt')
 
-    def choose(self, state, text='1'):
+    def choose(self, state, text='1', message_id='choice-answer'):
         with self.repo._operation(self.context, write=True) as (c, s):
-            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-answer',?,'user',?,'chat')", (self.sid, text))
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES (?,?,'user',?,'chat')",
+                      (message_id, self.sid, text))
             return candidates.select(c, s, episode_id=state['episodeId'],
-                expected_revision=state['revision'], user_message_id='choice-answer')
+                expected_revision=state['revision'], user_message_id=message_id)
 
     def test_offer_requires_selection_even_with_one_result(self):
         state = self.offered()
@@ -71,6 +72,49 @@ class CandidateTests(unittest.TestCase):
         with database(self.path) as c:
             self.assertEqual(c.execute('select count(*) from external_assessments').fetchone()[0], 0)
         self.assertEqual(self.repo.get_draft(self.user), before)
+
+    def reprompt(self, state, suffix):
+        """select 成功后阶段已推进；重新展示候选以便复用同一用例测多种说法。"""
+        with self.repo._operation(self.context, write=True) as (c, s):
+            state = candidates.offer(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], candidates=[self.candidate])
+            prompt_id = 'choice-prompt-' + suffix
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES (?,?,'assistant',?,'chat')",
+                      (prompt_id, self.sid, candidates.question(state)))
+            c.execute("INSERT INTO assistant_messages VALUES (?, ?, 'user-link', 'run-test-001', 'question', 'host', ?, ?, ?, '[]')",
+                      (self.sid, prompt_id, s['state_revision'], s['draft_revision'], s['current_resume_generation']))
+            return candidates.record_prompt(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], message_id=prompt_id)
+
+    def test_segment_word_selects_candidate_without_switching_experience(self):
+        state = self.prompted()
+        for index, text in enumerate(('第一段', '第1个岗位', '1'), start=1):
+            with self.subTest(text=text):
+                if index > 1:
+                    state = self.reprompt(state, str(index))
+                chosen = self.choose(state, text, f'choice-{index}')
+                self.assertEqual(chosen['selectedCandidateId'],
+                                 state['candidates'][0]['candidateId'])
+                state = chosen
+
+    def test_explicit_choice_index_ignores_message_text(self):
+        state = self.prompted()
+        with self.repo._operation(self.context, write=True) as (c, s):
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-index',?,'user','随便','chat')", (self.sid,))
+            chosen = candidates.select(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], user_message_id='choice-index',
+                choice_index=1)
+        self.assertEqual(chosen['selectedCandidateId'], state['candidates'][0]['candidateId'])
+
+    def test_choice_index_out_of_range_is_ambiguous(self):
+        state = self.prompted()
+        with self.assertRaises(RepositoryError) as error:
+            with self.repo._operation(self.context, write=True) as (c, s):
+                c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-range',?,'user','1','chat')", (self.sid,))
+                candidates.select(c, s, episode_id=state['episodeId'],
+                    expected_revision=state['revision'], user_message_id='choice-range',
+                    choice_index=3)
+        self.assertEqual(error.exception.code, 'ambiguous_selection')
 
     def test_generic_continue_is_not_candidate_selection(self):
         state = self.prompted()

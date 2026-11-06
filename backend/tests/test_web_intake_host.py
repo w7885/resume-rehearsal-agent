@@ -200,6 +200,27 @@ class IntakeHostTests(unittest.TestCase):
             self.assertFalse(c.execute("SELECT 1 FROM source_blocks WHERE session_id=? AND role='supplement' AND text='第一个'",
                                        (session['sessionId'],)).fetchone())
 
+    def test_unbound_ordinary_text_keeps_candidate_state(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        self.user_turn(session, '帮我看看简历', 'ordinary')
+        value = self.conversation(session)
+        with database(self.path) as c:
+            state = web_intake.load(c, session['sessionId'])
+        self.assertEqual(state['phase'], 'awaiting_selection')
+        self.assertIsNone(state['selectedCandidateId'])
+        # 普通输入不再被重问候选；常规路由可能按已给方向再查一次岗位，但不会读取候选正文。
+        self.assertNotIn('候选编号', value['messages'][-1]['content'])
+        self.assertFalse(any('Url' in request for request in self.sent))
+
+    def test_unbound_segment_word_selects_without_switching_experience(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        self.user_turn(session, '第一段', 'segment')
+        self.assertEqual(len(self.sent), 2)
+        with database(self.path) as c:
+            self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'ready')
+
     def test_single_candidate_yes_is_not_swallowed_by_social_router(self):
         session = self.ready()
         self.user_turn(session, '请按目标岗位整理技能。', 'explore')

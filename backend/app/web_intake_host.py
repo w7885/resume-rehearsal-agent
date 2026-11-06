@@ -246,8 +246,13 @@ class Intake:
         if not enabled or not self.service.settings.available:
             return 'unchanged'
         text = turn['userMessage']['content'].strip()
+        # 归属判定由 Task 3 写入 runtime；turn 重取可能丢失 webOwnership，故读运行时权威值。
+        ownership = getattr(self.r, 'web_ownership', None) or {}
+        decision = ownership.get('decision')
+        if decision in {'edit_experience', 'normal'}:
+            return 'unchanged'
         # 与 target 提示共用同一归一化，避免“不查了”这类短拒绝只在一处被识别
-        if web_intake.is_web_decline(text):
+        if decision == 'decline' or web_intake.is_web_decline(text):
             self.service._episode(self.r.context, 'no-public-target')
             self.update(phase='deferred', outcomeCode='user_deferred')
             with self.r.repo._operation(self.r.context, write=True) as (c, s):
@@ -258,7 +263,7 @@ class Intake:
         if old and (old['intentHash'] != goal['baseHash'] or old['permissionRevision'] != revision):
             self.service._episode(self.r.context, 'changed-intent')
             old = self.state()
-        explicit_change = bool(len(text) <= 200 and '\n' not in text and re.match(
+        explicit_change = decision == 'web_request' or bool(len(text) <= 200 and '\n' not in text and re.match(
             r'^(?:我(?:这次|现在)?(?:想|准备|打算|要)?(?:投|应聘|申请)|(?:换|改成|改为|目标|求职方向)[：:\s])', text))
         retry = bool(re.fullmatch(r'(?:重新搜索|重试联网|开始搜索)[。！!]*', text))
         if old and old['phase'] == 'deferred' and not retry and not explicit_change:
@@ -327,11 +332,17 @@ class Intake:
             if previous and previous['status'] != 'pending':
                 outcome = await self.direct({'bindingId': old['linkBindingId'], 'url': old['linkUrl']}, previous=previous)
                 return 'resumed_ready' if outcome == 'ready' else outcome
+        # 只有归属判定明确交给候选选择才消费输入；其余输入回普通路由并保留候选状态。
+        if decision == 'select_candidate' and not old:
+            return 'unchanged'
         if old and old['phase'] == 'awaiting_selection' and not explicit_change:
+            if decision != 'select_candidate':
+                return 'unchanged'
             try:
                 with self.r.repo._operation(self.r.context, write=True) as (c, s):
                     state = web_candidates.select(c, s, episode_id=old['episodeId'],
-                        expected_revision=old['revision'], user_message_id=self.r.user_id)
+                        expected_revision=old['revision'], user_message_id=self.r.user_id,
+                        choice_index=ownership.get('index'))
             except RepositoryError as error:
                 if error.code != 'ambiguous_selection':
                     raise
