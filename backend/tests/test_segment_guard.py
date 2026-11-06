@@ -84,6 +84,16 @@ class RequirementEvidenceGuardTests(unittest.TestCase):
         result = check(evidence_ask(), evidence_state(followups=['responsibility']))
         self.assertEqual(result.violation.code, 'question_declined')
 
+    def test_non_declined_slot_followup_allowed_only_once(self):
+        # partial/uncertain 槽不在 declined 中，但“每槽一次”上限同样生效：
+        # 第一次带合法证据放行，换措辞再次追问同一槽要被拦。
+        self.assertIsNone(check(evidence_ask(), evidence_state(declined=False)).violation)
+        second = evidence_ask(
+            message='岗位要求提到「排期推进」，你有推进排期的经历吗？')
+        result = check(second, evidence_state(declined=False,
+                                              followups=['responsibility']))
+        self.assertEqual(result.violation.code, 'question_repeat')
+
     def test_declined_slot_without_evidence_stays_blocked(self):
         result = check(AskStep(action='ask_user', message='你负责哪部分？',
                                slot='responsibility'), evidence_state())

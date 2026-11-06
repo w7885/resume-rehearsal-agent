@@ -341,9 +341,15 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
             step.slot == "effect"
             and effect_state(state.focus_doc) == "followup"
         )
-        if step.slot in state.focus_doc.declined and not exempt_effect_followup:
-            if not evidence or step.slot in state.focus_doc.requirement_followups:
+        declined_block = step.slot in state.focus_doc.declined and not exempt_effect_followup
+        if declined_block and not evidence:
+            return Violation("question_declined", "该维度已被用户拒绝")
+        # “每槽一次”上限对所有槽生效，而非仅 declined：否则换种措辞再带证据即可反复追问
+        # partial/uncertain 槽。declined 槽沿用“已拒绝”语义，其余槽报重复。
+        if evidence and step.slot in state.focus_doc.requirement_followups:
+            if declined_block:
                 return Violation("question_declined", "该维度已被用户拒绝")
+            return Violation("question_repeat", "该维度已用岗位要求追问过一次")
         recent = state.focus_doc.questions[-3:]
         if any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
