@@ -4,6 +4,7 @@ import unittest
 from app.agent.guard import GuardState, check
 from app.agent.memory import ExperienceDoc, Fact, Question
 from app.agent.ports import DraftBlock, SessionContext, SessionInfo
+from app.agent.questions import requirement_question
 from app.agent.schemas import AskStep, StepDecisionAdapter
 
 BEFORE = '参与接口测试。'
@@ -83,6 +84,20 @@ class RequirementEvidenceGuardTests(unittest.TestCase):
     def test_same_slot_cannot_be_followed_up_twice(self):
         result = check(evidence_ask(), evidence_state(followups=['responsibility']))
         self.assertEqual(result.violation.code, 'question_declined')
+
+    def test_other_slot_requirement_followup_is_not_a_repeat(self):
+        # 要求型模板只随槽位标签变化，跨槽相似度很高；另一个槽的首次追问
+        # 不能被“最近问过类似问题”误拦，每槽各应有一次机会。
+        state = evidence_state(followups=['responsibility'])
+        first = state.focus_doc.questions[0]
+        first.text = requirement_question(REQUIREMENTS[0]['quote'], 'responsibility')
+        first.evidence_ref = 'req-1'
+        first.evidence_quote = REQUIREMENTS[0]['quote']
+        ask = evidence_ask(
+            slot='action',
+            message=requirement_question(REQUIREMENTS[0]['quote'], 'action'),
+            evidence_quote=REQUIREMENTS[0]['quote'])
+        self.assertIsNone(check(ask, state).violation)
 
     def test_non_declined_slot_followup_allowed_only_once(self):
         # partial/uncertain 槽不在 declined 中，但“每槽一次”上限同样生效：

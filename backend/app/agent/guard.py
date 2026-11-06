@@ -351,7 +351,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
                 return Violation("question_declined", "该维度已被用户拒绝")
             return Violation("question_repeat", "该维度已用岗位要求追问过一次")
         recent = state.focus_doc.questions[-3:]
-        if any(question_similarity(q.text, text) >= 0.6 for q in recent):
+        # 要求型模板只因槽位标签不同而高度相似；跨槽的首次追问不应被
+        # 相似度误判为重复。每槽一次的上限已由上方 requirement_followups 单独保证。
+        if not evidence and any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
             supported = supported_experience_slots(state.focus_doc,
