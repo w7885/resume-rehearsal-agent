@@ -442,6 +442,10 @@ class Runtime:
         candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
             return False
+        # 先尊重外层意图：用户问用法/要求切段/要求澄清/要求整体改写时，先处理这句话；
+        # 只有 answer/correct 才可能需要解析“采用、拒绝或调整”（skip 仍走 KEEP_NEXT 既有路径）。
+        if out is not None and out.intent in {'meta', 'chitchat', 'focus', 'clarify', 'global_edit'}:
+            return False
         from app.agent_edit_scope import resolve_scope
         allowed = resolve_scope(self.repo, self.context)
         if allowed is not None and not any(s['target']['blockId'] in allowed for p in candidates for s in p['suggestions']):
@@ -538,8 +542,16 @@ class Runtime:
         if not progress['blocks']:
             self._reply('当前简历没有可改写的段落；基本信息、教育、获奖按原文保留。可以上传简历，或粘贴项目／工作经历、技能、自我评价等内容。', 'question')
             return 'completed'
-        if progress['pending'] and (out is None or out.intent not in {'meta', 'chitchat'}):
+        # 有待确认建议时，只拦会生成新建议的意图；meta/focus/clarify 先响应用户这句话。
+        if progress['pending'] and (out is None or out.intent in {'answer', 'correct', 'global_edit', 'skip'}):
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
+            return 'completed'
+        # 有待确认建议时，focus 只确认目标段名，不真正切段，避免“待确认建议跨段”。
+        if progress['pending'] and out is not None and out.intent == 'focus':
+            block = next((b for b in progress['blocks'] if b['blockId'] == out.target_experience_id), None)
+            name = _block_title(block['markdown']) if block else '目标段'
+            self._reply(f'你指的是「{name}」这一段；当前有待确认的改写，请先采用、拒绝或说明调整要求。',
+                        'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
         keep_next = command in KEEP_NEXT
         if keep_next and progress['waiting']:
@@ -650,6 +662,8 @@ class Runtime:
                 section = event.payload
                 section_external_ids = event.payload.get('external_reference_ids', [])
             elif event.type == 'error':
+                # 内层错误事件目前被丢弃，只剩通用提示；记录原始 code/message 便于定位。
+                logger.error('agent error event: %s', event.payload)
                 if not saved:
                     raise RepositoryError('agent_failed', '下一步分析未完成，已保存的改写不会回滚。')
             elif event.type == 'run_finished':
@@ -838,6 +852,8 @@ class Runtime:
         except asyncio.CancelledError:
             self.finish('interrupted','cancelled',check=False)
         except Exception as error:
+            # 现有实现只回通用提示，不记录原因；补一条日志便于定位（不影响用户可见文案）。
+            logger.exception('agent run failed: %s', getattr(error, 'code', type(error).__name__))
             try:
                 if isinstance(error, RepositoryError) and error.code == 'edit_scope_ambiguous':
                     self._reply(error.message, 'question')

@@ -506,9 +506,18 @@ async def _execute(
             None,
         )
         if pending is not None:
-            repo.apply_suggestion_decision(
-                pending.suggestion_id, "reject", "message", message_id
-            )
+            try:
+                repo.apply_suggestion_decision(
+                    pending.suggestion_id, "reject", "message", message_id
+                )
+            except Exception as error:
+                # 内层没有写权限：有待确认建议时交回外层，避免落到通用失败提示。
+                if getattr(error, 'code', None) != 'scope_violation':
+                    raise
+                sink.emit('notice', code='confirm_deferred',
+                          text='当前有待确认的改写，请先采用、拒绝或说明调整要求。')
+                close('waiting_user', action=action)
+                return
 
     if action in ('answer', 'refuse'):
         question = _asked_question(focus_doc)

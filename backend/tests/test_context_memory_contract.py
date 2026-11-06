@@ -115,7 +115,7 @@ class MemoryContractTests(unittest.TestCase):
                 else:
                     self.assertIsNone(result.violation)
         question = with_answer_guidance('模糊查询这部分，你做了什么？', doc, 'action')
-        self.assertIn('先说最熟悉的一件', question)
+        self.assertIn('挑一件具体的事说', question)
         doc.questions.append(Question(id='q1', slot='action', text=question, fingerprint='q'))
         repeat = AskStep(action='ask_user', message='模糊查询这部分，你做了什么？可以先选实现或测试。', slot='action')
         self.assertEqual(check(repeat, state).violation.code, 'question_repeat')

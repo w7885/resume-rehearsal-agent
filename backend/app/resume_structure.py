@@ -23,6 +23,16 @@ ENTRY_DATE = re.compile(
     r'(?:\d{4}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)',
     re.I,
 )
+# Image/PDF extracts often put the period after the title: "公司 - 岗位 2024.07 - 至今".
+_TRAILING_ENTRY_DATE = re.compile(
+    r'(?:19|20)\d{2}\s*[.年/-]\s*\d{1,2}\s*月?\s*(?:[—–~～-]|至)\s*'
+    r'(?:(?:19|20)\d{2}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)\s*$',
+    re.I,
+)
+
+
+def entry_dated(label):
+    return bool(ENTRY_DATE.match(label) or _TRAILING_ENTRY_DATE.search(label))
 
 # Section label -> interview kind. None means frozen: parsed, editable, never interviewed.
 _SECTION_KIND = {
@@ -56,7 +66,8 @@ def heading(line):
     if label.startswith('**') and label.endswith('**'):
         label = label[2:-2].strip()
     # NFKC folds Kangxi radicals (⼈⽬) and full-width punctuation back to normal text.
-    return _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
+    label = _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
+    return re.sub(r'^</>\s*', '', label)
 
 
 def section_kind(label):
@@ -78,6 +89,18 @@ def inline_kind(label):
         return None
     key = match.group(0).rstrip(' :：').lower()
     return _SECTION_KIND.get(key)
+
+
+_ENTRY_TITLE_DECOR = re.compile(r'^[\s\-*•·●▪◆◇▸▹►]')
+
+
+def _entry_title(raw, label):
+    """A date on its own line belongs to the title line above it."""
+    if not label or len(label) > 60 or label.endswith(('：', ':')):
+        return False
+    if _ENTRY_TITLE_DECOR.match(raw) or entry_dated(label):
+        return False
+    return not section_kind(label)[0] and not PROJECT.fullmatch(label)
 
 
 def block_kinds(markdowns):
@@ -114,7 +137,7 @@ def block_kinds(markdowns):
         if section is not None:
             kinds.append(None if section == 'frozen' else section)
             continue
-        if (ENTRY_DATE.match(label) or (
+        if (entry_dated(label) or (
             re.match(r'^\s{0,3}#{1,6}\s+', first) and _NAMED_ENTRY.search(label)
         )) and len(lines) > 1:
             seen = True
@@ -172,6 +195,7 @@ def section_kinds(markdowns):
 def split_resume(text):
     """Keep each heading with its content; preserve every byte-equivalent character."""
     starts, offset, fence, in_experience = [0], 0, None, False
+    previous = None
     for line in text.splitlines(keepends=True):
         token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
         if token:
@@ -184,12 +208,18 @@ def split_resume(text):
             label = heading(line)
             section = bool(SECTION.fullmatch(label)) or bool(inline_kind(label)) or bool(re.match(r'^([^:：]+)[:：].+', label) and re.split(r'[:：]', label, maxsplit=1)[0].strip().lower() in SECTION_TYPES)
             project = bool(PROJECT.fullmatch(label))
-            dated_entry = in_experience and bool(ENTRY_DATE.match(label))
+            dated_entry = in_experience and entry_dated(label)
             named_entry = in_experience and bool(re.match(r'^\s{0,3}#{1,6}\s+', line)) and bool(_NAMED_ENTRY.search(label))
-            if (section or project or dated_entry or named_entry) and offset and text[starts[-1]:offset].strip():
-                starts.append(offset)
+            boundary = offset
+            if (in_experience and ENTRY_DATE.match(label) and previous is not None
+                    and previous[0] >= starts[-1] and _entry_title(previous[1], previous[2])):
+                boundary = previous[0]
+            if (section or project or dated_entry or named_entry) and boundary > starts[-1] and text[starts[-1]:boundary].strip():
+                starts.append(boundary)
             if section:
                 in_experience = section_kind(label)[1] is not None or inline_kind(label) is not None
+            if label:
+                previous = (offset, line, label)
         offset += len(line)
     starts.append(len(text))
     return [text[a:b] for a, b in zip(starts, starts[1:]) if text[a:b].strip()]
