@@ -389,3 +389,23 @@ class UncertainSpanNormalizeTests(unittest.TestCase):
         result = normalize(out, message=message, docs=_docs(), phases={}, suggestion_ids=set())
         self.assertEqual(result.answer_quality, 'partial')
         self.assertEqual(result.uncertain_spans, ['具体线上效果忘了。'])
+
+
+from app.agent.prompts import build_decide_prompt, build_router_prompt, build_system_prompt
+
+
+class PromptContractTests(unittest.TestCase):
+    def test_router_prompt_defines_answer_quality(self):
+        prompt = build_router_prompt()
+        self.assertIn('answer_quality', prompt)
+        self.assertIn('uncertain_spans', prompt)
+        self.assertIn('逐字', prompt)
+
+    def test_decide_prompt_allows_verbatim_requirement_evidence(self):
+        prompt = build_decide_prompt('')
+        self.assertIn('evidence_quote', prompt)
+        self.assertIn('evidence_ref', prompt)
+        self.assertIn('每维度最多这样追问一次', prompt)
+
+    def test_system_prompt_limits_requirement_followup(self):
+        self.assertIn('可逐字引用的岗位要求', build_system_prompt())

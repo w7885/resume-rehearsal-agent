@@ -35,6 +35,14 @@
 `reply` 只允许在 `intent` 为 `meta` 或 `chitchat` 时使用，用一句话回应用户的疑问；
 不含数字、不含新的事实、不承诺采用或改写。
 
+## 回答质量
+
+- `answer_quality` 只在 `intent` 为 `answer` 或 `skip` 且给出 `answer_quote` 时填写：
+  `full` 完整回答；`partial` 只答了一部分；`uncertain` 整段都记不清；`absent` 明确没有；`refused` 明确拒答。
+- `uncertain_spans` 逐字摘出回答中表示不确定的短句，最多 5 条、每条不超过 200 字。
+  不得改写、拼接或补全；用户没有说过的话不能放进来。
+- 长回答里只有一句“效果忘了”时，整体是 `partial`，不是 `uncertain`。
+
 ## pending_resolution
 
 {"decision": "accept | reject | revise | null",
@@ -58,7 +66,8 @@
 {"disposition": null, "intent": null, "suppress_kind": null, "confidence": 0.0,
  "quote": null, "target_experience_id": null, "scope": "experience",
  "clarification": null, "answers_pending": false, "answer_quote": null,
- "reply": null, "pending_resolution": null, "mixed": [], "meta_note": "不超过40字"}
+ "answer_quality": null, "uncertain_spans": [], "reply": null,
+ "pending_resolution": null, "mixed": [], "meta_note": "不超过40字"}
 
 不确定就降低 `confidence`。不要编造 `target_experience_id` 或 `suggestion_id`。
 `meta_note` 是给开发者看的判定理由，不给用户看。

@@ -195,7 +195,8 @@ def assemble_context(
             sections.append('## 已有材料诊断\n'
                             + '原文或已核实个人引用中可辨认的维度：'
                             + '、'.join(slot for slot in ('responsibility', 'action', 'effect') if slot in available)
-                            + '。只补影响改写的缺口；已有维度不重复采访。明确没有效果或拒答时按现有事实处理；记不清最多换角度追问一次。')
+                            + '。只补影响改写的缺口；已有维度不重复采访。明确没有效果或拒答时按现有事实处理；'
+                            '记不清时优先引用岗位要求换角度追问一次，没有依据就停止。')
         if focus.kind not in EXPERIENCE_KINDS:
             sections.append('## 当前段处理规则（本节优先，不套用经历采访）\n' + RULES[focus.kind]
                             + '\n可以直接整理清楚的原文，不必先问职责、动作或效果。只修改当前目标块，其他个人材料仅作依据。')
