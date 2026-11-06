@@ -43,9 +43,16 @@ class DeterministicOwnershipTests(unittest.TestCase):
                 ('负责后端接口开发', '未命名经历'),
                 ('- 整理用户反馈并合并需求', '未命名经历'),
                 ('某大学 计算机科学与技术', '未命名经历'),
+                ('负责后端 | 前端开发', '未命名经历'),
+                ('负责后端  API 开发', '未命名经历'),
+                ('# 项目经历\n负责后端接口开发', '未命名经历'),
+                ('# 项目经历\n某大学 计算机科学与技术', '未命名经历'),
+                ('**项目经历**\n- 整理用户反馈并合并需求', '未命名经历'),
                 ('# 校园报名工具', '校园报名工具'),
                 ('**校园报名工具**', '校园报名工具'),
-                ('校园报名工具    2024.03', '校园报名工具')):
+                ('校园报名工具    2024.03', '校园报名工具'),
+                ('2024.03    校园报名工具', '校园报名工具'),
+                ('# 项目经历\n校园报名工具    2024.03', '校园报名工具')):
             with self.subTest(markdown=markdown):
                 self.assertEqual(_experience_title(markdown), expected)
 
@@ -154,6 +161,12 @@ class OwnershipRuntimeTests(unittest.TestCase):
 
     def test_classifier_input_contains_no_resume_body_or_url(self):
         self.settings(True, 1)
+        # 栏目标题下的正文也是正文：整段带进草稿后仍不能外发。
+        with self.repo._operation(self.context, write=True) as (connection, session):
+            connection.execute(
+                "INSERT INTO draft_blocks(block_id, block_revision, session_id, position, markdown, write_kind) "
+                "VALUES ('block-leak', 1, ?, 99, '# 项目经历\n负责后端接口开发', 'user_edit')",
+                (self.sid,))
         self.awaiting([{'candidateId': 'c1', 'company': 'A', 'role': 'R1'}])
         runtime = self.runtime({'decision': 'select_candidate', 'index': 1, 'confidence': 0.9})
         asyncio.run(classify_ownership(runtime, self.turn('帮我看看简历')))
@@ -163,4 +176,6 @@ class OwnershipRuntimeTests(unittest.TestCase):
         self.assertNotIn('resume', str(payload).lower())
         # 首行就是简历正文的段落不能把正文当标题发给模型。
         self.assertNotIn('需求整理', str(payload))
+        self.assertNotIn('负责后端接口开发', str(payload))
         self.assertEqual(payload['experiences'][0]['title'], '未命名经历')
+        self.assertEqual(payload['experiences'][-1]['title'], '未命名经历')

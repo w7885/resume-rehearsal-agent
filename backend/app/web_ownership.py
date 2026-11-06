@@ -7,8 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import web_intake
 from app.agent.llm import LLMError
-from app.agent.memory import _block_title
+from app.agent.memory import _DATE_PART, _HEADER_LINE
 from app.repository import RepositoryError
+from app.resume_structure import heading
 from app.web_candidates import _CONFIRM, _NUMERAL, parse_choice, parse_numeral
 from app.web_citations import goal_state
 
@@ -24,20 +25,33 @@ def _clean(text):
     return (text or '').strip().rstrip('。！!')
 
 
-_TITLE_SIGNAL = re.compile(r'^\s{0,3}#{1,6}\s+|^\*\*.+\*\*$|[|｜]|\s{2,}')
+_TITLE_SIGNAL = re.compile(
+    r'^\s{0,3}#{1,6}\s+'                         # Markdown 标题
+    r'|^\*\*.+\*\*$'                             # 整行加粗
+    r'|(?:(?:[|｜]|\s{2,})[^\n]*(?:\d{4}|\d{1,2}[./-]\d{1,2}))'
+    r'|(?:(?:\d{4}|\d{1,2}[./-]\d{1,2})[^\n]*(?:[|｜]|\s{2,}))'
+)
 
 
 def _experience_title(markdown):
-    """首行须有明确标题信号（Markdown 标题、加粗、表格分隔）才外发；
-    短正文行与标题无法区分，未识别就只给占位名，绝不能把正文送出本机。"""
-    first = next((line.strip() for line in (markdown or '').splitlines()
-                  if line.strip()), '')
-    if not first or not _TITLE_SIGNAL.search(first):
-        return '未命名经历'
-    title = re.split(r'\s{2,}|[|｜]', _block_title(markdown))[0].strip()
-    if not title or len(title) > 20 or re.search(r'[，,。；;！？!?]', title):
-        return '未命名经历'
-    return title
+    """只外发带明确标题信号（Markdown 标题、整行加粗、带日期的表格行）的条目；
+    其余一律占位，避免无法与正文区分的首行把简历正文送出本机。"""
+    for line in (markdown or '').splitlines():
+        label = heading(line).lstrip("-* ").strip()
+        # “项目经历”这类栏目名只是分组标题，真正的条目在下一行。
+        if not label or _HEADER_LINE.match(label):
+            continue
+        if not _TITLE_SIGNAL.search(line.strip()):
+            return '未命名经历'
+        parts = [part.strip() for part in re.split(r'\s{2,}|[|｜]', label)
+                 if part.strip()]
+        if len(parts) > 1 and _DATE_PART.match(parts[0]):
+            parts = parts[1:]          # 日期列不是标题
+        title = (parts[0] if parts else label)[:20]
+        if not title or re.search(r'[，,。；;！？!?]', title):
+            return '未命名经历'
+        return title
+    return '未命名经历'
 
 
 def _selection_or_edit(value, state=None):
