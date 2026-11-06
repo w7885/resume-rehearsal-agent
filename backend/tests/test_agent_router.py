@@ -338,6 +338,15 @@ class AnswerQualityTests(unittest.TestCase):
         self.assertEqual(_quality_from_text('不想说'), 'refused')
         self.assertEqual(_quality_from_text('我负责接口测试。'), 'full')
 
+    def test_short_valid_answer_is_full(self):
+        # 没有不确定分句的短回答也是有效回答，不能按长度门槛误判为 uncertain。
+        self.assertEqual(_quality_from_text('写接口'), 'full')
+
+    def test_bare_absent_answers(self):
+        for text in ('没有', '没了', '就这些'):
+            with self.subTest(text=text):
+                self.assertEqual(_quality_from_text(text), 'absent')
+
     def test_uncertain_spans_map_to_slots(self):
         self.assertEqual(_map_uncertain_fields(['具体线上效果忘了'], None), ['effect'])
         self.assertEqual(_map_uncertain_fields(['忘了当时用了什么工具'], None), ['tech'])

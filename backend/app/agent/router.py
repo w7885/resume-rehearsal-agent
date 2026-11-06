@@ -112,6 +112,9 @@ def _quality_from_text(text: str) -> str:
         return 'uncertain'
     if any(_REFUSAL.search(clause) for clause in clauses):
         return 'refused'
+    # 裸缺失回答没有效果词可匹配，只能整句相等识别，否则会落到 uncertain 并被多追问一次。
+    if value.strip('。！!？?，,') in {'没有', '没了', '无', '没有了', '就这些'}:
+        return 'absent'
     uncertain = [clause for clause in clauses if _UNCERTAIN.search(clause)]
     rest = [clause for clause in clauses if clause not in uncertain]
     if not rest:
@@ -121,8 +124,11 @@ def _quality_from_text(text: str) -> str:
                           r'(?:任何|什么|明显|实际|可确认的|更多)?'
                           r'(?:效果|变化|改善|提升|反馈|结果)', value)):
         return 'absent'
+    if not uncertain:
+        # 没有不确定分句就不存在“部分知道”，短回答（如“写接口”）也是有效回答，不能按长度判 uncertain。
+        return 'full'
     if sum(len(clause) for clause in rest) >= 4:
-        return 'partial' if uncertain else 'full'
+        return 'partial'
     return 'uncertain'
 
 
