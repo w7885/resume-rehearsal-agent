@@ -14,7 +14,7 @@ from app.repository import Repository, RepositoryError
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    path = app.state.database_path or DEFAULT_DATABASE_PATH
+    path = app.state.database_path or os.environ.get('DATABASE_URL') or DEFAULT_DATABASE_PATH
     with database(path) as connection:
         initialize_database(connection)
     app.state.business_service = BusinessService(Repository(path))
@@ -33,10 +33,18 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(database_path=None, *, agent_client_factory=None):
+    from app.auth import RemoteSettings, RemoteAccessGuard
+    remote = RemoteSettings.from_environment()
     application = FastAPI(lifespan=lifespan)
     application.state.database_path = database_path
     application.state.agent_client_factory = agent_client_factory
-    application.add_middleware(LocalRequestGuard)
+    application.add_middleware(LocalRequestGuard, remote=remote is not None)
+    if remote:
+        from starlette.middleware.cors import CORSMiddleware
+        application.add_middleware(RemoteAccessGuard, settings=remote)
+        application.add_middleware(CORSMiddleware, allow_origins=list(remote.origins),
+                                   allow_methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+                                   allow_headers=['Authorization','Content-Type'], expose_headers=['Allow'])
     application.include_router(router)
     from app.web_router import router as web_router
     application.include_router(web_router)

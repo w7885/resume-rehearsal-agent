@@ -36,7 +36,7 @@ def activate(runtime, candidate):
             {'markdown': body, 'sourceRefs': [{'sourceId': source['sourceId'],
                 'sourceRevision': source['sourceRevision'], 'quote': body}]}]))
         current = bound.get_session(RequestContext(runtime.sid))
-        connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+        connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',
                            (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
     runtime.initial_import = True
 

@@ -1,0 +1,35 @@
+# Configure private values in Render's environment editor, never in this file.
+services:
+  - type: web
+    name: resume-rehearsal-api
+    runtime: python
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.15
+      - key: APP_MODE
+        value: remote
+      - key: AGENT_ENABLED
+        value: '0'
+      - key: AGENT_BUDGET_CONFIRMED
+        value: '0'
+      - key: VISION_ENABLED
+        value: '0'
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_USER_EMAILS
+        sync: false

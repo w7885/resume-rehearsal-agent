@@ -22,12 +22,16 @@ class ProjectBudget:
                 if type(amount) is not int or not 0 <= amount <= 2**63-1-legacy:
                     raise RepositoryError('storage_failed', '既有预算记录需核对，暂不开放模型调用。', False)
                 legacy += amount
-        connection.execute("INSERT OR IGNORE INTO model_budget_accounts(budget_id,limit_cents) VALUES ('project',?)", (self.limit,))
+        connection.execute("INSERT INTO model_budget_accounts(budget_id,limit_cents) VALUES ('project',?) ON CONFLICT (budget_id) DO NOTHING", (self.limit,))
         account = connection.execute("SELECT * FROM model_budget_accounts WHERE budget_id='project'").fetchone()
         # Legacy unknown reservations are conservatively charged. Never erase
         # historical costs even when the originating session is later deleted.
         delta = max(0, legacy - account['imported_legacy_cents'])
-        connection.execute("UPDATE model_budget_accounts SET spent_cents=spent_cents+?, imported_legacy_cents=max(imported_legacy_cents,?), limit_cents=min(limit_cents,?) WHERE budget_id='project'", (delta, legacy, self.limit))
+        connection.execute("""UPDATE model_budget_accounts
+            SET spent_cents=spent_cents+?,
+                imported_legacy_cents=CASE WHEN imported_legacy_cents > ? THEN imported_legacy_cents ELSE ? END,
+                limit_cents=CASE WHEN limit_cents < ? THEN limit_cents ELSE ? END
+            WHERE budget_id='project'""", (delta, legacy, legacy, self.limit, self.limit))
         return connection.execute("SELECT * FROM model_budget_accounts WHERE budget_id='project'").fetchone()
 
     def status(self):

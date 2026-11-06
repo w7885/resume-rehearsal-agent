@@ -48,6 +48,9 @@ class BusinessService:
         return apply_resolution(self, context, payload, synthetic=synthetic)
 
     def _mutate(self, scope, operation, payload, request_id, callback, session_id=None):
+        from app.auth import current_user
+        if current_user.get() is not None:
+            scope = 'user:' + current_user.get() + ':' + scope
         fingerprint = hashlib.sha256(json.dumps(
             {"operation": operation, "payload": payload}, sort_keys=True,
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,

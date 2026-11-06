@@ -106,7 +106,7 @@ class Intake:
                 control['nextStateRevision'] = current['stateRevision']
                 _put(c, self.r.sid, PREFIX + self.r.request_id, control)
             else:
-                c.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+                c.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',
                     (self.r.sid, self.r.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
         self.r._continue()
 

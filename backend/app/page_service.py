@@ -71,7 +71,10 @@ def prepare_material_page(service, session_id, material_id, payload):
                 if report['pageCount'] is None and old.get('renderVersion') == RENDER_VERSION and old.get('originalHash') == current['content_hash']:
                     report['pageCount'] = old.get('pageCount')
                 connection.execute('UPDATE attachments SET page_report_json = ? WHERE session_id = ? AND attachment_id = ?', (json.dumps(report), session_id, material_id))
-                connection.execute('INSERT OR REPLACE INTO material_pages(session_id,attachment_id,page_number,render_version,original_hash,status,image_data,width,height,error_code,error_message) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                connection.execute('''INSERT INTO material_pages(session_id,attachment_id,page_number,render_version,original_hash,status,image_data,width,height,error_code,error_message) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT (session_id,attachment_id,page_number,render_version) DO UPDATE SET
+                    original_hash=excluded.original_hash,status=excluded.status,image_data=excluded.image_data,
+                    width=excluded.width,height=excluded.height,error_code=excluded.error_code,error_message=excluded.error_message''',
                     (session_id, material_id, number, RENDER_VERSION, current['content_hash'], prepared['status'], prepared.get('imageData'), prepared.get('width'), prepared.get('height'), prepared.get('errorCode'), prepared.get('errorMessage')))
         # Derived view cache does not change the session, source or draft version.
         return list_pages(bound, RequestContext(session_id), material_id)

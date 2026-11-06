@@ -120,7 +120,7 @@ def bind_answers(adapter, session_id, doc):
         connection.execute("UPDATE runs SET status='running',input_state_revision=? WHERE session_id=? AND run_id=?",
                            (current['stateRevision'], session_id, runtime.context.run_id))
         connection.execute("UPDATE sessions SET status='running' WHERE session_id=?", (session_id,))
-        connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+        connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',
                            (session_id, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
         new_context = replace(runtime.context, expected_state_revision=current['stateRevision'])
     runtime.context = adapter.context = new_context

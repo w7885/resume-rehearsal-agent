@@ -29,6 +29,7 @@ MIGRATIONS = (
     (13, Path(__file__).with_name("migrations") / "013_web_context.sql"),
     (14, Path(__file__).with_name("migrations") / "014_web_request_budget.sql"),
     (15, Path(__file__).with_name("migrations") / "015_external_assessments.sql"),
+    (16, Path(__file__).with_name("migrations") / "016_session_owner.sql"),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -41,6 +42,11 @@ class SchemaError(RuntimeError):
 def database(
     path: str | Path = DEFAULT_DATABASE_PATH, *, read_only: bool = False
 ) -> Iterator[sqlite3.Connection]:
+    from app.postgres import is_postgres, connect
+    if is_postgres(path):
+        with connect(path, read_only=read_only) as connection:
+            yield connection
+        return
     if str(path) == ":memory:":
         if read_only:
             raise ValueError("An in-memory database cannot be opened read-only.")
@@ -69,6 +75,11 @@ def database(
 @contextmanager
 def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """A short explicit transaction, including rollback on deferred FK failure."""
+    if getattr(connection, 'dialect', None) == 'postgresql':
+        from app.postgres import transaction as pg_transaction
+        with pg_transaction(connection):
+            yield connection
+        return
     if connection.in_transaction:
         raise SchemaError("Nested transactions require an explicit savepoint.")
     connection.execute("BEGIN IMMEDIATE")
@@ -120,6 +131,9 @@ def _versions(connection: sqlite3.Connection, *, allow_pending: bool = False) ->
 
 
 def check_database(connection: sqlite3.Connection) -> dict:
+    if getattr(connection, 'dialect', None) == 'postgresql':
+        from app.postgres_schema import check
+        return check(connection)
     if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
         raise SchemaError("Foreign key enforcement is disabled on this connection.")
     versions = _versions(connection)
@@ -145,6 +159,9 @@ def check_database(connection: sqlite3.Connection) -> dict:
 
 
 def initialize_database(connection: sqlite3.Connection) -> dict:
+    if getattr(connection, 'dialect', None) == 'postgresql':
+        from app.postgres_schema import initialize
+        return initialize(connection)
     # Serialize initialization with other writers; never delete or recreate an
     # existing database to recover from an unknown or incomplete schema.
     with transaction(connection):
