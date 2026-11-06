@@ -319,3 +319,64 @@ class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.action, 'meta')
         self.assertEqual(result.reply, '我们按你的节奏来。')
         self.assertTrue(result.used_model)
+
+
+from app.agent.memory import ExperienceDoc, record_answer, record_question
+from app.agent.router import _answer_record, _map_uncertain_fields, _quality_from_text
+
+
+LONG_ANSWER = '我负责订单模块，用 Redis 做了缓存，压测 QPS 提升 40%，但具体线上效果忘了。'
+
+
+class AnswerQualityTests(unittest.TestCase):
+    def test_long_answer_with_one_forgotten_effect_is_partial(self):
+        self.assertEqual(_quality_from_text(LONG_ANSWER), 'partial')
+
+    def test_whole_answer_quality_labels(self):
+        self.assertEqual(_quality_from_text('记不清了'), 'uncertain')
+        self.assertEqual(_quality_from_text('没有效果'), 'absent')
+        self.assertEqual(_quality_from_text('不想说'), 'refused')
+        self.assertEqual(_quality_from_text('我负责接口测试。'), 'full')
+
+    def test_uncertain_spans_map_to_slots(self):
+        self.assertEqual(_map_uncertain_fields(['具体线上效果忘了'], None), ['effect'])
+        self.assertEqual(_map_uncertain_fields(['忘了当时用了什么工具'], None), ['tech'])
+        self.assertEqual(_map_uncertain_fields([''], 'action'), ['action'])
+
+    def test_partial_record_does_not_decline_the_asked_slot(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        question = record_question(doc, '这段经历上线后带来了哪些变化？', 'effect')
+        declined, kind, fields, spans = _answer_record(
+            LONG_ANSWER, question, quality='partial', spans=['具体线上效果忘了。'])
+        self.assertFalse(declined)
+        self.assertEqual(kind, 'partial')
+        self.assertEqual(fields, ['effect'])
+        record_answer(doc, question.id, declined=declined, answer_kind=kind,
+                      uncertain_fields=fields, uncertain_spans=spans)
+        self.assertNotIn('effect', doc.declined)
+        self.assertEqual(doc.questions[-1].answer_kind, 'partial')
+        self.assertEqual(doc.questions[-1].uncertain_fields, ['effect'])
+        self.assertEqual(doc.questions[-1].uncertain_spans, ['具体线上效果忘了。'])
+
+
+class UncertainSpanNormalizeTests(unittest.TestCase):
+    def test_non_verbatim_span_is_dropped_and_quality_falls_back(self):
+        out = RouterOutput.model_validate({
+            'intent': 'answer', 'confidence': 0.9, 'answers_pending': True,
+            'answer_quote': LONG_ANSWER, 'answer_quality': 'partial',
+            'uncertain_spans': ['这句用户根本没说过'],
+        })
+        result = normalize(out, message=LONG_ANSWER, docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertIsNone(result.answer_quality)
+        self.assertEqual(result.uncertain_spans, [])
+
+    def test_verbatim_sentence_span_is_kept(self):
+        message = '我负责订单模块，用 Redis 做了缓存。压测 QPS 提升 40% 后。具体线上效果忘了。'
+        out = RouterOutput.model_validate({
+            'intent': 'answer', 'confidence': 0.9, 'answers_pending': True,
+            'answer_quote': message, 'answer_quality': 'partial',
+            'uncertain_spans': ['具体线上效果忘了。'],
+        })
+        result = normalize(out, message=message, docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertEqual(result.answer_quality, 'partial')
+        self.assertEqual(result.uncertain_spans, ['具体线上效果忘了。'])

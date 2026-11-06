@@ -54,9 +54,11 @@ class Question(BaseModel):
     resolution_reason: str | None = None
     # Kept separately from outcome: uncertainty allows one recall prompt, while
     # an explicit absence or refusal must stop that interview dimension.
-    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy"
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused", "partial"] = "legacy"
     answer_message_id: str | None = None
     answer_quote: str | None = None
+    uncertain_fields: list[Slot] = Field(default_factory=list)
+    uncertain_spans: list[str] = Field(default_factory=list)
     asked_at: str = ""
     answered_at: str | None = None
 
@@ -85,6 +87,7 @@ class ExperienceDoc(BaseModel):
     summary: str = ""
     updated_at: str = ""
     supplement_quotes: dict[str, str] = Field(default_factory=dict)
+    requirement_followups: list[Slot] = Field(default_factory=list)
 
 
 class SessionDoc(BaseModel):
@@ -444,8 +447,10 @@ def record_answer(
     message_id: str | None = None,
     *,
     declined: bool = False,
-    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy",
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused", "partial"] = "legacy",
     answer_quote: str | None = None,
+    uncertain_fields: list[Slot] | None = None,
+    uncertain_spans: list[str] | None = None,
 ) -> Question:
     for question in doc.questions:
         if question.id != question_id:
@@ -454,6 +459,8 @@ def record_answer(
         question.answer_kind = answer_kind
         question.answer_message_id = message_id
         question.answer_quote = answer_quote
+        question.uncertain_fields = list(uncertain_fields or [])
+        question.uncertain_spans = list(uncertain_spans or [])
         question.answered_at = now_iso()
         if declined and question.slot and question.slot != "confirm":
             if question.slot not in doc.declined:

@@ -88,6 +88,72 @@ def _effect_answer_kind(text: str) -> str:
     return 'answered'
 
 
+_UNCERTAIN = re.compile(r'不记得|记不清|忘记|忘了|不确定|不清楚|不知道|应该吧|大概吧|可能吧')
+_REFUSAL = re.compile(
+    r'不想(?:再|继续)?(?:说|回答|聊|讨论)|'
+    r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
+    r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|别问|不要再问|不再问|跳过|先不说'
+)
+_FIELD_WORDS = {
+    'responsibility': ('负责', '参与', '分工', '承担'),
+    'action': ('实现', '开发', '搭建', '完成', '处理', '做'),
+    'effect': ('效果', '结果', '提升', '减少', '反馈', '变化', '上线', '验收'),
+    'tech': ('技术', '工具', '框架', '语言', 'sql', 'python', 'java'),
+    'context': ('背景', '目标', '问题', '为什么'),
+    'evidence': ('文档', '代码', '测试', '记录', '截图'),
+}
+
+
+def _quality_from_text(text: str) -> str:
+    # 按分句判断，避免一句“忘了”把整段有内容的回答判成整条不确定。
+    value = re.sub(r'\s+', '', text or '')
+    clauses = [clause for clause in re.split(r'[。；;\n，,]', value) if clause]
+    if not clauses:
+        return 'uncertain'
+    if any(_REFUSAL.search(clause) for clause in clauses):
+        return 'refused'
+    uncertain = [clause for clause in clauses if _UNCERTAIN.search(clause)]
+    rest = [clause for clause in clauses if clause not in uncertain]
+    if not rest:
+        return 'uncertain'
+    if (not re.search(r'不是没有|并非没有|但|不过|可是|然而', value)
+            and re.search(r'(?:没有|没|未)(?:观察到|发现|看到|产生|带来)?'
+                          r'(?:任何|什么|明显|实际|可确认的|更多)?'
+                          r'(?:效果|变化|改善|提升|反馈|结果)', value)):
+        return 'absent'
+    if sum(len(clause) for clause in rest) >= 4:
+        return 'partial' if uncertain else 'full'
+    return 'uncertain'
+
+
+def _map_uncertain_fields(spans, fallback=None):
+    fields = []
+    for span in spans or []:
+        value = (span or '').casefold()
+        # 只认同时带不确定语气和字段线索的片段，模型不能凭一个词扩出字段。
+        if not _UNCERTAIN.search(value):
+            continue
+        for slot, words in _FIELD_WORDS.items():
+            if any(word in value for word in words) and slot not in fields:
+                fields.append(slot)
+    if not fields and fallback:
+        fields.append(fallback)
+    return fields
+
+
+def _answer_record(answer_text, question, quality=None, spans=None, action='answer'):
+    if action == 'refuse':
+        return True, 'refused', [], []
+    spans = [span for span in (spans or []) if span]
+    value = quality or _quality_from_text(answer_text)
+    if value not in {'full', 'partial', 'uncertain', 'absent', 'refused'}:
+        value = _quality_from_text(answer_text)
+    fields = _map_uncertain_fields(spans, question.slot) if value in {'partial', 'uncertain'} else []
+    kind = 'answered' if value == 'full' else value
+    # partial 已有有效内容，不能把整个槽标成 declined；只有整条无效回答才拒答该维度。
+    return value in {'uncertain', 'absent', 'refused'}, kind, fields, spans
+
+
 def _asked_question(doc: ExperienceDoc):
     return next(
         (question for question in reversed(doc.questions) if question.active and question.outcome == "asked"),
@@ -523,12 +589,13 @@ async def _execute(
         question = _asked_question(focus_doc)
         if question is not None and (decision.answers_pending or action == 'refuse'):
             answer_text = decision.answer_quote or text
-            declined = _is_decline(answer_text) or action == 'refuse'
-            kind = 'refused' if action == 'refuse' else _effect_answer_kind(answer_text)
-            declined = declined or kind in {'absent', 'refused', 'uncertain'}
+            declined, kind, fields, spans = _answer_record(
+                answer_text, question, decision.answer_quality,
+                decision.uncertain_spans, action)
             record_answer(
                 focus_doc, question.id, message_id, declined=declined, answer_kind=kind,
-                answer_quote=decision.answer_quote,
+                answer_quote=decision.answer_quote, uncertain_fields=fields,
+                uncertain_spans=spans,
             )
             _persist_doc(store, session_id, focus_doc)
             answered = True

@@ -63,6 +63,8 @@ class RouteResult:
     drop: bool = False
     answers_pending: bool = False
     answer_quote: str | None = None
+    answer_quality: str | None = None
+    uncertain_spans: list[str] = None
     reply: str | None = None
 
 
@@ -499,6 +501,8 @@ def to_route_result(output, *, ctx, docs, phases, text) -> RouteResult:
         clarification=output.clarification,
         answers_pending=output.answers_pending,
         answer_quote=factual_quote(text, output.answer_quote or output.quote),
+        answer_quality=output.answer_quality if output.answer_quote else None,
+        uncertain_spans=list(output.uncertain_spans or []),
         reply=output.reply,
     )
 
@@ -593,6 +597,19 @@ def normalize(
 
     if out.answer_quote and factual_quote(message, out.answer_quote) is None:
         out.answer_quote, out.answers_pending = None, False
+
+    if out.answer_quality and out.intent in {'answer', 'skip'} and out.answer_quote:
+        spans = []
+        for span in out.uncertain_spans[:5]:
+            # 不确定片段必须逐字来自用户消息，模型不能编造“忘了”来降低记录质量。
+            accepted = factual_quote(message, span) if len(span) <= 200 else None
+            if accepted:
+                spans.append(accepted)
+        out.uncertain_spans = spans
+        if out.answer_quality in {'partial', 'uncertain'} and not spans:
+            out.answer_quality = None
+    else:
+        out.answer_quality, out.uncertain_spans = None, []
 
     if out.clarification is not None:
         out.clarification = _sanitize(out.clarification, message, docs, phases)
