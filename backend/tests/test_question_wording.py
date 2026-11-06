@@ -2,7 +2,7 @@
 import unittest
 from app.agent.guard import GuardState, check
 from app.agent.loop import _fallback_question
-from app.agent.memory import ExperienceDoc, Fact, Question
+from app.agent.memory import ExperienceDoc, Fact, Question, record_question
 from app.agent.ports import SessionContext, SessionInfo
 from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep
@@ -107,6 +107,15 @@ class QuestionWordingTests(unittest.TestCase):
     def test_answer_hint_after_question_mark_is_not_a_second_question(self):
         result = check(AskStep(action='ask_user', message='学生信息管理系统做完后带来了什么变化？比如省掉哪一步或收到哪条反馈。', slot='effect'), self.state())
         self.assertIsNone(result.violation)
+
+    def test_record_question_marks_requirement_followup(self):
+        doc = self.state().focus_doc
+        question = record_question(doc, '岗位要求里提到「负责跨部门需求对接」，你有类似经历吗？',
+                                   'responsibility', evidence_ref='req-1',
+                                   evidence_quote='负责跨部门需求对接')
+        self.assertEqual(doc.requirement_followups, ['responsibility'])
+        self.assertEqual(question.evidence_ref, 'req-1')
+        self.assertEqual(question.evidence_quote, '负责跨部门需求对接')
 
     def test_two_question_words_in_the_question_are_still_multi(self):
         result = check(AskStep(action='ask_user', message='你是怎么发现什么问题这件事的？', slot='action'), self.state())

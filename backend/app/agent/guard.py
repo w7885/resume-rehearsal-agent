@@ -52,6 +52,8 @@ _ROLE_WORDS = ("负责人", "主管", "主导", "架构师", "leader", "牵头",
 _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 _CN_NUMBER = re.compile(r"[一二三四五六七八九十百千万两]+(?=[个项条次人页年月天%])")
 _QUANTIFIER_TAILS = ("个", "项", "条", "页", "步", "次", "人")
+# 只有经历维度能引用岗位要求引导；评价/信息段没有"经历"可对照。
+_EVIDENCE_SLOTS = frozenset({'responsibility', 'action', 'effect', 'context', 'evidence', 'tech'})
 
 
 def _cn_numbers(text: str):
@@ -307,6 +309,25 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     if any(word.lower() in text.lower() for word in _UNANSWERABLE):
         return Violation("question_unanswerable", "不能要求用户查后台数据")
 
+    # 证据校验必须在 declined 放行之前：没有可信证据就不能打开已拒绝槽位。
+    evidence = None
+    if step.evidence_ref or step.evidence_quote:
+        if not (step.evidence_ref and step.evidence_quote):
+            return Violation("question_evidence_invalid",
+                             "引用岗位要求时须同时给出编号和原文", True)
+        if step.slot not in _EVIDENCE_SLOTS:
+            return Violation("question_evidence_invalid",
+                             "该问题不属于可按岗位要求引导的经历维度", False)
+        requirements = (state.session.web_context or {}).get('requirements') or []
+        match = next((item for item in requirements
+                      if item.get('requirementId') == step.evidence_ref), None)
+        quote = step.evidence_quote.strip()
+        if (match is None or len(quote) < 4
+                or quote not in (match.get('quote') or '')):
+            return Violation("question_evidence_unverified",
+                             "岗位要求引用须逐字来自当前联网参考", True)
+        evidence = (step.evidence_ref, step.evidence_quote)
+
     if state.focus_doc is not None:
         if needs_detail(state.focus_doc) and step.slot in {
                 'effect', 'context', 'evidence', 'result'}:
@@ -315,6 +336,14 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
                 '职责刚确认，先追问具体做法或技术选型，再问效果。',
                 True,
             )
+        # 已拒绝槽位先于重复检查：同一句重问也应报“已拒绝”，而不是“重复”。
+        exempt_effect_followup = (
+            step.slot == "effect"
+            and effect_state(state.focus_doc) == "followup"
+        )
+        if step.slot in state.focus_doc.declined and not exempt_effect_followup:
+            if not evidence or step.slot in state.focus_doc.requirement_followups:
+                return Violation("question_declined", "该维度已被用户拒绝")
         recent = state.focus_doc.questions[-3:]
         if any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
@@ -325,12 +354,6 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
                 return Violation('question_answered', '个人材料已明确支持该维度，不要重复询问。', True)
             if step.slot == 'effect' and effect_state(state.focus_doc) == 'absent':
                 return Violation('question_declined', '效果已明确没有、拒答或达到追问上限，按已有事实处理。', True)
-            exempt_effect_followup = (
-                step.slot == "effect"
-                and effect_state(state.focus_doc) == "followup"
-            )
-            if step.slot in state.focus_doc.declined and not exempt_effect_followup:
-                return Violation("question_declined", "该维度已被用户拒绝")
             if step.slot == "confirm":
                 return None
 
@@ -339,6 +362,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
             return Violation("question_cross_segment", "不能提及其他经历")
 
     compact = re.sub(r"\s+", "", _evidence_text(state))
+    # 岗位要求原文里的数字是引用的要求，不是个人事实，不能按“新数字”拦截。
+    if step.evidence_quote:
+        compact += re.sub(r"\s+", "", step.evidence_quote)
     for number in _NUMBER.findall(text):
         if number not in compact:
             return Violation("question_new_number", "问题里不能出现事实中没有的数字")

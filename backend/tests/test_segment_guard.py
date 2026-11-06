@@ -4,7 +4,7 @@ import unittest
 from app.agent.guard import GuardState, check
 from app.agent.memory import ExperienceDoc, Fact, Question
 from app.agent.ports import DraftBlock, SessionContext, SessionInfo
-from app.agent.schemas import StepDecisionAdapter
+from app.agent.schemas import AskStep, StepDecisionAdapter
 
 BEFORE = '参与接口测试。'
 
@@ -44,6 +44,76 @@ class SegmentGuardTests(unittest.TestCase):
 
     def test_direct_rewrite_does_not_bypass_effect_gate(self):
         self.assertEqual(check(decision(), state(direct=True)).violation.code, 'ask_effect')
+
+
+REQUIREMENTS = [{'requirementId': 'req-1', 'referenceId': 'ref-1',
+                 'quote': '负责跨部门需求对接与排期推进'}]
+
+
+def evidence_state(declined=True, followups=()):
+    doc = ExperienceDoc(experience_id='p1', seq=1, kind='project',
+                        title='构造项目', raw_text=BEFORE, block_id='p1', block_revision=1)
+    doc.questions.append(Question(id='q1', slot='responsibility',
+                                  text='你负责哪部分？', fingerprint='f',
+                                  outcome='declined'))
+    if declined:
+        doc.declined = ['responsibility']
+    doc.requirement_followups = list(followups)
+    return GuardState(
+        session=SessionContext(session=SessionInfo(session_id='test', experience_order=['p1']),
+                               draft_blocks=[DraftBlock(block_id='p1', markdown=BEFORE)],
+                               web_context={'available': True, 'requirements': REQUIREMENTS}),
+        focus_doc=doc, anchor_text=BEFORE, focus_block_markdown=BEFORE,
+        source_texts={'resume': BEFORE}, source_kinds={'resume': 'resume'})
+
+
+def evidence_ask(**overrides):
+    value = {'action': 'ask_user',
+             'message': '岗位要求里提到「负责跨部门需求对接」，你有类似的对接经历吗？',
+             'slot': 'responsibility', 'evidence_ref': 'req-1',
+             'evidence_quote': '负责跨部门需求对接'}
+    value.update(overrides)
+    return AskStep(**value)
+
+
+class RequirementEvidenceGuardTests(unittest.TestCase):
+    def test_evidence_allows_one_declined_slot_followup(self):
+        self.assertIsNone(check(evidence_ask(), evidence_state()).violation)
+
+    def test_same_slot_cannot_be_followed_up_twice(self):
+        result = check(evidence_ask(), evidence_state(followups=['responsibility']))
+        self.assertEqual(result.violation.code, 'question_declined')
+
+    def test_declined_slot_without_evidence_stays_blocked(self):
+        result = check(AskStep(action='ask_user', message='你负责哪部分？',
+                               slot='responsibility'), evidence_state())
+        self.assertEqual(result.violation.code, 'question_declined')
+
+    def test_unknown_reference_or_non_verbatim_quote_is_rejected(self):
+        for ask in (evidence_ask(evidence_ref='req-9'),
+                    evidence_ask(evidence_quote='负责跨部门沟通')):
+            with self.subTest(ask=ask):
+                result = check(ask, evidence_state())
+                self.assertEqual(result.violation.code, 'question_evidence_unverified')
+                self.assertTrue(result.violation.retryable)
+
+    def test_only_one_evidence_field_is_invalid(self):
+        result = check(evidence_ask(evidence_quote=None), evidence_state())
+        self.assertEqual(result.violation.code, 'question_evidence_invalid')
+
+    def test_section_slots_cannot_carry_requirement_evidence(self):
+        result = check(evidence_ask(slot='strength'), evidence_state())
+        self.assertEqual(result.violation.code, 'question_evidence_invalid')
+        self.assertFalse(result.violation.retryable)
+
+    def test_evidence_quote_numbers_pass_the_number_check(self):
+        state = evidence_state()
+        state.session.web_context['requirements'] = [
+            {'requirementId': 'req-1', 'referenceId': 'ref-1',
+             'quote': '3年接口测试经验'}]
+        ask = evidence_ask(evidence_quote='3年接口测试经验',
+                           message='岗位要求里提到「3年接口测试经验」，你有相关工作吗？')
+        self.assertIsNone(check(ask, state).violation)
 
 
 if __name__ == '__main__':

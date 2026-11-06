@@ -77,6 +77,8 @@ class AskStep(BaseModel):
     message: str
     slot: Slot | None = None
     related_source_ids: list[str] = Field(default_factory=list)
+    evidence_ref: str | None = Field(default=None, max_length=40)
+    evidence_quote: str | None = Field(default=None, max_length=200)
     rationale: str = Field(default="", max_length=40)
 
 

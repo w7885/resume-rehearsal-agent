@@ -59,6 +59,9 @@ class Question(BaseModel):
     answer_quote: str | None = None
     uncertain_fields: list[Slot] = Field(default_factory=list)
     uncertain_spans: list[str] = Field(default_factory=list)
+    # 岗位要求证据随问题保留，便于审计“按岗位要求引导”确有逐字依据。
+    evidence_ref: str | None = None
+    evidence_quote: str | None = None
     asked_at: str = ""
     answered_at: str | None = None
 
@@ -427,7 +430,8 @@ def question_similarity(a: str, b: str) -> float:
 
 
 def record_question(
-    doc: ExperienceDoc, text: str, slot: Slot | None = None
+    doc: ExperienceDoc, text: str, slot: Slot | None = None, *,
+    evidence_ref: str | None = None, evidence_quote: str | None = None,
 ) -> Question:
     question = Question(
         id=f"q{len(doc.questions) + 1}",
@@ -436,8 +440,13 @@ def record_question(
         fingerprint=question_fingerprint(text),
         round=doc.round + 1,
         asked_at=now_iso(),
+        evidence_ref=evidence_ref,
+        evidence_quote=evidence_quote,
     )
     doc.questions.append(question)
+    # 每个槽最多借岗位要求追问一次，防止同一要求被反复包装成新问题。
+    if evidence_quote and slot and slot != "confirm" and slot not in doc.requirement_followups:
+        doc.requirement_followups.append(slot)
     return question
 
 
