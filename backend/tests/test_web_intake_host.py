@@ -146,6 +146,16 @@ class IntakeHostTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'], 'change_question')
 
+    def test_bare_decline_defers_without_repeating_target_question(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        prompt = self.conversation(session)['messages'][-1]
+        self.user_turn(session, '不查了', 'decline', prompt['messageId'])
+        self.assertEqual(len(self.sent), 1)
+        with database(self.path) as c:
+            self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'deferred')
+        self.assertNotIn('哪类岗位', self.conversation(session)['messages'][-1]['content'])
+
     def test_direction_reply_is_used_without_repeating_company_question(self):
         session = self.ready(direction='构造公司')
         self.user_turn(session, '想找岗位。', 'company')

@@ -3,6 +3,7 @@
 Only trusted orchestration supplies intent hashes and explicit retry decisions.
 Permission epochs invalidate results, but never replenish an episode's allowance.
 """
+import re
 from copy import deepcopy
 from uuid import uuid4
 
@@ -13,6 +14,25 @@ KEY = 'web_intake'
 PHASES = frozenset({'needs_direction', 'exploring', 'awaiting_selection',
                     'awaiting_source_consent', 'ready', 'needs_material',
                     'deferred', 'failed'})
+
+_DECLINE = frozenset({
+    '不查', '不查了', '不搜', '不搜了', '不用查', '不用搜', '不要查',
+    '不联网', '不用联网', '不需要联网', '无需搜索', '先不查', '先不搜',
+    '按通用', '通用修改', '跳过联网',
+})
+
+
+def is_web_decline(text):
+    # 先去掉空白和首尾标点：同一句“不查了。”不应因排版或句号漏判
+    value = re.sub(r'\s+', '', text or '').strip('。！!，,.；;')
+    # 剥离口语前缀，让“这次不查了”归一到词表里的“不查”
+    for prefix in ('这次', '这回', '暂时', '先'):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    # 剥离句末语气词，如“不查了吧”
+    value = re.sub(r'[了吧啦]+$', '', value)
+    # 只做全等匹配，避免“不查户口，但要联网看岗位”这类内容回答被误判为拒绝
+    return value in _DECLINE
 
 
 def load(connection, session_id):

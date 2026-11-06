@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from app.agent.llm import LLMError
 from app.repository import RepositoryError
 from app.web_citations import assess, cached_references, goal_state
+from app.web_intake import is_web_decline
 from app.web_provider import PublicTarget, WebProviderError, reference_identity, same_posting_url
 from app.web_search import WebSearchService
 
@@ -242,7 +243,9 @@ class AgentWebBridge:
         if not any(p['promptMessageId']==prompt['message_id'] and p['state']=='reply_saved' for p in turn.get('candidatePrompts',[])):
             return False
         reply=turn['userMessage']['content']
-        if re.search(r'不指定公司|按通用|先不查|无需搜索|不需要联网|记不清|不知道|不方便|暂时没有|不想指定|不提供',reply):
+        # 拒绝联网的通用词表走共享归一化；这里只保留 target 提示特有的“记不清/不指定”等说法
+        if (is_web_decline(reply)
+                or re.search(r'不指定公司|记不清|不知道|不方便|暂时没有|不想指定|不提供', reply)):
             with self.runtime.repo._operation(self.runtime.context,write=True) as (connection,session):
                 defer_target(connection,session,goal['baseHash'],turn['userMessage']['messageId'])
             return True

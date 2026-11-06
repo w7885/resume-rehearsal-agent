@@ -246,7 +246,8 @@ class Intake:
         if not enabled or not self.service.settings.available:
             return 'unchanged'
         text = turn['userMessage']['content'].strip()
-        if re.search(r'按通用|通用修改|先不查|不需要联网|无需搜索', text):
+        # 与 target 提示共用同一归一化，避免“不查了”这类短拒绝只在一处被识别
+        if web_intake.is_web_decline(text):
             self.service._episode(self.r.context, 'no-public-target')
             self.update(phase='deferred', outcomeCode='user_deferred')
             with self.r.repo._operation(self.r.context, write=True) as (c, s):
