@@ -13,6 +13,13 @@ from test_web_provider import fetch_response
 import test_web_intake_service as fixture
 
 
+class ChoiceParsingTests(unittest.TestCase):
+    def test_chinese_two_is_a_choice(self):
+        for text in ('两个', '就两个吧'):
+            with self.subTest(text=text):
+                self.assertEqual(candidates.parse_choice(text), 2)
+
+
 class CandidateTests(unittest.TestCase):
     setUp = fixture.IntakeServiceTests.setUp
     settings = fixture.IntakeServiceTests.settings

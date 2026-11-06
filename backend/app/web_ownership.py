@@ -2,11 +2,10 @@
 import re
 
 from app import web_intake
-from app.web_candidates import parse_choice
+from app.web_candidates import _CONFIRM, _NUMERAL, parse_choice, parse_numeral
 
 _URL_OR_GENERIC = re.compile(
     r'https?://|通用修改|按通用|^重试联网[。！!]*$|^重新搜索[。！!]*$')
-_NUMERAL = r'[0-9一二三四五六七八九十]+'
 _EXPERIENCE_EDIT = re.compile(
     r'(?:改|修改|调整|优化|重写|润色|处理|切换|切到|切回).{0,6}(?:第)?\s*' + _NUMERAL + r'\s*[段个]'
     r'|(?:第)?\s*' + _NUMERAL + r'\s*[段个].{0,6}(?:改|修改|调整|优化|重写|润色|处理)'
@@ -19,12 +18,13 @@ def _clean(text):
 
 def _selection_or_edit(value, state=None):
     # 先认经历编辑动作：出现“改/切换”时，数字指向简历段落而非候选编号。
-    if _EXPERIENCE_EDIT.search(value):
-        match = re.search(r'([0-9]+)', value)
+    if match := _EXPERIENCE_EDIT.search(value):
+        # 只从命中片段取序号，避免正文其它数字干扰；解析复用共享实现。
+        numeral = re.search(_NUMERAL, match.group())
         return {'decision': 'edit_experience',
-                'index': int(match[1]) if match else None}
+                'index': parse_numeral(numeral[0]) if numeral else None}
     if state and state.get('phase') == 'awaiting_selection':
-        if value in {'是', '是的', '就这个', '确认这个', '确认'}:
+        if value in _CONFIRM:
             return {'decision': 'select_candidate',
                     'index': 1 if len(state.get('candidates') or []) == 1 else None}
         for index, candidate in enumerate(state.get('candidates') or [], 1):

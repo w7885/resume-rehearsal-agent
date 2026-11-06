@@ -9,20 +9,17 @@ from app.web_provider import PublicSearchIntent, reference_identity
 from app.web_target import _put
 
 # 共享选择解析：候选选择与归属判定必须走同一套规则，否则两处规则会漂移。
+_NUMERAL = r'[0-9一二三四五六七八九十两]+'
 _CN = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
        '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 _CONFIRM = frozenset({'是', '是的', '就这个', '确认这个', '确认'})
 _CHOICE = re.compile(
-    r'(?:我)?(?:就)?(?:选(?:择)?)?(?:第)?\s*([0-9一二三四五六七八九十]+)'
+    r'(?:我)?(?:就)?(?:选(?:择)?)?(?:第)?\s*(' + _NUMERAL + r')'
     r'\s*(?:个|项|号|段)?\s*(?:岗位|候选|公司|职位)?(?:吧)?')
 
 
-def parse_choice(text):
-    # 只认整句就是选择表达：正文里顺带出现的数字不应被当成选项。
-    match = _CHOICE.fullmatch((text or '').strip().rstrip('。！!'))
-    if not match:
-        return None
-    token = match[1]
+def parse_numeral(token):
+    """把序号 token 解析为整数，供选择与编辑意图共用。"""
     if token.isdigit():
         return int(token)
     if token == '十':
@@ -32,6 +29,14 @@ def parse_choice(text):
         left, _, right = token.partition('十')
         return (_CN.get(left, 1) if left else 1) * 10 + (_CN.get(right, 0) if right else 0)
     return _CN.get(token)
+
+
+def parse_choice(text):
+    # 只认整句就是选择表达：正文里顺带出现的数字不应被当成选项。
+    match = _CHOICE.fullmatch((text or '').strip().rstrip('。！!'))
+    if not match:
+        return None
+    return parse_numeral(match[1])
 
 
 def _state(connection, session, episode_id, revision):

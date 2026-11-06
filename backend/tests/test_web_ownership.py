@@ -15,9 +15,11 @@ class DeterministicOwnershipTests(unittest.TestCase):
                                  {'decision': 'select_candidate', 'index': 2})
 
     def test_edit_verbs_win_over_bare_number(self):
-        for text in ('改第2段', '第2段经历', '切换第二段', '第2段改短点'):
+        for text, index in (('改第2段', 2), ('第2段经历', 2), ('切换第二段', 2),
+                            ('第2段改短点', 2), ('改第3段', 3)):
             with self.subTest(text=text):
-                self.assertEqual(classify_text(text, STATE)['decision'], 'edit_experience')
+                self.assertEqual(classify_text(text, STATE),
+                                 {'decision': 'edit_experience', 'index': index})
 
     def test_ordinary_text_is_not_a_selection(self):
         for text in ('帮我看看简历', '继续', '今天天气不错'):
