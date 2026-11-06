@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import web_intake
 from app.agent.llm import LLMError
+from app.agent.memory import _block_title
 from app.repository import RepositoryError
 from app.web_candidates import _CONFIRM, _NUMERAL, parse_choice, parse_numeral
 from app.web_citations import goal_state
@@ -21,6 +22,16 @@ _EXPERIENCE_EDIT = re.compile(
 
 def _clean(text):
     return (text or '').strip().rstrip('。！!')
+
+
+def _experience_title(markdown):
+    """只外发真正的标题行。_block_title 会把正文首行当标题，
+    含句读或过长的那行其实是简历正文，改用占位名。"""
+    first = next((line.strip() for line in (markdown or '').splitlines()
+                  if line.strip()), '')
+    if not first or len(first) > 40 or re.search(r'[，,。；;！？!?]', first):
+        return '未命名经历'
+    return _block_title(markdown)
 
 
 def _selection_or_edit(value, state=None):
@@ -79,7 +90,7 @@ class WebOwnership(BaseModel):
 
 async def _model_ownership(runtime, turn, state):
     blocks = runtime.repo.get_draft(runtime.context).get('blocks', [])[:10]
-    # 只喂消息、阶段、候选与经历标题（首行），不喂简历正文或 URL：
+    # 只喂消息、阶段、候选与经历标题，不喂简历正文或 URL：
     # 判定只需要归属线索，正文既无必要也不该离开本地。
     payload = {
         'message': turn['userMessage']['content'][:500],
@@ -91,7 +102,7 @@ async def _model_ownership(runtime, turn, state):
         ],
         'experiences': [
             {'index': index,
-             'title': (block.get('markdown', '').splitlines() or [''])[0][:40]}
+             'title': _experience_title(block.get('markdown', ''))}
             for index, block in enumerate(blocks, 1)
         ],
     }

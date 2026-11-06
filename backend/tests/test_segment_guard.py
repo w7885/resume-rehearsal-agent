@@ -51,12 +51,12 @@ REQUIREMENTS = [{'requirementId': 'req-1', 'referenceId': 'ref-1',
                  'quote': '负责跨部门需求对接与排期推进'}]
 
 
-def evidence_state(declined=True, followups=()):
+def evidence_state(declined=True, followups=(), answer_kind='legacy'):
     doc = ExperienceDoc(experience_id='p1', seq=1, kind='project',
                         title='构造项目', raw_text=BEFORE, block_id='p1', block_revision=1)
     doc.questions.append(Question(id='q1', slot='responsibility',
                                   text='你负责哪部分？', fingerprint='f',
-                                  outcome='declined'))
+                                  outcome='declined', answer_kind=answer_kind))
     if declined:
         doc.declined = ['responsibility']
     doc.requirement_followups = list(followups)
@@ -80,6 +80,17 @@ def evidence_ask(**overrides):
 class RequirementEvidenceGuardTests(unittest.TestCase):
     def test_evidence_allows_one_declined_slot_followup(self):
         self.assertIsNone(check(evidence_ask(), evidence_state()).violation)
+
+    def test_uncertain_decline_can_be_reopened_with_evidence(self):
+        self.assertIsNone(check(evidence_ask(),
+                                evidence_state(answer_kind='uncertain')).violation)
+
+    def test_absent_or_refused_decline_cannot_be_reopened_with_evidence(self):
+        # “没有”“不想说”是明确缺席或拒答，带证据也不能再问同一个槽。
+        for kind in ('absent', 'refused'):
+            with self.subTest(kind=kind):
+                result = check(evidence_ask(), evidence_state(answer_kind=kind))
+                self.assertEqual(result.violation.code, 'question_declined')
 
     def test_same_slot_cannot_be_followed_up_twice(self):
         result = check(evidence_ask(), evidence_state(followups=['responsibility']))

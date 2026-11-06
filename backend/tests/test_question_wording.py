@@ -122,7 +122,7 @@ class QuestionWordingTests(unittest.TestCase):
         self.assertEqual(result.violation.code, 'question_multi')
 
 
-from app.agent.loop import _requirement_question
+from app.agent.loop import _fallback_ask, _requirement_question
 
 
 class RequirementQuestionTests(unittest.TestCase):
@@ -130,9 +130,16 @@ class RequirementQuestionTests(unittest.TestCase):
         return [{'requirementId': 'req-1', 'referenceId': 'ref-1',
                  'quote': '负责跨部门需求对接与排期推进'}]
 
-    def test_requirement_question_targets_a_declined_slot_once(self):
-        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+    def declined_doc(self, kind='project', answer_kind='legacy'):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind=kind, raw_text='参与接口测试。')
         doc.declined = ['responsibility']
+        doc.questions.append(Question(
+            id='q1', slot='responsibility', text='你负责哪部分？', fingerprint='f',
+            outcome='declined', answer_kind=answer_kind))
+        return doc
+
+    def test_requirement_question_targets_a_declined_slot_once(self):
+        doc = self.declined_doc()
         text, slot, ref, quote = _requirement_question(doc, self.requirements())
         self.assertEqual(slot, 'responsibility')
         self.assertEqual(ref, 'req-1')
@@ -157,9 +164,42 @@ class RequirementQuestionTests(unittest.TestCase):
         self.assertIsNone(_requirement_question(doc, self.requirements()))
 
     def test_no_requirements_means_no_generated_followup(self):
-        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
-        doc.declined = ['responsibility']
-        self.assertIsNone(_requirement_question(doc, []))
+        self.assertIsNone(_requirement_question(self.declined_doc(), []))
+
+    def test_absent_or_refused_decline_is_not_reasked(self):
+        # 明确没有或拒答的槽不因岗位要求再打开。
+        for kind in ('absent', 'refused'):
+            with self.subTest(kind=kind):
+                self.assertIsNone(
+                    _requirement_question(self.declined_doc(answer_kind=kind), self.requirements()))
+
+    def test_uncertain_decline_can_be_reasked(self):
+        self.assertIsNotNone(
+            _requirement_question(self.declined_doc(answer_kind='uncertain'), self.requirements()))
+
+    def test_section_document_gets_no_requirement_question(self):
+        self.assertIsNone(
+            _requirement_question(self.declined_doc(kind='skills', answer_kind='uncertain'),
+                                  self.requirements()))
+
+    def test_invalid_requirement_question_falls_back_to_generic(self):
+        # 要求原文含“以及”会让生成问题被判 multi（一次只能问一个点）；
+        # 这时仍应退回通用问题，而不是直接结束本轮。
+        requirements = [{'requirementId': 'req-1', 'referenceId': 'ref-1',
+                         'quote': '负责跨部门需求对接以及排期推进'}]
+        doc = self.declined_doc()
+        state = GuardState(
+            session=SessionContext(
+                session=SessionInfo(session_id='test'),
+                web_context={'available': True, 'requirements': requirements}),
+            focus_doc=doc, anchor_text=doc.raw_text)
+        text, slot, ref, quote, violations = _fallback_ask(doc, requirements, state)
+        self.assertEqual([violation.code for violation in violations], ['question_multi'])
+        self.assertIsNotNone(text)
+        self.assertIsNone(ref)
+        self.assertEqual(slot, 'action')
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message=text, slot=slot), state).violation, text)
 
 
 class GuideVariationTests(unittest.TestCase):

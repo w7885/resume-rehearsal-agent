@@ -26,6 +26,7 @@ from app.agent.memory import (
     load_experience,
     reconcile,
     record_question,
+    requirement_reopen_allowed,
     save_experience,
     supported_experience_slots,
 )
@@ -121,9 +122,13 @@ def _load_docs(
 
 
 def _requirement_question(doc, requirements):
-    # 每个 declined 槽最多用岗位要求问一次；已问过的槽跳过，避免换条要求反复追问。
+    # 只有经历段有可对照的“经历”维度；信息/评价段不套用。
+    if doc.kind not in EXPERIENCE_KINDS:
+        return None
+    # 每个 declined 槽最多用岗位要求问一次；已问过或明确缺席/拒答的槽跳过。
     for slot in _SLOT_ORDER:
-        if slot not in doc.declined or slot in doc.requirement_followups:
+        if (slot not in doc.declined or slot in doc.requirement_followups
+                or not requirement_reopen_allowed(doc, slot)):
             continue
         for item in requirements or []:
             quote = (item.get('quote') or '').strip()
@@ -164,6 +169,31 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         text = guided_question(doc, slot, variant=next_guide_variant(doc, slot))
         return text, slot
     return None, None
+
+
+def _fallback_ask(doc, requirements, state):
+    """选一个能过守卫的兜底问题；岗位要求问题被拦时退回通用问题，别直接结束。
+
+    返回 (text, slot, evidence_ref, evidence_quote, violations)；text 为 None
+    表示没有可用问题，violations 交给调用方照常发 warning。
+    """
+    required = _requirement_question(doc, requirements)
+    violations = []
+    if required is not None:
+        text, slot, ref, quote = required
+        checked = check(AskStep(action='ask_user', message=text, slot=slot,
+                                evidence_ref=ref, evidence_quote=quote), state)
+        if checked.violation is None:
+            return text, slot, ref, quote, violations
+        violations.append(checked.violation)
+    text, slot = _fallback_question(doc)
+    if text is None:
+        return None, None, None, None, violations
+    checked = check(AskStep(action='ask_user', message=text, slot=slot), state)
+    if checked.violation is not None:
+        violations.append(checked.violation)
+        return None, None, None, None, violations
+    return text, slot, None, None, violations
 
 
 async def run_loop(
@@ -414,20 +444,10 @@ async def run_loop(
         if focus_doc is None:
             return finish_result("limited")
         requirements = (ctx.web_context or {}).get('requirements') or []
-        required = _requirement_question(focus_doc, requirements)
-        evidence_ref = evidence_quote = None
-        if required is not None:
-            text, slot, evidence_ref, evidence_quote = required
-            checked = check(AskStep(action='ask_user', message=text, slot=slot,
-                                    evidence_ref=evidence_ref,
-                                    evidence_quote=evidence_quote), guard_state())
-        else:
-            text, slot = _fallback_question(focus_doc)
-            checked = (check(AskStep(action='ask_user', message=text, slot=slot),
-                             guard_state()) if text is not None else None)
-        if text is not None and checked.violation is not None:
-            sink.emit('warning', code=checked.violation.code, message=checked.violation.message)
-            text = None
+        text, slot, evidence_ref, evidence_quote, violations = _fallback_ask(
+            focus_doc, requirements, guard_state())
+        for violation in violations:
+            sink.emit('warning', code=violation.code, message=violation.message)
         if text is None:
             focus_doc.last_run_outcome = "limited"
             persist(focus_doc)

@@ -148,3 +148,6 @@ class OwnershipRuntimeTests(unittest.TestCase):
         self.assertEqual(set(payload), {'message', 'phase', 'candidates', 'experiences'})
         self.assertNotIn('https://', str(payload))
         self.assertNotIn('resume', str(payload).lower())
+        # 首行就是简历正文的段落不能把正文当标题发给模型。
+        self.assertNotIn('需求整理', str(payload))
+        self.assertEqual(payload['experiences'][0]['title'], '未命名经历')

@@ -347,6 +347,17 @@ class AnswerQualityTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(_quality_from_text(text), 'absent')
 
+    def test_negated_or_hypothetical_refusal_is_not_refused(self):
+        # 前缀是“不是/如果”时说的是没拒绝或假设，不能据此永久关闭槽位。
+        for text in ('不是不愿意说，只是没统计', '如果我说不想讨论呢'):
+            with self.subTest(text=text):
+                self.assertEqual(_quality_from_text(text), 'full')
+        self.assertEqual(_quality_from_text('不想说'), 'refused')
+
+    def test_uncertain_clause_with_short_content_is_full(self):
+        # 规范：不确定分句之外还有内容（哪怕很短）按 full，不能标 uncertain 关闭槽位。
+        self.assertEqual(_quality_from_text('效果忘了，做UI'), 'full')
+
     def test_uncertain_spans_map_to_slots(self):
         self.assertEqual(_map_uncertain_fields(['具体线上效果忘了'], None), ['effect'])
         self.assertEqual(_map_uncertain_fields(['忘了当时用了什么工具'], None), ['tech'])

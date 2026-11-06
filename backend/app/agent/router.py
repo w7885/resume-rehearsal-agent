@@ -62,19 +62,7 @@ def _is_decline(text: str) -> bool:
 def _effect_answer_kind(text: str) -> str:
     """Classify the saved user's response, not an inferred model fact."""
     value = re.sub(r'\s+', '', text).strip('。！!？?，,')
-    refusal_pattern = (
-        r'不想(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'别问|不要再问|不再问|跳过|先不说'
-    )
-    for match in re.finditer(refusal_pattern, value):
-        prefix = re.split(r'[，,。；;！？!?]', value[:match.start()])[-1]
-        # Quoted/hypothetical wording and "不是不愿意" are not the user's
-        # present refusal. Do not suppress a legitimate follow-up for them.
-        if (any(marker in prefix for marker in ('如果', '假如', '假设', '“', '「', '『', '"', "'"))
-                or re.search(r'(?:不是|并非|不代表|不表示|没有说|没说)$', prefix)):
-            continue
+    if _genuine_refusal(value):
         return 'refused'
     # A delivery status is not an effect refusal. Mixed replies with an actual
     # change remain available for the normal fact-recording path.
@@ -94,6 +82,20 @@ _REFUSAL = re.compile(
     r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
     r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|别问|不要再问|不再问|跳过|先不说'
 )
+
+
+def _genuine_refusal(value: str) -> bool:
+    # 引号里的转述、假设句和“不是不愿意”都不是用户此刻的拒绝；
+    # 误判会把槽位永久关闭，所以效果分类和分句质量共用同一判定。
+    for match in _REFUSAL.finditer(value):
+        prefix = re.split(r'[，,。；;！？!?]', value[:match.start()])[-1]
+        if (any(marker in prefix for marker in ('如果', '假如', '假设', '“', '「', '『', '"', "'"))
+                or re.search(r'(?:不是|并非|不代表|不表示|没有说|没说)$', prefix)):
+            continue
+        return True
+    return False
+
+
 _FIELD_WORDS = {
     'responsibility': ('负责', '参与', '分工', '承担'),
     'action': ('实现', '开发', '搭建', '完成', '处理', '做'),
@@ -110,7 +112,7 @@ def _quality_from_text(text: str) -> str:
     clauses = [clause for clause in re.split(r'[。；;\n，,]', value) if clause]
     if not clauses:
         return 'uncertain'
-    if any(_REFUSAL.search(clause) for clause in clauses):
+    if any(_genuine_refusal(clause) for clause in clauses):
         return 'refused'
     # 裸缺失回答没有效果词可匹配，只能整句相等识别，否则会落到 uncertain 并被多追问一次。
     if value.strip('。！!？?，,') in {'没有', '没了', '无', '没有了', '就这些'}:
@@ -129,7 +131,8 @@ def _quality_from_text(text: str) -> str:
         return 'full'
     if sum(len(clause) for clause in rest) >= 4:
         return 'partial'
-    return 'uncertain'
+    # 不确定分句外仍有内容时，短内容也是有效回答；按规范算 full，不能永久关闭槽位。
+    return 'full'
 
 
 def _map_uncertain_fields(spans, fallback=None):

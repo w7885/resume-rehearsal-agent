@@ -136,6 +136,9 @@ def requirement_quotes(repo, context):
                 evidence = json.loads(row['evidence_json'] or '{}')
             except (TypeError, ValueError):
                 continue
+            # 损坏或旧版行可能存成 list/str/int，不能当对象取字段。
+            if not isinstance(evidence, dict):
+                continue
             for field in ('requirements_quote', 'duties_quote'):
                 # 逐字截取证据原文，不改写：下游只能原样引用，改写会变成伪造岗位要求。
                 quote = _requirement_sentence(evidence.get(field) or '')

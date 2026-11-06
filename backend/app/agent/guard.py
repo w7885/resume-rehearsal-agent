@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from app.agent.memory import ExperienceDoc, effect_state, question_similarity, supported_experience_slots
+from app.agent.memory import (
+    ExperienceDoc,
+    effect_state,
+    question_similarity,
+    requirement_reopen_allowed,
+    supported_experience_slots,
+)
 from app.agent.ports import SessionContext
 from app.agent.schemas import (
     AskStep,
@@ -342,7 +348,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
             and effect_state(state.focus_doc) == "followup"
         )
         declined_block = step.slot in state.focus_doc.declined and not exempt_effect_followup
-        if declined_block and not evidence:
+        # 即使有证据，也只有 uncertain/legacy 的拒绝值得再引导；absent/refused 不再追问。
+        if declined_block and not (evidence and requirement_reopen_allowed(
+                state.focus_doc, step.slot)):
             return Violation("question_declined", "该维度已被用户拒绝")
         # “每槽一次”上限对所有槽生效，而非仅 declined：否则换种措辞再带证据即可反复追问
         # partial/uncertain 槽。declined 槽沿用“已拒绝”语义，其余槽报重复。

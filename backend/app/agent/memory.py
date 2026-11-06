@@ -479,6 +479,20 @@ def record_answer(
     raise KeyError(f"unknown question {question_id}")
 
 
+def requirement_reopen_allowed(doc: ExperienceDoc, slot: Slot) -> bool:
+    """已拒绝槽位能否凭岗位要求再问一次。
+
+    只有“不确定”（记不清等）和旧数据（没有质量标记）值得再引导；
+    absent/refused 是用户明确没有或不愿说，再问等于骚扰。
+    """
+    latest = next(
+        (q for q in reversed(doc.questions)
+         if q.slot == slot and q.outcome in {"answered", "declined"}),
+        None,
+    )
+    return latest is not None and latest.answer_kind in {"uncertain", "legacy"}
+
+
 def record_declined(doc: ExperienceDoc, slots: list[Slot]) -> None:
     for slot in slots:
         if slot != "confirm" and slot not in doc.declined:
