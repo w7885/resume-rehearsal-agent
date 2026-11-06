@@ -4,6 +4,20 @@ import re
 MAX_QUESTION_LENGTH = 120
 _SLOT_ORDER = ("responsibility", "action", "effect", "context", "evidence", "tech")
 
+_SLOT_LABELS = {
+    'responsibility': '职责',
+    'action': '具体做法',
+    'effect': '实际变化',
+    'context': '背景',
+    'evidence': '核对材料',
+    'tech': '技术或工具',
+}
+
+
+def requirement_question(quote, slot):
+    return (f'岗位要求里提到「{quote}」，你有相关的{_SLOT_LABELS[slot]}经历吗？'
+            '说一件最接近的就好，没有也可以。')
+
 _GUIDES = {
     "responsibility": (
         "可从设计、实现或测试中选一项说起；没参与的不用补充。",

@@ -46,6 +46,7 @@ from app.agent.questions import (
     guided_question,
     needs_detail,
     next_guide_variant,
+    requirement_question,
     with_answer_guidance,
 )
 from app.agent.section_policy import EXPERIENCE_KINDS, question as section_question
@@ -117,6 +118,19 @@ def _load_docs(
         if loaded is not None:
             docs.append(loaded[0])
     return docs
+
+
+def _requirement_question(doc, requirements):
+    # 每个 declined 槽最多用岗位要求问一次；已问过的槽跳过，避免换条要求反复追问。
+    for slot in _SLOT_ORDER:
+        if slot not in doc.declined or slot in doc.requirement_followups:
+            continue
+        for item in requirements or []:
+            quote = (item.get('quote') or '').strip()
+            reference = item.get('requirementId')
+            if len(quote) >= 4 and reference:
+                return requirement_question(quote, slot), slot, reference, quote
+    return None
 
 
 def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
@@ -399,17 +413,28 @@ async def run_loop(
         refresh()
         if focus_doc is None:
             return finish_result("limited")
-        text, slot = _fallback_question(focus_doc)
-        if text is not None:
-            checked = check(AskStep(action='ask_user', message=text, slot=slot), guard_state())
-            if checked.violation is not None:
-                sink.emit('warning', code=checked.violation.code, message=checked.violation.message)
-                text = None
+        requirements = (ctx.web_context or {}).get('requirements') or []
+        required = _requirement_question(focus_doc, requirements)
+        evidence_ref = evidence_quote = None
+        if required is not None:
+            text, slot, evidence_ref, evidence_quote = required
+            checked = check(AskStep(action='ask_user', message=text, slot=slot,
+                                    evidence_ref=evidence_ref,
+                                    evidence_quote=evidence_quote), guard_state())
+        else:
+            text, slot = _fallback_question(focus_doc)
+            checked = (check(AskStep(action='ask_user', message=text, slot=slot),
+                             guard_state()) if text is not None else None)
+        if text is not None and checked.violation is not None:
+            sink.emit('warning', code=checked.violation.code, message=checked.violation.message)
+            text = None
         if text is None:
             focus_doc.last_run_outcome = "limited"
             persist(focus_doc)
             return finish_result("limited")
-        question = record_question(focus_doc, text, slot)
+        question = record_question(focus_doc, text, slot,
+                                   evidence_ref=evidence_ref,
+                                   evidence_quote=evidence_quote)
         focus_doc.last_run_outcome = "waiting_user"
         persist(focus_doc)
         sink.emit(
@@ -453,6 +478,7 @@ async def run_loop(
             decision = None
         return decision, prompt_tokens, completion_tokens, cost
 
+    evidence_retries = 0
     for step_number in range(1, MAX_STEPS + 1):
         if cancel_event is not None and cancel_event.is_set():
             sink.emit("run_finished", outcome="cancelled", fallback_used=False)
@@ -518,8 +544,12 @@ async def run_loop(
                     return limited(error.code, error.message)
             load_ref_sources(decision)
             result = check(decision, guard_state())
-            if result.violation is None and isinstance(decision, AskStep) and focus_doc is not None:
-                decision = decision.model_copy(update={'message': with_answer_guidance(decision.message, focus_doc, decision.slot)})
+            # 带岗位要求原文的问题已有自己的“最接近的一件/没有也可以”提示，
+            # 再叠通用回答提示会重复且可能超出字数上限。
+            if (result.violation is None and isinstance(decision, AskStep)
+                    and focus_doc is not None and not decision.evidence_quote):
+                decision = decision.model_copy(update={'message': with_answer_guidance(
+                    decision.message, focus_doc, decision.slot)})
                 result = check(decision, guard_state())
             if result.violation is None:
                 gaps = result.gaps
@@ -532,6 +562,13 @@ async def run_loop(
                 **({'anchor_check': _anchor_diagnostic(decision, guard_state())}
                    if result.violation.code == 'stale_anchor' and isinstance(decision, ToolStep) else {}),
             )
+            # 证据引用不合规只给一次改正机会；继续重试往往只是模型换着编引用，直接兜底。
+            if result.violation.code.startswith('question_evidence'):
+                evidence_retries += 1
+                if evidence_retries > 1:
+                    return fallback()
+            else:
+                evidence_retries = 0
             if not result.violation.retryable:
                 return limited(result.violation.code, result.violation.message)
             note = (
@@ -645,7 +682,9 @@ async def run_loop(
 
         if isinstance(decision, AskStep):
             question = record_question(
-                focus_doc, decision.message.strip(), decision.slot
+                focus_doc, decision.message.strip(), decision.slot,
+                evidence_ref=decision.evidence_ref,
+                evidence_quote=decision.evidence_quote,
             )
             focus_doc.last_run_outcome = "waiting_user"
             persist(focus_doc)
@@ -656,6 +695,8 @@ async def run_loop(
                     args={
                         "message": decision.message,
                         "slot": decision.slot,
+                        "evidence_ref": decision.evidence_ref,
+                        "evidence_quote": decision.evidence_quote,
                     },
                     rationale=decision.rationale,
                     tokens=step_prompt + step_completion,

@@ -122,6 +122,46 @@ class QuestionWordingTests(unittest.TestCase):
         self.assertEqual(result.violation.code, 'question_multi')
 
 
+from app.agent.loop import _requirement_question
+
+
+class RequirementQuestionTests(unittest.TestCase):
+    def requirements(self):
+        return [{'requirementId': 'req-1', 'referenceId': 'ref-1',
+                 'quote': '负责跨部门需求对接与排期推进'}]
+
+    def test_requirement_question_targets_a_declined_slot_once(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        doc.declined = ['responsibility']
+        text, slot, ref, quote = _requirement_question(doc, self.requirements())
+        self.assertEqual(slot, 'responsibility')
+        self.assertEqual(ref, 'req-1')
+        self.assertEqual(quote, '负责跨部门需求对接与排期推进')
+        self.assertEqual(text.count('？'), 1)
+        self.assertLessEqual(len(text), 120)
+        self.assertIn('没有也可以', text)
+
+        state = GuardState(
+            session=SessionContext(
+                session=SessionInfo(session_id='test'),
+                web_context={'available': True, 'requirements': self.requirements()}),
+            focus_doc=doc, anchor_text=doc.raw_text)
+        self.assertIsNone(check(AskStep(
+            action='ask_user', message=text, slot=slot,
+            evidence_ref=ref, evidence_quote=quote), state).violation)
+
+    def test_no_second_requirement_question_for_the_same_slot(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        doc.declined = ['responsibility']
+        doc.requirement_followups = ['responsibility']
+        self.assertIsNone(_requirement_question(doc, self.requirements()))
+
+    def test_no_requirements_means_no_generated_followup(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        doc.declined = ['responsibility']
+        self.assertIsNone(_requirement_question(doc, []))
+
+
 class GuideVariationTests(unittest.TestCase):
     """引导文案按槽位和重试次数轮换，不再逐字复用。"""
 
