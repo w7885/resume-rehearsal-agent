@@ -277,6 +277,25 @@ class AgentWebTests(unittest.TestCase):
         current.sources=[SourceText(source_id='jd',kind='jd',text='精通SQL')]
         self.assertIsNone(_literal_fact_source(current,'精通SQL'))
 
+    def test_requirements_are_projected_from_accepted_job_evidence(self):
+        self.prepare()
+        result = self.execute(self.lookup())
+        requirements = self.bridge.view()['requirements']
+        self.assertEqual(requirements[0]['requirementId'], 'req-1')
+        self.assertEqual(requirements[0]['referenceId'], result['references'][0]['referenceId'])
+        self.assertIn(requirements[0]['quote'], result['references'][0]['content'])
+
+    def test_requirements_disappear_after_goal_change(self):
+        self.prepare()
+        self.execute(self.lookup())
+        with database(self.path) as c, transaction(c):
+            c.execute("UPDATE sessions SET direction=? WHERE session_id=?",
+                      ('另一家公司 上海 工程实习', self.sid))
+        self.context = self.run_context()
+        self.runtime.context = self.context
+        self.bridge = AgentWebBridge(self.runtime)
+        self.assertEqual(self.bridge.view()['requirements'], [])
+
     def test_assessment_order_can_prefer_source_without_merging_mirrors(self):
         def handler(_request):
             data=search_response(TEXT,url='https://platform.example.com/jobs/1')

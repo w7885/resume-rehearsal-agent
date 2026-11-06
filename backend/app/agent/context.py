@@ -59,6 +59,11 @@ def _questions_block(doc: ExperienceDoc) -> str:
     recent = [q for q in doc.questions if q.outcome != "asked"][-3:]
     for question in recent:
         lines.append(f"- 已问（{question.outcome}）：{question.text}")
+    partial = [q for q in doc.questions
+               if q.outcome == 'answered' and q.answer_kind == 'partial']
+    for question in partial[-2:]:
+        fields = ', '.join(question.uncertain_fields) or '部分细节'
+        lines.append(f'- 回答不完整，未确认：{fields}（可引用岗位要求换角度问一次）')
     if doc.declined:
         lines.append(f"- 已拒绝的维度：{', '.join(doc.declined)}")
     return "\n".join(lines) if lines else "（暂无）"
@@ -177,7 +182,9 @@ def assemble_context(
                         '本轮明确要求具体岗位适配且缺依据时先取证；只做通用整理不机械搜索。'
                         '完整用户JD优先，不重复搜索岗位要求；目标不唯一时先澄清。'
                         '引用仅用已给referenceId，不能把外部编号放入source_refs，不能把岗位要求写成已有技能。'
-                        '状态未核实不代表在招；明确下线或实际冲突不用于当前岗位适配。')
+                        '状态未核实不代表在招；明确下线或实际冲突不用于当前岗位适配。'
+                        + '\n岗位要求原文只能逐字引用，不得改写、拼接、翻译；引导提问引用时填写 evidence_ref 与 evidence_quote。'
+                        '没有requirements时不得声称按岗位要求引导。')
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:

@@ -155,3 +155,29 @@ class DecisionBindingTests(unittest.TestCase):
         self.analyze(session, user, 'yes')
         self.assertEqual(self.count('suggestion_decisions'), 1)
         self.assertEqual(host.decision_calls, 0)
+
+
+class RequirementContextTests(unittest.TestCase):
+    def test_requirements_and_verbatim_rule_are_in_context(self):
+        ctx = SessionContext(
+            session=SessionInfo(session_id='s'),
+            web_context={'available': True, 'jobEvidenceStatus': 'verified_job_reference',
+                         'requirements': [{'requirementId': 'req-1', 'referenceId': 'ref-1',
+                                           'quote': '负责跨部门需求对接与排期推进'}]},
+        )
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        output = assemble_context(ctx, [doc], {}, 'p1')
+        self.assertIn('req-1', output)
+        self.assertIn('负责跨部门需求对接与排期推进', output)
+        self.assertIn('岗位要求原文只能逐字引用', output)
+
+    def test_partial_uncertain_fields_are_visible_without_declining(self):
+        ctx = SessionContext(session=SessionInfo(session_id='s'))
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        doc.questions.append(Question(
+            id='q1', slot='effect', text='带来了哪些变化？', fingerprint='f',
+            outcome='answered', answer_kind='partial',
+            uncertain_fields=['effect'], uncertain_spans=['具体效果忘了']))
+        output = assemble_context(ctx, [doc], {}, 'p1')
+        self.assertIn('未确认：effect', output)
+        self.assertNotIn('已拒绝的维度：effect', output)
