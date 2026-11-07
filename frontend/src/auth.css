@@ -11,6 +11,10 @@
 .auth-card button:disabled { opacity:.6; cursor:wait; }
 .auth-card :focus-visible,.auth-account button:focus-visible { outline:2px solid #427eae; outline-offset:3px; }
 .auth-card .auth-error { color:#a12c25; margin:8px 0 0; }
+.auth-card .auth-notice { color:#285a4b; margin:8px 0 0; }
+.auth-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.auth-actions button { background:transparent; color:#285a4b; border:1px solid #c7d6cf; border-radius:7px; padding:0 14px; cursor:pointer; }
+.auth-actions button[aria-pressed="true"] { background:#edf4f0; border-color:#285a4b; font-weight:650; }
 .auth-card .auth-privacy { font-size:12px; border-top:1px solid #e7e9ec; padding-top:16px; }
 .auth-account { position:fixed; right:20px; bottom:8px; z-index:50; display:flex; align-items:center; gap:10px; max-width:90vw; background:#fff; border:1px solid #e7e9ec; border-radius:7px; padding:4px 10px; font-size:12px; }
 .auth-account span { max-width:160px; overflow:hidden; text-overflow:ellipsis; }

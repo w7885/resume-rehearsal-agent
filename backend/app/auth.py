@@ -1,4 +1,4 @@
-"""Closed-pilot Supabase authentication; no tokens or credentials are logged."""
+"""Verified Supabase identities with explicit invited/open access policy."""
 from contextvars import ContextVar
 from dataclasses import dataclass
 import os
@@ -18,6 +18,7 @@ class RemoteSettings:
     public_host: str
     origins: tuple[str, ...]
     emails: frozenset[str]
+    access_mode: str = 'invited'
 
     @classmethod
     def from_environment(cls):
@@ -32,6 +33,9 @@ class RemoteSettings:
         public = urlsplit(os.getenv('PUBLIC_API_URL', ''))
         origins = tuple(value.strip().rstrip('/') for value in os.getenv('ALLOWED_ORIGINS', '').split(',') if value.strip())
         emails = frozenset(value.strip().lower() for value in os.getenv('ALLOWED_USER_EMAILS', '').split(',') if value.strip())
+        access_mode = os.getenv('AUTH_ACCESS_MODE', 'invited')
+        if access_mode not in {'invited', 'open'}:
+            raise RuntimeError('Unsupported AUTH_ACCESS_MODE.')
         key = os.getenv('SUPABASE_PUBLISHABLE_KEY', '')
         database = urlsplit(os.getenv('DATABASE_URL', ''))
         secure = parse_qs(database.query).get('sslmode', []) in [['require'], ['verify-full']]
@@ -39,9 +43,9 @@ class RemoteSettings:
             parsed = urlsplit(value)
             return parsed.scheme == 'https' and bool(parsed.hostname) and not parsed.username and not parsed.password and parsed.path in {'', '/'} and not parsed.query and not parsed.fragment
         if not (https_origin(url) and https_origin(public.geturl()) and origins and all(https_origin(value) for value in origins)
-                and key and emails and database.scheme in {'postgres', 'postgresql'} and secure):
+                and key and (emails or access_mode == 'open') and database.scheme in {'postgres', 'postgresql'} and secure):
             raise RuntimeError('Remote configuration incomplete; use private platform environment settings.')
-        return cls(url, key, public.netloc, origins, emails)
+        return cls(url, key, public.netloc, origins, emails, access_mode)
 
 
 async def verify_user(settings, token):
@@ -55,7 +59,10 @@ async def verify_user(settings, token):
     try:
         user = response.json()
         identity = str(UUID(user['id']))
-        if user.get('email', '').lower() not in settings.emails or not user.get('email_confirmed_at'):
+        email = user.get('email')
+        if (not isinstance(email, str) or not email.strip() or not user.get('email_confirmed_at')
+                or user.get('is_anonymous') is True
+                or (settings.access_mode != 'open' and email.lower() not in settings.emails)):
             return None
         return identity
     except (ValueError, TypeError, KeyError, AttributeError):

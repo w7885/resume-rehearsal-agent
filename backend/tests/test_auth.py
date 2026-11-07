@@ -72,6 +72,29 @@ class AuthenticationTests(unittest.TestCase):
             listed = self.request('GET', '/api/sessions', token=token)['json']['data']
             self.assertEqual([row['sessionId'] for row in listed], [expected])
 
+    def test_open_registration_retains_account_isolation_and_one_shared_budget(self):
+        with patch('app.auth.RemoteSettings.from_environment', return_value=replace(SETTINGS, emails=frozenset(), access_mode='open')):
+            opened = create_app(self.path)
+        old_app = self.app
+        lifecycle = opened.router.lifespan_context(opened)
+        self.runner.run(lifecycle.__aenter__())
+        self.app = opened
+        try:
+            a, b = self.create(), self.create('token-b')
+            self.assertEqual(self.request('GET', '/api/sessions/'+a, token='token-b')['status'], 404)
+            self.assertEqual(self.request('GET', '/api/sessions/'+b)['status'], 404)
+            from app.agent_budget import ProjectBudget
+            budget = ProjectBudget(self.path, 'synthetic-shared', 1000)
+            self.assertTrue(budget.reserve_request('synthetic-open-cost', 5))
+            budget.settle_request('synthetic-open-cost', 3)
+            for token, sid in [('token-a', a), ('token-b', b)]:
+                value = self.request('GET', '/api/sessions/'+sid+'/budget', token=token)['json']['data']
+                self.assertEqual(value['spentCents'], 3)
+                self.assertEqual(value['limitCents'], 1000)
+        finally:
+            self.app = old_app
+            self.runner.run(lifecycle.__aexit__(None, None, None))
+
     def test_cross_account_paths_materials_runs_and_mutations_are_rejected(self):
         sid = self.create()
         base = '/api/sessions/' + sid
@@ -110,6 +133,33 @@ class AuthenticationTests(unittest.TestCase):
 
 
 class RemoteConfigurationTests(unittest.TestCase):
+    def test_open_mode_is_explicit_and_keeps_required_security_configuration(self):
+        env = {'APP_MODE':'remote', 'SUPABASE_URL':'https://synthetic.supabase.co',
+               'PUBLIC_API_URL':'https://api.example.com', 'ALLOWED_ORIGINS':'https://app.example.com',
+               'SUPABASE_PUBLISHABLE_KEY':'synthetic-public',
+               'DATABASE_URL':'postgresql://synthetic@localhost/synthetic?sslmode=require'}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(RuntimeError): RemoteSettings.from_environment()
+            os.environ['AUTH_ACCESS_MODE'] = 'open'
+            self.assertEqual(RemoteSettings.from_environment().access_mode, 'open')
+            os.environ['ALLOWED_ORIGINS'] = ''
+            with self.assertRaises(RuntimeError): RemoteSettings.from_environment()
+        with patch.dict(os.environ, {**env, 'AUTH_ACCESS_MODE':'typo'}, clear=True):
+            with self.assertRaises(RuntimeError): RemoteSettings.from_environment()
+
+    def test_open_accepts_new_confirmed_email_but_not_anonymous_or_unverified_identities(self):
+        from app.auth import verify_user
+        import httpx
+        user = {'id':USER_A, 'email':'new@example.com', 'email_confirmed_at':'2026-11-07T00:00:00Z'}
+        with asyncio.Runner() as runner:
+            for changes, mode, expected in [({}, 'open', USER_A), ({}, 'invited', None),
+                    ({'email_confirmed_at':None}, 'open', None), ({'email':''}, 'open', None),
+                    ({'is_anonymous':True}, 'open', None), ({'id':'forged'}, 'open', None)]:
+                response = httpx.Response(200, json={**user, **changes})
+                with patch('app.auth.httpx.AsyncClient') as client:
+                    client.return_value.__aenter__.return_value.get = AsyncMock(return_value=response)
+                    self.assertEqual(runner.run(verify_user(replace(SETTINGS, access_mode=mode), 'synthetic-token')), expected)
+
     def test_remote_requires_all_settings_and_encrypted_database(self):
         with patch.dict(os.environ, {'APP_MODE':'remote'}, clear=True):
             with self.assertRaises(RuntimeError):
