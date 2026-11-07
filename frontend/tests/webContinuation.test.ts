@@ -44,6 +44,7 @@ test('unknown POST keeps exact event payload for explicit retry', async () => {
   const c = new WebContinuationController(undefined, undefined, undefined, {
     read: async () => pending,
     create: (sid, request) => operation(sid, request, async (_, init) => {
+      if (init?.method === 'GET') return Response.json({ ok:false }, { status:404 });
       bodies.push(String(init?.body)); if (bodies.length === 1) throw new ApiError('lost'); return response(request.requestId);
     }),
   });
