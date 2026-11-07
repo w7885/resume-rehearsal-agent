@@ -394,12 +394,20 @@ class Intake:
         reply = text if (explicit_change or not goal['direction'] or (old and old.get('inputPromptId'))) else ''
         if old is None:
             self.service._episode(self.r.context, 'initial-intake')
-        value = await self.r._json(
-            '解析联网搜索线索。只用用户明确的公开求职意向，不猜公司、不从简历推断方向。'
-            '输出JSON对象company、role、direction、location、employment_type、posting_id，未知均空字符串。'
-            '全部非空值逐字来自输入，招聘类型保持用户原文；只有公司时direction必须为空。',
-            {'goal': '' if explicit_change else goal['direction'], 'userJD': '' if explicit_change else goal['jd'][:6000], 'targetReply': reply})
-        hints = Hints.model_validate(value)
+        # 用户在回答“你想找哪类岗位？”时，短回答原文就是方向；不依赖模型字段，
+        # 避免模型偶尔返回全空对象导致同一问题被反复重问。
+        answered_direction = bool(old and old['phase'] == 'needs_direction' and old.get('inputPromptId')
+            and len(text) <= 60 and '\n' not in text and not re.search(r'[？?]', text))
+        if answered_direction:
+            hints = Hints(direction=text)
+        else:
+            value = await self.r._json(
+                '解析联网搜索线索。只用用户明确的公开求职意向，不猜公司、不从简历推断方向。'
+                '输出JSON对象company、role、direction、location、employment_type、posting_id，未知均空字符串。'
+                '只给岗位名称或方向时必须填入role或direction。'
+                '全部非空值逐字来自输入，招聘类型保持用户原文；只有公司时direction必须为空。',
+                {'goal': '' if explicit_change else goal['direction'], 'userJD': '' if explicit_change else goal['jd'][:6000], 'targetReply': reply})
+            hints = Hints.model_validate(value)
         proof = reply if explicit_change else goal['direction'] + '\n' + goal['jd'][:6000] + '\n' + reply
         if any(value and value not in proof for value in hints.model_dump().values()):
             raise WebProviderError('unanchored_public_intent')

@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import httpx
 
-from app.web_provider import PublicTarget, VolcWebClient, WebProviderError, WebSettings, public_url, public_url_shape
+from app.web_provider import (PublicSearchIntent, PublicTarget, VolcWebClient, WebProviderError,
+                              WebSettings, public_url, public_url_shape)
 
 
 async def public_resolver(_host):
@@ -38,6 +39,13 @@ class PublicQueryTests(unittest.TestCase):
         self.assertEqual(target.query(short=True), 'SAP 工程实习 REF2624S')
         self.assertEqual(target.key, PublicTarget('SAP','工程实习','上海','实习','REF2624S').key)
         self.assertNotEqual(target.key, PublicTarget('SAP','工程实习','广州','实习','REF2624S').key)
+
+    def test_direction_only_discovery_query_adds_recruitment_keyword(self):
+        # 只给“销售”这类方向时，裸词会搜到行业文章；补“招聘”才能落到岗位页。
+        self.assertEqual(PublicSearchIntent(direction='销售').query(), '销售 招聘')
+        self.assertEqual(PublicSearchIntent(company='构造公司', direction='销售').query(),
+                         '构造公司 销售 招聘')
+        self.assertEqual(PublicSearchIntent(role='工程实习').query(), '工程实习')
 
     def test_contact_information_multiline_and_overlong_queries_rejected(self):
         for company in ('用户@example.com','联系电话13800138000','第一行\n第二行','https://example.com'):

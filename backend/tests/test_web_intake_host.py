@@ -156,6 +156,49 @@ class IntakeHostTests(unittest.TestCase):
             self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'deferred')
         self.assertNotIn('哪类岗位', self.conversation(session)['messages'][-1]['content'])
 
+    def test_duplicate_source_is_deduped_instead_of_failing(self):
+        class DuplicateSourceClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    ref = json.loads(user)['references'][0]
+                    return SimpleNamespace(data={'candidates': [
+                        {'referenceId': ref['referenceId'], 'company': '构造公司',
+                         'role': '工程实习生', 'location': '广州', 'employmentType': '实习'},
+                        {'referenceId': ref['referenceId'], 'company': '构造公司',
+                         'role': '工程实习', 'location': '广州', 'employmentType': '实习'}]})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: DuplicateSourceClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        with database(self.path) as c:
+            self.assertEqual(len(web_intake.load(c, session['sessionId'])['candidates']), 1)
+
+    def test_candidate_extraction_tolerates_echoed_type_field(self):
+        class EchoTypeClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    normal = await super().complete_json(system=system, user=user, run_id=run_id)
+                    return SimpleNamespace(data={'type': 'json_object', **normal.data})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: EchoTypeClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_bare_direction_answer_is_searched_without_model_fields(self):
+        session = self.ready(direction='')
+        self.user_turn(session, '找岗位', 'ask-direction')
+        prompt = self.conversation(session)['messages'][-1]
+        self.assertIn('哪类岗位', prompt['content'])
+        self.user_turn(session, 'Python后端开发实习生', 'answer', prompt['messageId'])
+        value = self.conversation(session)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn('候选', value['messages'][-1]['content'])
+
     def test_direction_reply_is_used_without_repeating_company_question(self):
         session = self.ready(direction='构造公司')
         self.user_turn(session, '想找岗位。', 'company')

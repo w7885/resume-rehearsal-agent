@@ -129,7 +129,11 @@ class PublicSearchIntent:
             raise WebProviderError('missing_job_direction')
 
     def query(self):
-        parts = [self.company, self.role or self.direction, self.location,
+        # 只给方向时（如“销售”）裸词会搜到行业文章；补“招聘”才能落到岗位页。
+        direction = self.direction
+        if not self.role.strip() and direction.strip():
+            direction += ' 招聘'
+        parts = [self.company, self.role or direction, self.location,
                  self.employment_type, self.posting_id]
         query = ' '.join(part.strip() for part in parts if part.strip())
         if len(query) > 100:

@@ -83,8 +83,9 @@ def offer(connection, session, *, episode_id, expected_revision, candidates):
         PublicSearchIntent(company=candidate['company'], role=candidate['role'],
                            location=candidate['location'], employment_type=candidate['employmentType'])
         identity = reference_identity(row['url'])
+        # 列表页一页多岗时模型会给出同源多条；保留排序靠前的一条，不整批作废。
         if identity in identities:
-            raise RepositoryError('invalid_input', '同一来源不可重复列为多个候选。')
+            continue
         identities.add(identity)
         candidate_id = 'candidate-' + hashlib.sha256(
             (state['episodeId'] + '\0' + identity).encode()).hexdigest()[:24]

@@ -357,6 +357,9 @@ class Runtime:
         data = result.data if hasattr(result,'data') else result
         if not isinstance(data,dict):
             raise RepositoryError('invalid_input','分析返回格式无效。')
+        # 模型偶尔把 response_format 的 type 回显进 JSON；各调用方的 schema 都用不到该字段。
+        if isinstance(data.get('type'),str):
+            data = {key: item for key, item in data.items() if key != 'type'}
         return data
 
     def _pending(self):

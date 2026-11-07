@@ -128,14 +128,16 @@ class CandidateTests(unittest.TestCase):
             self.choose(state)
         self.assertEqual(error.exception.code, 'stale_state')
 
-    def test_candidates_cannot_invent_company_or_reuse_one_source_twice(self):
+    def test_candidates_cannot_invent_company_and_dedupe_one_source(self):
         state = self.offered()
-        for values in [[{**self.candidate, 'company': '伪造公司'}],
-                       [self.candidate, self.candidate]]:
-            with self.assertRaises(RepositoryError):
-                with self.repo._operation(self.context, write=True) as (c, s):
-                    candidates.offer(c, s, episode_id=state['episodeId'],
-                        expected_revision=state['revision'], candidates=values)
+        with self.assertRaises(RepositoryError):
+            with self.repo._operation(self.context, write=True) as (c, s):
+                candidates.offer(c, s, episode_id=state['episodeId'],
+                    expected_revision=state['revision'], candidates=[{**self.candidate, 'company': '伪造公司'}])
+        with self.repo._operation(self.context, write=True) as (c, s):
+            deduped = candidates.offer(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], candidates=[self.candidate, self.candidate])
+        self.assertEqual(len(deduped['candidates']), 1)
 
     def test_stale_settings_or_intent_cannot_select(self):
         state = self.prompted()
