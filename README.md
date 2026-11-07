@@ -2,7 +2,7 @@
 
 面向实习求职场景的简历修改 Agent。用户提供简历、求职方向及可选岗位描述后，通过对话说明需要调整的内容；Agent 基于材料追问、提出有依据的改写，经用户明确确认后更新当前稿，支持预览、复制与 Markdown 下载。
 
-本项目在本机运行。AI 分析需要自行配置 DeepSeek API Key；不开启模型时，可使用内容保存、预览和 Markdown 导出。语音输入可选用本地 Vosk 中文模型，转文字后校对并手动发送；语音输出尚未实现。
+默认按下文在本机运行，也已加入 PostgreSQL 与受邀账号远程访问的部署准备。云端连接、真实账号登录及线上联调仍需验证。AI 分析需要自行配置 DeepSeek API Key；不开启模型时，可使用内容保存、预览和 Markdown 导出。语音输入可选用本地 Vosk 中文模型，转文字后校对并手动发送；语音输出尚未实现。
 
 ## 界面预览
 
@@ -39,6 +39,8 @@
 - 语音输入：Web Audio／AudioWorklet 采集声音并编码为 WAV；FastAPI 校验后由独立 Vosk 子进程离线识别，结果回填输入框，不自动发送。
 
 ## 本机启动
+
+本机默认使用 SQLite；PostgreSQL 与远程部署配置见下方「PostgreSQL 与远程部署准备」。
 
 需要安装 Git、Node.js 24 和 Python 3.13。以下命令以 Windows PowerShell 为例；其他系统需调整虚拟环境的 Python 路径。依赖以 `frontend/package-lock.json` 与 `backend/requirements.txt` 为准。
 
@@ -210,8 +212,56 @@ npm run build
 
 同会话的引用与写入受范围、版本和有效来源校验；数据库只能保证结构与关联，不能证明用户经历真实或模型表达忠实。工具权限和写稿规则以代码及 [API 说明](backend/API.md) 为准。
 
+## PostgreSQL 与远程部署准备
+
+目标链路为 Vercel 前端 → Render Python 后端 → Supabase PostgreSQL。SQLite 保留为本地兼容方式；一个应用实例使用一种数据库，不自动双写，也不自动把旧 SQLite 数据导入云端。Supabase 项目已创建不代表应用已连接；本节配置与 `render.yaml` 不代表已部署或通过线上验收。
+
+### 后端配置
+
+在 Render 的私密环境变量编辑器中填写下列配置，不把真实值写进文件、命令行、聊天或 PR：
+
+| 变量 | 用途 |
+|---|---|
+| `APP_MODE=remote` | 开启服务端认证与远程来源检查；Render 禁止以未认证本地模式启动 |
+| `DATABASE_URL` | Supabase 的 PostgreSQL **Session pooler** 连接配置，启用 TLS（`sslmode=require` 或 `verify-full`）；当前连接依赖会话级设置，不使用 Transaction pooler |
+| `SUPABASE_URL` | 当前项目的 HTTPS 地址 |
+| `SUPABASE_PUBLISHABLE_KEY` | 供后端核对 Supabase Auth 身份的可发布配置；不用高权限服务密钥替代 |
+| `PUBLIC_API_URL` | 当前 Render 服务的 HTTPS 根地址，供 Host 检查 |
+| `ALLOWED_ORIGINS` | 精确允许的前端 HTTPS 源，多个用逗号分隔，不使用通配符 |
+| `ALLOWED_USER_EMAILS` | 受邀账号邮箱，多个用逗号分隔；账号须在 Supabase 中确认邮箱 |
+
+后端根目录 `backend`，安装命令 `pip install -r requirements.txt`；启动命令见 `render.yaml`，使用一个 worker。Host 的运行任务与恢复逻辑目前不支持横向多实例调度。自动部署关闭，部署准确提交后再核对运行版本。
+
+首次启动会在专用 `resume_app` schema 建立 PostgreSQL 业务表，并检查结构与迁移历史。SQLite 旧文件仍使用原迁移链；新代码会升级到含会话归属的 schema 16，因此升级原有 SQLite 前须备份，不能把旧版代码直接指向已升级数据库。旧会话归属保持为空，不会分配给第一个登录的人。
+
+初次远程检查保持 `AGENT_ENABLED=0`、`AGENT_BUDGET_CONFIRMED=0`、`VISION_ENABLED=0`。模型、搜索与图片调用另按实际配置启用；启用前必须核对并接续全项目已有费用与预留，不能把新云数据库视为重新获得预算。
+
+### 前端与登录
+
+在 Vercel 设置 `VITE_APP_MODE=remote`、`VITE_API_BASE_URL`、`VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY` 后重新构建；后端地址使用 HTTPS 根地址。`VITE_` 配置会进入浏览器产物，不能包含数据库密码、模型密钥或 Supabase 高权限凭据。
+
+首版使用受邀邮箱＋密码，后端核对令牌并逐次检查会话归属；附件预览、下载和流式分析同样携带认证。令牌仅在页面内存中保存，刷新或到期后需重新登录，没有自动续期。重新登录前应保留尚未发送的草稿；退出操作会提示未发送文字将被清除。真实 Supabase 登录与浏览器联调尚未验证，当前只使用脱敏构造材料进行封闭测试。
+
+### 本地验证与验收边界
+
+在 `backend` 目录运行原有 SQLite 全量回归：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+PostgreSQL 测试需单独准备可销毁的本机数据库，名称以 `resume_test_` 开头，并在仅本轮终端环境设置 `RESUME_TEST_POSTGRES_URL`；不能指向正式库或 Supabase 生产库。测试会清理该专用测试库中的业务数据。然后运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_postgres.py -v
+```
+
+SQLite 全量运行时应不设置 `RESUME_TEST_POSTGRES_URL`，5 项专属 PostgreSQL 测试将明确跳过；独立 PostgreSQL 作业实际连接 PostgreSQL，不使用 SQLite 模拟。GitHub Actions 提供独立 PostgreSQL 16 服务进行相同回归，使用的是构造数据与模拟 Auth/模型，不调用真实供应商。
+
+本地验证基线为 SQLite 807 项通过／5 项 PostgreSQL 用例跳过、PostgreSQL 数据库业务及保护 81 项全部通过，前端 91 项与生产构建通过。两边覆盖范围不同；这些结果不能证明所有功能已在 PostgreSQL 上验收、真实模型质量达标或云端部署成功。上线还需验证真实登录、账号间隔离、附件访问、重启后恢复、云端持久化和预算接续。
+
 ## 隐私与本地文件
 
-会话、附件、稿件和费用记录保存在本机数据库中。开启模型分析后，所需文字或图片会发送至所配置的模型提供商；可选语音识别在本机完成。
+本地方式将会话、附件、稿件和费用记录保存在本机数据库中；远程方式保存到配置的 PostgreSQL 服务。开启模型分析后，所需文字或图片会发送至所配置的模型提供商；可选语音识别在后端所在机器完成，云端是否可用取决于是否安装语音依赖与模型。
 
 `.env`、默认数据库、运行日志、下载的语音模型和其他 `.local/` 内容由 `.gitignore` 排除。忽略规则不能识别任意文件中的密钥或个人信息；请勿将包含个人简历或密钥的文件提交到公开仓库，反馈问题时请先移除个人信息。接口字段与错误说明见 [业务 API 文档](backend/API.md)。

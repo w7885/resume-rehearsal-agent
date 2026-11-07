@@ -95,7 +95,8 @@ _ACTIVE_SOURCE = """
 class Repository:
     def __init__(self, path: str | Path = DEFAULT_DATABASE_PATH, *, _connection=None):
         # Path is a trusted application setting, not a model-visible parameter.
-        self.path = Path(path).resolve()
+        from app.postgres import database_target
+        self.path = database_target(path)
         # Used only by the trusted HTTP service for one short request transaction.
         # Never reuse a bound Repository across transactions or threads.
         self._connection = _connection
@@ -130,6 +131,9 @@ class Repository:
         session = connection.execute("SELECT * FROM sessions WHERE session_id = ?", (context.session_id,)).fetchone()
         if session is None:
             raise RepositoryError("session_not_found", "没有找到当前会话。")
+        from app.auth import current_user
+        if current_user.get() is not None and session['owner_user_id'] != current_user.get():
+            raise RepositoryError('session_not_found', '没有找到当前会话。', False)
         if context.expected_state_revision is not None and context.expected_state_revision != session["state_revision"]:
             raise RepositoryError("stale_state", "会话已更新，请读取最新状态。")
         if context.run_id is not None:
@@ -171,11 +175,15 @@ class Repository:
         direction = _text(direction, "求职方向").strip()
         session_id = _id("session")
         with self._connection_scope(write=True) as connection:
-            connection.execute("INSERT INTO sessions(session_id, direction) VALUES (?, ?)", (session_id, direction))
+            from app.auth import current_user
+            connection.execute("INSERT INTO sessions(session_id, direction, owner_user_id) VALUES (?, ?, ?)", (session_id, direction, current_user.get()))
             return self._session(connection.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone())
 
     def list_sessions(self):
         with self._connection_scope() as connection:
+            from app.auth import current_user
+            if current_user.get() is not None:
+                return [self._session(row) for row in connection.execute('SELECT * FROM sessions WHERE owner_user_id=? ORDER BY updated_at DESC,session_id', (current_user.get(),))]
             return [self._session(row) for row in connection.execute("SELECT * FROM sessions ORDER BY updated_at DESC, session_id")]
 
     def get_session(self, context: RequestContext):

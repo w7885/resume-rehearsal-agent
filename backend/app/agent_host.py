@@ -155,6 +155,13 @@ class AgentHost:
             return {'requestId': request_id, 'runId': row['root_run_id'], 'status': row['status'], 'outcome': row['outcome'], 'events': events}
 
     async def cancel(self, run_id):
+        from app.auth import current_user
+        if current_user.get() is not None:
+            with database(self.repo.path) as connection:
+                owner = connection.execute('SELECT session_id FROM runs WHERE run_id=?', (run_id,)).fetchone()
+                if owner is None:
+                    raise RepositoryError('source_not_found', '分析记录不存在。')
+                self.repo._check_context(connection, RequestContext(owner['session_id']))
         from app.web_control import cancel_if_control
         controlled = await cancel_if_control(self, run_id)
         if controlled is not None:
@@ -421,7 +428,7 @@ class Runtime:
                 bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial))
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
-            connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
+            connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
         self.initial_import = bool(initial)
 
     REMINDER_PREFIX = '另有一条改写等你确认'
@@ -531,7 +538,7 @@ class Runtime:
 
     async def _analyze_next(self, turn, out=None):
         from app.agent_goal import sync
-        from app.agent_progress import CONTINUE, KEEP_NEXT, REVIEW_KINDS, announce, plain, plan, record, label, completion
+        from app.agent_progress import CONTINUE, KEEP_NEXT, announce, plain, plan, record, label, completion
         from app.agent.memory import _block_title, load_session, save_session
         from app.resume_structure import SECTION_TYPES
         if not getattr(self, 'control_event', False):
@@ -628,12 +635,7 @@ class Runtime:
             if target_reply:
                 forced = True
         if not asking_goal and progress['announced'] != focus['blockId']:
-            title = _block_title(focus['markdown'])
-            if progress['sectionKinds'].get(focus['blockId']) in REVIEW_KINDS:
-                index = progress['blocks'].index(focus) + 1
-                self._reply(f'现在进入第 {index} 段「{title}」的修改。')
-            else:
-                self._reply(f'现在进入「{title}」的修改。')
+            # Keep continuation bookkeeping, without a second chat announcement.
             announce(self, focus['blockId'])
         self._emit('progress', {'message': '正在检查当前段落。'})
         saved, notices, questions, warnings = [], [], [], []
@@ -692,7 +694,7 @@ class Runtime:
             following = plan(self)
             reason = section.get('summary', '').strip()[:300]
             text = '本段本轮保留原文。' + (reason + '\n' if reason else '\n')
-            text += ('下一步检查' + label(following['remaining'][0]) + '，回复“继续”即可接着处理。') if following['remaining'] else completion(following)
+            text += ('下一步检查' + label(following['remaining'][0], following['sectionKinds'].get(following['remaining'][0]['blockId'])) + '，回复“继续”即可接着处理。') if following['remaining'] else completion(following)
             self._reply(text, external_reference_ids=section_external_ids or None)
         elif any(w.get('code') == 'budget_exhausted' for w in warnings):
             self._reply('剩余额度不足以生成下一条建议。已采用的内容已保存；当前稿仍可预览或导出。')
@@ -736,7 +738,7 @@ class Runtime:
             return None
         suggestions = [
             {'id': s['suggestionId'],
-             'title': next((label(b) for b in progress['blocks']
+             'title': next((label(b, progress['sectionKinds'].get(b['blockId'])) for b in progress['blocks']
                             if b['blockId'] == s['target']['blockId']), s['target']['blockId']),
              'after': s['after'][:300]}
             for p in turn['candidatePrompts'] for s in p['suggestions']

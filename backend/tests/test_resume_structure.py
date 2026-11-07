@@ -65,6 +65,88 @@ class SegmentedClient(integration.FakeClient):
 
 
 class StructureUnitTests(unittest.TestCase):
+    def test_experience_titles_use_project_name_or_company_and_role(self):
+        from app.resume_structure import experience_title
+        from app.agent_progress import label
+        examples = [
+            ('project', '项目经历1\n2025.01—2025.03｜课程作业管理系统｜个人开发者\n- 负责接口', '课程作业管理系统'),
+            ('project', '个人项目\nSmartDataFlow - 独立开发\n2024年2月 北京\n- 负责实现', 'SmartDataFlow'),
+            ('work', '实习经历\n字节跳动（抖音） 2024年7月 - 至今\n北京\nAI产品开发实习生\n- 负责接口', '字节跳动(抖音)｜AI产品开发实习生'),
+            ('work', '2024.03—2024.06｜腾讯｜产品策划实习生\n- 负责产品设计', '腾讯｜产品策划实习生'),
+            ('work', '公司甲 - 项目经理 2024.01-2024.06\n- 负责接口', '公司甲｜项目经理'),
+            ('work', '公司乙 2024.01-2024.06\n- 与腾讯产品经理讨论方案', '公司乙｜岗位待确认'),
+            ('project', '项目经历1\n- 参与接口测试。', '项目名称待确认'),
+            ('work', '公司名称：Acme\n实习岗位：FDE\n- 负责集成', 'Acme｜FDE'),
+            ('project', '项目名称：Web前端开发\n- 负责界面', 'Web前端开发'),
+            ('project', '校园二手交易平台：负责前端页面开发。', '校园二手交易平台'),
+        ]
+        for kind, markdown, expected in examples:
+            with self.subTest(markdown=markdown):
+                self.assertEqual(experience_title(markdown, kind), expected)
+                self.assertEqual(label({'markdown': markdown}, kind), expected)
+
+    def test_company_first_dates_separate_internships_without_changing_text(self):
+        body = ('实习经历\r\n字节跳动（抖音） 2024年7月 - 至今\r\n北京\r\n项目经理\r\n• 负责接口甲\r\n'
+                '腾讯 2024年3月 - 2024年6月\r\n北京\r\n项目经理\r\n• 负责服务乙\r\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertFalse(any('字节跳动' in p and '腾讯' in p for p in parts))
+        self.assertTrue(any('字节跳动' in p and '接口甲' in p for p in parts))
+        self.assertTrue(any('腾讯' in p and '服务乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work'])
+
+    def test_separate_date_lines_stay_with_the_preceding_company(self):
+        body = '实习经历\n公司甲\n2024年7月-至今\n- 接口甲\n\n公司乙\n2024年3月-2024年6月\n- 服务乙\n'
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertTrue(any('公司甲\n2024' in p and '接口甲' in p and '公司乙' not in p for p in parts))
+        self.assertTrue(any(p.startswith('公司乙\n2024') and '服务乙' in p for p in parts))
+
+    def test_project_name_then_single_month_and_same_role_are_independent(self):
+        body = '个人项目\n系统甲 2024年2月\n开发者\n- 接口甲\n系统乙\n2024年3月\n开发者\n- 服务乙\n'
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertFalse(any('系统甲' in p and '系统乙' in p for p in parts))
+        self.assertTrue(any('系统乙\n2024年3月' in p and '服务乙' in p for p in parts))
+
+    def test_body_milestones_and_company_names_are_not_entry_headers(self):
+        body = ('实习经历\n公司甲 2024.07-至今\n'
+                '- 2024年8月完成接口压测，与腾讯团队对接。\n'
+                '2024年9月完成服务优化。\n微信小程序AI助手：负责接口。\n社交媒体工具：负责报表。\n')
+        parts = split_resume(body)
+        entries = [p for p, k in zip(parts, block_kinds(parts)) if k == 'work']
+        self.assertEqual(len(entries), 1)
+        self.assertIn('接口压测', entries[0]); self.assertIn('负责报表', entries[0])
+        self.assertEqual(''.join(parts), body)
+
+    def test_editor_splitting_keeps_the_same_experience_boundaries(self):
+        from app.draft_actions import split_markdown
+        body = '实习经历\n公司甲 2024.07-至今\n- 接口甲\n\n补充接口说明\n公司乙 2024.03-2024.06\n- 服务乙\n'
+        self.assertEqual(split_markdown(body), split_resume(body))
+        self.assertFalse(any('接口甲' in p and '服务乙' in p for p in split_markdown(body)))
+
+    def test_real_ai_text_fixture_keeps_both_internship_titles_and_bodies(self):
+        path = Path(__file__).resolve().parents[2] / 'tests/datasets/示例2不同排版下/AI开发1.txt'
+        body = path.read_text(encoding='utf-8-sig')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertTrue(any('字节跳动' in p and '准确率提升15%' in p and '腾讯' not in p for p in parts))
+        self.assertTrue(any('腾讯' in p and '500+' in p and '字节跳动' not in p for p in parts))
+
+    def test_prose_date_after_plain_continuation_and_fenced_headers_do_not_split(self):
+        body = '实习经历\n公司甲 2024.07-至今\n接口补充说明\n2024年9月完成服务优化。\n```\n公司乙 2024.03-2024.06\n```\n'
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(sum(kind == 'work' for kind in block_kinds(parts)), 1)
+
+    def test_separate_experiences_keep_exact_source_substrings(self):
+        body = '实习经历\n公司甲 2024.07-至今\n- 接口甲\n公司乙 2024.03-2024.06\n- 服务乙\n'
+        blocks = structure_blocks([{'markdown': body, 'sourceRefs': [{'sourceId': 'original', 'sourceRevision': 3, 'quote': body}]}])
+        self.assertEqual(''.join(b['markdown'] for b in blocks), body)
+        for block in blocks:
+            self.assertEqual(block['sourceRefs'], [{'sourceId': 'original', 'sourceRevision': 3, 'quote': block['markdown']}])
+        self.assertFalse(any('接口甲' in b['markdown'] and '服务乙' in b['markdown'] for b in blocks))
+
     def test_plain_numbered_projects_and_all_other_text_are_lossless(self):
         parts = split_resume(BODY)
         self.assertEqual(''.join(parts), BODY)
@@ -122,8 +204,8 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(''.join(parts), body)
         self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
         self.assertEqual(block_kinds(parts), [None, 'project', 'project', None])
-        self.assertEqual(_block_title(parts[1]), '学生信息管理系统 开发成员')
-        self.assertEqual(_block_title(parts[2]), '个人博客网站 个人开发者')
+        self.assertEqual(_block_title(parts[1]), '学生信息管理系统')
+        self.assertEqual(_block_title(parts[2]), '个人博客网站')
 
     def test_trailing_dates_split_entries_and_decorated_headings(self):
         body = ('实习经历\n字节跳动（抖音）- AI产品开发实习生 2024年7月 - 至今\n- 动作甲\n'
@@ -205,6 +287,32 @@ class ScopedChatTests(unittest.TestCase):
         self.assertEqual(len(draft['blocks']), 7)
         self.assertEqual(block_kinds([b['markdown'] for b in draft['blocks']]),
                          [None, None, None, 'project', 'project', None, None])
+
+    def test_editor_save_preserves_other_internship_identity_and_evidence(self):
+        body = '实习经历\n公司甲 2024.07-至今\n- 接口甲\n\n公司乙 2024.03-2024.06\n- 服务乙\n'
+        session = self.chat(); self.material(session, text=body, role='resume')
+        before = self.conversation(session)
+        other = next(b for b in before['draft']['blocks'] if '公司乙' in b['markdown'])
+        edited = body.replace('接口甲', '接口甲补充说明')
+        response = self.request('PUT', f"/api/sessions/{session['sessionId']}/draft", data={
+            'markdown': edited, 'requestId': 'edit-internship', 'expectedStateRevision': self.version(session['sessionId'])})
+        self.assertEqual(response['status'], 200, response)
+        after = self.conversation(session)['draft']
+        self.assertEqual(after['markdown'], edited)
+        self.assertEqual(next(b for b in after['blocks'] if '公司乙' in b['markdown']), other)
+        first = next(b for b in after['blocks'] if '公司甲' in b['markdown'])
+        self.assertNotIn('公司乙', first['markdown'])
+        self.assertEqual(first['sourceRefs'], [])
+
+    def test_company_first_project_dates_keep_second_project_scope(self):
+        body = '个人项目\n系统甲 2024年2月\n- 接口甲\n系统乙 2024年3月\n- 服务乙\n'
+        session = self.chat(); self.material(session, text=body, role='resume')
+        self.send(session, '只修改第二个项目。')
+        repo = Repository(self.path); context = RequestContext(session['sessionId'])
+        projects = project_blocks(repo, context)
+        self.assertEqual(len(projects), 2)
+        self.assertEqual(resolve_scope(repo, context), {projects[1]['blockId']})
+        self.assertIn('系统乙', projects[1]['markdown'])
 
     def test_chat_instruction_stays_in_message_and_out_of_draft_and_evidence(self):
         session, host = self.imported()

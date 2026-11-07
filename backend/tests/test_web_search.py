@@ -44,6 +44,19 @@ class WebSearchTests(unittest.TestCase):
 
     def budget(self):return ProjectBudget(self.path,'status').status()
 
+    def test_network_diagnostic_omits_exception_text(self):
+        def fail(request):
+            raise httpx.ConnectError('secret-token https://private.example', request=request)
+        self.prepare(handler=fail)
+        with self.assertLogs('app.web_search', level='WARNING') as logs:
+            result = self.run_async(self.search())
+        self.assertEqual(result['code'], 'provider_network_error')
+        self.assertIn('ConnectError', logs.output[0])
+        self.assertNotIn('secret-token', str(logs.output))
+        self.assertNotIn('private.example', str(logs.output))
+        self.assertEqual(self.budget()['reservedCents'], 0)
+        self.assertEqual(self.budget()['spentCents'], 2)
+
     def test_search_fetch_unknown_costs_and_external_data_separation(self):
         self.prepare()
         before=self.repo.get_session_context(self.context)

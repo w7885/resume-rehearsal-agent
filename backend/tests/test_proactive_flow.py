@@ -15,7 +15,7 @@ from app.repository import RepositoryError, RequestContext
 from app.resume_structure import block_kinds, structure_blocks
 import test_agent_integration as integration
 
-BODY = '项目经历1\n参与项目一测试。\n项目经历2\n参与项目二测试。\n项目经历3\n参与项目三测试。\n'
+BODY = '项目经历1\n测试平台甲\n参与项目一测试。\n项目经历2\n测试平台乙\n参与项目二测试。\n项目经历3\n测试平台丙\n参与项目三测试。\n'
 
 
 class ProactiveClient(integration.FakeClient):
@@ -152,13 +152,14 @@ class ProactiveFlowTests(unittest.TestCase):
         self.assertEqual(host.phases, ids[:2])
         self.assertEqual(self.count('suggestion_decisions'), 1)
 
-    def test_each_new_segment_is_announced_once_before_its_question(self):
+    def test_segment_advancement_does_not_add_a_standalone_announcement(self):
         session, host, ids = self.ready()
         self.start(session, 'first')
-        self.assertEqual(self.announced(session), ['现在进入第 1 段「参与项目一测试。」的修改。'])
-        # 采用后自动进入第 2 段：播报紧跟在本轮问题之前，只出现一次。
+        self.assertEqual(self.announced(session), [])
+        # Adoption still advances once, without adding an ordinal announcement.
         self.turn(session, '是', 'yes')
-        self.assertEqual(self.announced(session)[1:], ['现在进入第 2 段「参与项目二测试。」的修改。'])
+        self.assertEqual(self.announced(session), [])
+        self.assertEqual(host.phases, ids[:2])
         last = self.conversation(session)['messages'][-1]
         self.assertEqual(last['role'], 'assistant')
         self.assertEqual(last['assistant']['kind'], 'question')
@@ -260,7 +261,7 @@ class ProactiveFlowTests(unittest.TestCase):
         host.modes[ids[0]] = 'nochange'
         self.start(session, 'first')
         self.assertEqual(self.conversation(session)['draft']['markdown'], BODY)
-        self.assertIn('项目经历2', self.conversation(session)['messages'][-1]['content'])
+        self.assertIn('测试平台乙', self.conversation(session)['messages'][-1]['content'])
         self.turn(session, '继续', 'next')
         self.assertEqual(host.phases, ids[:2])
 

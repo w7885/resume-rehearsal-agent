@@ -12,6 +12,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app import db
 from app.document_parser import extract_document, parse_upload
+from app.pdf_text_layout import reading_text, form_layout
 from app.repository import Repository, RequestContext
 import test_api
 
@@ -68,6 +69,138 @@ def pdf(pages, encrypted=False):
 
 
 class ParserTests(unittest.TestCase):
+    def form_pdf(self, *, nested=False, only=False, repeats=1):
+        from pypdf.generic import ArrayObject, NumberObject
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=595, height=842)
+        def font(name):
+            return writer._add_object(DictionaryObject({NameObject('/Type'): NameObject('/Font'),
+                NameObject('/Subtype'): NameObject('/Type1'), NameObject('/BaseFont'): NameObject(name)}))
+        child = DecodedStreamObject()
+        child.update({NameObject('/Type'): NameObject('/XObject'), NameObject('/Subtype'): NameObject('/Form'),
+            NameObject('/BBox'): ArrayObject([NumberObject(v) for v in (0, -5, 180, 18)]),
+            NameObject('/Matrix'): ArrayObject([NumberObject(v) for v in (1, 0, 0, 1, 10, 0)]),
+            NameObject('/Resources'): DictionaryObject({NameObject('/Font'): DictionaryObject({NameObject('/F1'): font('/Courier')})})})
+        child.set_data(b'q 0.5 0 0 0.5 0 0 cm BT /F1 24 Tf 1 0 0 1 0 0 Tm (2024.07-Now) Tj ET Q' + (b' /Nested Do' if nested else b''))
+        if nested:
+            inner = DecodedStreamObject()
+            inner.update({NameObject('/Subtype'): NameObject('/Form'), NameObject('/BBox'): child['/BBox'],
+                          NameObject('/Resources'): DictionaryObject()})
+            inner.set_data(b'')
+            child['/Resources'][NameObject('/XObject')] = DictionaryObject({NameObject('/Nested'): writer._add_object(inner)})
+        page[NameObject('/Resources')] = DictionaryObject({
+            NameObject('/Font'): DictionaryObject({NameObject('/F1'): font('/Helvetica')}),
+            NameObject('/XObject'): DictionaryObject({NameObject('/Date'): writer._add_object(child)})})
+        stream = DecodedStreamObject()
+        body = b'' if only else b'BT /F1 12 Tf 50 700 Td (Company A) Tj ET\nBT /F1 12 Tf 50 650 Td (Assisted testing) Tj ET\n'
+        stream.set_data(body + b'q 2 0 0 2 320 700 cm /Date Do Q\n' * repeats)
+        page[NameObject('/Contents')] = writer._add_object(stream)
+        output = BytesIO(); writer.write(output)
+        return output.getvalue()
+
+    def test_pdf_form_dates_follow_parent_and_form_transforms_and_font_scope(self):
+        value = parse_upload('application/pdf', self.form_pdf())
+        text = value['blocks'][0]['text']
+        self.assertRegex(text.splitlines()[0], r'Company A\s+2024\.07-Now')
+        self.assertEqual(text.count('2024.07-Now'), 1)
+        self.assertIn('Assisted testing', text)
+        self.assertIn('form_text_recovered', [w['code'] for w in value['report']['warnings']])
+        self.assertEqual(value['status'], 'partial')
+
+    def test_pdf_form_only_page_is_recovered_without_becoming_blank(self):
+        value = extract_document('application/pdf', self.form_pdf(only=True))
+        self.assertEqual(value['blocks'][0]['text'].strip(), '2024.07-Now')
+        self.assertEqual(value['blocks'][0]['origin']['page'], 1)
+
+    def test_pdf_form_copy_preserves_original_stream_and_resources(self):
+        from pypdf import PdfReader
+        page = PdfReader(BytesIO(self.form_pdf())).pages[0]
+        contents = page.get_contents().get_data()
+        resources = repr(page['/Resources'])
+        layout = page.extract_text(extraction_mode='layout')
+        form_layout(page, layout, page.extract_text())
+        self.assertEqual(page.get_contents().get_data(), contents)
+        self.assertEqual(repr(page['/Resources']), resources)
+
+    def test_pdf_nested_or_excessive_forms_fall_back_to_existing_text(self):
+        for raw in (self.form_pdf(nested=True), self.form_pdf(repeats=17)):
+            value = extract_document('application/pdf', raw)
+            self.assertIn('Company A', value['blocks'][0]['text'])
+            self.assertNotIn('2024.07-Now', value['blocks'][0]['text'])
+            self.assertIn('form_text_unresolved', [w['code'] for w in value['report']['warnings']])
+
+    def test_pdf_form_recovery_rejects_glyph_loss_or_unexpected_addition(self):
+        from pypdf import PdfReader
+        from pypdf._page import PageObject
+        page = PdfReader(BytesIO(self.form_pdf())).pages[0]
+        layout = page.extract_text(extraction_mode='layout')
+        plain = page.extract_text()
+        for wrong in ('2024.07-Now', plain + ' invented'):
+            with patch.object(PageObject, 'extract_text', return_value=wrong):
+                with self.assertRaisesRegex(ValueError, 'glyph counts'):
+                    form_layout(page, layout, plain)
+
+    def test_pdf_spacing_requires_matching_original_text(self):
+        layout = '提升1          5%\n完整P      RD\n未知    空格\nMachine     Learning\n重复\n重复'
+        plain = '提升15%\n完整PRD\nMachine Learning\n重复'
+        self.assertEqual(reading_text(layout, plain),
+                         '提升15%\n完整PRD\n未知    空格\nMachine     Learning\n重复\n重复')
+
+    def test_pdf_confirmed_list_columns_include_wrapped_and_internally_spaced_rows(self):
+        pairs = [('编程能力', 'AI素养'), ('▸掌握 Python', '▸熟悉 TensorFlow'),
+                 ('开发技术。', '模型框架。'), ('▸掌握算法', '▸熟悉    知识图谱'),
+                 ('设计。', '分析。')]
+        layout = '\n'.join(left.ljust(35) + right for left, right in pairs) + '\n校园经历'
+        plain = '编程能力\n掌握 Python开发技术。\n掌握算法设计。\nAI素养\n熟悉 TensorFlow模型框架。\n熟悉 知识图谱分析。\n校园经历'
+        expected = '编程能力\n▸掌握 Python\n开发技术。\n▸掌握算法\n设计。\nAI素养\n▸熟悉 TensorFlow\n模型框架。\n▸熟悉 知识图谱\n分析。\n校园经历'
+        self.assertEqual(reading_text(layout, plain), expected)
+
+    def test_pdf_tables_dates_and_unconfirmed_columns_keep_horizontal_order(self):
+        layout = '项目          时间\nA             2025\nB             2026'
+        self.assertEqual(reading_text(layout, '项目\n时间\nA\n2025\nB\n2026'), layout)
+        self.assertEqual(reading_text('项目 A        2025.06', '项目 A\n2025.06'), '项目 A        2025.06')
+        self.assertEqual(reading_text('标题           栏目\n▸左            ▸右\n续行           未知', '标题\n栏目\n左续行\n右'),
+                         '标题           栏目\n▸左            ▸右\n续行           未知')
+
+    def test_pdf_corroboration_failure_preserves_layout_and_partial_warning(self):
+        from pypdf._page import PageObject
+        original = PageObject.extract_text
+
+        def fail_plain(page, *args, **kwargs):
+            if kwargs.get('extraction_mode') == 'layout':
+                return original(page, *args, **kwargs)
+            raise ValueError('synthetic corroboration failure')
+
+        raw = pdf([('Project A', 'Project B')])
+        before = extract_document('application/pdf', raw)
+        with patch.object(PageObject, 'extract_text', fail_plain):
+            after = extract_document('application/pdf', raw)
+        self.assertEqual(after['blocks'], before['blocks'])
+        self.assertEqual(after['status'], 'partial')
+        self.assertIn('layout_unresolved', [w['code'] for w in after['report']['warnings']])
+
+    def test_real_pdf_spacing_and_skill_columns_through_upload_worker(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[2] / 'tests/datasets/示例2不同排版下/AI开发1（排版2）.pdf'
+        if not path.exists():
+            self.skipTest('local sample is not distributed with this checkout')
+        value = parse_upload('application/pdf', path.read_bytes())
+        text = '\n'.join(b['text'] for b in value['blocks'])
+        for token in ('提升15%', '完整PRD', '多Agent', 'DataFlow.yaml'):
+            self.assertIn(token, text)
+        self.assertLess(text.index('设计。', text.index('专业技能')), text.index('AI素养'))
+        self.assertLess(text.index('Jupyter'), text.index('校园经历'))
+        self.assertEqual(value['status'], 'partial')
+        self.assertEqual(value['blocks'][0]['origin']['page'], 1)
+        self.assertIn('form_text_recovered', [w['code'] for w in value['report']['warnings']])
+        self.assertNotIn('layout_text_gap', [w['code'] for w in value['report']['warnings']])
+        expected = [('字节跳动', '2024年7⽉ - ⾄今'), ('腾讯', '2024年3⽉ - 2024年6⽉'),
+                    ('SmartDataFlow', '2024年2⽉')]
+        for heading, date in expected:
+            line = next(line for line in text.splitlines() if line.startswith(heading))
+            self.assertIn(date, line)
+            self.assertEqual(text.count(date), 1)
+
     def test_positioned_boxes_restore_heading_before_body_without_changing_text(self):
         body = '<w:p>' + positioned_box('学生信息管理系统', 3000) + positioned_box('项目经历', 1000) + '</w:p>'
         value = extract_document(DOCX, word(body + page_section()))
@@ -109,6 +242,48 @@ class ParserTests(unittest.TestCase):
             with self.subTest(section=section):
                 value = extract_document(DOCX, word('<w:p>' + original + '</w:p>' + section))
                 self.assertEqual([b['text'] for b in value['blocks']], ['正文先存', '标题后存'])
+
+    def test_top_info_row_allows_full_width_sections_to_sort(self):
+        content = (positioned_box('正文', 3000, width=8000)
+                   + positioned_box('标题', 2000, width=8000)
+                   + positioned_box('右侧信息', 1000, x=4000)
+                   + positioned_box('左侧信息', 1000))
+        value = extract_document(DOCX, word('<w:p>' + content + '</w:p>' + page_section()))
+        self.assertEqual([b['text'] for b in value['blocks']],
+                         ['左侧信息', '右侧信息', '标题', '正文'])
+        self.assertIn('floating_order', [w['code'] for w in value['report']['warnings']])
+
+    def test_disabled_page_break_property_allows_sort_but_enabled_blocks_it(self):
+        content = positioned_box('正文', 3000) + positioned_box('标题', 1000)
+        for flag in ('0', 'false', 'off', '1', 'true', 'on'):
+            marker = f'<w:pPr><w:pageBreakBefore w:val="{flag}"/></w:pPr>'
+            value = extract_document(DOCX, word('<w:p>' + marker + content + '</w:p>' + page_section()))
+            expected = ['标题', '正文'] if flag in {'0', 'false', 'off'} else ['正文', '标题']
+            self.assertEqual([b['text'] for b in value['blocks']], expected)
+
+    def test_info_row_exception_rejects_overlaps_and_continuing_columns(self):
+        top = positioned_box('右侧信息', 1000, x=4000) + positioned_box('左侧信息', 1000)
+        for body in (positioned_box('右栏正文', 3000, x=4000) + positioned_box('左栏正文', 2000),
+                     positioned_box('正文', 3000, width=8000) + positioned_box('标题', 1100, width=8000)):
+            content = body + top
+            value = extract_document(DOCX, word('<w:p>' + content + '</w:p>' + page_section()))
+            self.assertEqual([b['text'] for b in value['blocks']],
+                             [b['text'] for b in extract_document(DOCX, word('<w:p>' + content + '</w:p>'))['blocks']])
+            self.assertIn('floating_order_unresolved', [w['code'] for w in value['report']['warnings']])
+
+    def test_sales_resume_sections_follow_visual_order_and_keep_all_text(self):
+        from pathlib import Path
+        raw = (Path(__file__).resolve().parents[2] / 'tests/datasets/示例3/销售1.docx').read_bytes()
+        value = parse_upload(DOCX, raw)
+        texts = [b['text'] for b in value['blocks']]
+        headings = ['基本信息', '教育背景', '校园经历', '技能证书', '自我评价']
+        positions = [texts.index(heading) for heading in headings]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(positions[1], next(i for i, t in enumerate(texts) if '2022.09-2026.07' in t))
+        self.assertLess(next(i for i, t in enumerate(texts) if '2022.09-2026.07' in t), positions[2])
+        self.assertEqual(len(texts), 33)
+        self.assertEqual(sum(map(len, texts)), 1112)
+        self.assertEqual(value['status'], 'partial')
 
     def test_rotated_text_shape_keeps_structure_order(self):
         rotated = positioned_box('标题后存', 1000).replace(

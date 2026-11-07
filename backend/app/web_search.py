@@ -6,6 +6,7 @@ Target semantic assessment and Agent/UI integration belong to the next stage.
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
 from types import SimpleNamespace
@@ -349,6 +350,10 @@ class WebSearchService:
             raise
         except (WebProviderError, httpx.HTTPError, TimeoutError) as error:
             error_code = error.code if isinstance(error, WebProviderError) else 'provider_timeout' if isinstance(error, (httpx.TimeoutException, TimeoutError)) else 'provider_network_error'
+            # Log only stable categories; exception text can contain URLs or credentials.
+            logging.getLogger(__name__).warning(
+                'web_provider_failure operation=%s code=%s exception_type=%s',
+                operation, error_code, type(error).__name__)
             return {'status': 'failed', 'code': error_code, 'references': [], 'needsJD': True}
         finally:
             # Named settlement is idempotent, works after permission revocation,

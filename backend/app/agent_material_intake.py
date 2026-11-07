@@ -65,7 +65,7 @@ def record_role(runtime, material_id, role):
         bound = Repository(runtime.repo.path, _connection=connection)
         bound._touch(connection, runtime.sid)
         current = bound.get_session(RequestContext(runtime.sid))
-        connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+        connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',
                            (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
 
 
@@ -130,7 +130,7 @@ def replace(runtime, item, candidates, accompanying=()):
         current = bound.get_session(RequestContext(runtime.sid))
         # Keep only the actual authorization turn current; all earlier personal context stays historical.
         connection.execute("UPDATE messages SET use_status='active',resume_generation=? WHERE session_id=? AND message_id=?", (current['currentResumeGeneration'], runtime.sid, runtime.user_id))
-        connection.execute('INSERT OR REPLACE INTO agent_turn_effects VALUES (?,?,?,?,?)',
+        connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',
                            (runtime.sid, runtime.user_id, current['stateRevision'], current['draftRevision'], current['currentResumeGeneration']))
         # Rebind the Host atomically with the scope change; no stale run can finish later.
         updated = connection.execute('SELECT * FROM sessions WHERE session_id=?', (runtime.sid,)).fetchone()

@@ -128,7 +128,7 @@ class AnchorRecoveryTests(unittest.TestCase):
             calls = host.calls
             announced = [m['content'] for m in value['messages']
                          if m['role'] == 'assistant' and (m.get('content') or '').startswith('现在进入')]
-            self.assertEqual(announced, ['现在进入第 1 段「参与项目一测试。」的修改。'])
+            self.assertEqual(announced, [])
             host.fail_anchor = False
             user, events = self.turn(session, '继续', 'retry-current')
             self.assertGreater(host.calls, calls)

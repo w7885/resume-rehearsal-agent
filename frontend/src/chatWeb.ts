@@ -12,6 +12,10 @@ export type ExternalTextSegment = { text: string; href?: string };
 
 const EXTERNAL_REFERENCE_NOTICE = '外部资料仅作岗位内容参考，招聘状态未核实。';
 
+export function isLegacySegmentAnnouncement(value: string, role: 'user' | 'assistant'): boolean {
+  return role === 'assistant' && /^现在进入(?:第\s*\d+\s*段)?「[^「」\r\n]+」的修改。$/u.test(value.trim());
+}
+
 export function visibleMessageParagraphs(value: string, role: 'user' | 'assistant'): string[] {
   return value.split('\n\n').filter(paragraph =>
     role !== 'assistant' || paragraph.trim() !== EXTERNAL_REFERENCE_NOTICE);
