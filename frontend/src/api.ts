@@ -48,11 +48,11 @@ function isDetail(value: unknown): value is Detail {
     (record.issues as unknown[]).every(i => object(i) && typeof i.issueId === 'string' && typeof i.summary === 'string' && typeof i.status === 'string' && typeof i.isCurrent === 'boolean' && references(i.sourceRefs)) &&
     (record.events as unknown[]).every(e => object(e) && typeof e.runId === 'string' && integer(e.sequence) && typeof e.type === 'string' && typeof e.mode === 'string' && object(e.payload) && (e.payload.message === undefined || typeof e.payload.message === 'string'));
 }
-async function http<T>(url: string, method: string, body?: unknown, check?: (v: unknown) => boolean, raw?: Blob): Promise<T> {
+async function http<T>(url: string, method: string, body?: unknown, check?: (v: unknown) => boolean, raw?: Blob, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await apiFetch(url, { method, signal: controller.signal, cache: 'no-store',
+    const response = await apiFetch(url, { method, signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal, cache: 'no-store',
       headers: body === undefined && raw === undefined ? undefined : { 'Content-Type': raw ? raw.type || 'application/octet-stream' : 'application/json' },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
     if (response.status === 404 && (url.endsWith('/web-settings') || url.endsWith('/web-continuation'))) throw new ApiError('当前后端不支持该联网功能。', 'not_found');
@@ -69,7 +69,7 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
     return envelope.data as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw new ApiError('无法确认保存结果。请检查本机后端，保留输入后重试；同一次操作不会重复保存。');
+    throw new ApiError('无法确认保存结果。请检查服务连接，保留输入后重试；同一次操作不会重复保存。');
   } finally { clearTimeout(timeout); }
 }
 const path = (sid: string) => `/api/sessions/${encodeURIComponent(sid)}`;
@@ -165,7 +165,7 @@ function isConversation(value: unknown): value is Conversation {
 }
 export const listChatSessions = () => http<ChatSession[]>('/api/sessions', 'GET', undefined, v => Array.isArray(v) && v.every(isChatSession));
 export const createChatSession = (payload: { requestId: string }) => http<ChatSession>('/api/chat/sessions', 'POST', payload, isChatSession);
-export const readConversation = (sid: string) => http<Conversation>(`${path(sid)}/conversation`, 'GET', undefined, isConversation);
+export const readConversation = (sid: string, signal?: AbortSignal) => http<Conversation>(`${path(sid)}/conversation`, 'GET', undefined, isConversation, undefined, signal);
 export type ChatMessageWrite = { requestId: string; expectedStateRevision: number; content: string; attachmentIds: string[];replyToMessageId?:string };
 export const saveChatMessage = (sid: string, payload: ChatMessageWrite) => http<ChatMessageResult>(`${path(sid)}/chat/messages`, 'POST', payload,
   v => object(v) && isChatSession(v.session) && isChatMessage(v.message) && integer(v.stateRevision) && integer(v.draftRevision));

@@ -69,3 +69,22 @@ jobs:
       - run: python -m pip install -r backend/requirements.txt
       - run: python -m unittest discover -s tests -p test_postgres.py -v
         working-directory: backend
+  voice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_MODE: local
+      AGENT_ENABLED: '0'
+      AGENT_BUDGET_CONFIRMED: '0'
+      VOICE_INPUT_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+      - run: bash scripts/render_build.sh
+        working-directory: backend
+      - run: /usr/bin/time -v python scripts/check_voice_model.py
+        working-directory: backend
+      - run: python -m unittest discover -s tests -p test_voice.py -v
+        working-directory: backend

@@ -6,7 +6,7 @@ services:
     plan: free
     region: singapore
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: bash scripts/render_build.sh
     startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
     healthCheckPath: /api/health
     autoDeploy: false
@@ -21,6 +21,8 @@ services:
         value: '0'
       - key: VISION_ENABLED
         value: '0'
+      - key: VOICE_INPUT_ENABLED
+        value: '1'
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL
