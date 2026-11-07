@@ -23,9 +23,9 @@ export function useVoiceInput(key: string, disabled: boolean, onText: (key: stri
     try {
       const result = await readVoiceStatus(abort.signal);
       if (mounted.current && version === configVersion.current) setService({ loading: false, available: result.available,
-        error: result.available ? '' : '本地语音输入暂未就绪，可以先使用文字输入。' });
+        error: result.available ? '' : '语音输入暂未就绪，可以先使用文字输入。' });
     } catch {
-      if (mounted.current && version === configVersion.current) setService({ loading: false, available: false, error: '暂时无法连接本地语音服务，可以重试或继续文字输入。' });
+      if (mounted.current && version === configVersion.current) setService({ loading: false, available: false, error: '暂时无法连接语音服务，可以重试或继续文字输入。' });
     } finally { clearTimeout(timer); }
   };
   useEffect(() => {

@@ -29,11 +29,12 @@ class AudioValidationTests(unittest.TestCase):
     def test_worker_has_no_service_credentials_and_returns_only_transcript(self):
         with patch.object(voice, 'status', return_value={'available': True}), patch.object(voice.subprocess, 'run',
                 return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'text':'我 使用 Python 开发 学生 信息 管理 程序'}))) as worker:
-            with patch.dict('os.environ', {'DEEPSEEK_API_KEY':'synthetic-never-print'}):
+            with patch.dict('os.environ', {'DEEPSEEK_API_KEY':'synthetic-never-print', 'DATABASE_URL':'synthetic-never-forward'}):
                 result = voice.transcribe(wav())
         self.assertEqual(result['text'], '我使用 Python 开发学生信息管理程序')
         self.assertTrue(result['local'])
         self.assertNotIn('DEEPSEEK_API_KEY', worker.call_args.kwargs['env'])
+        self.assertNotIn('DATABASE_URL', worker.call_args.kwargs['env'])
         self.assertNotIn('pcm', ' '.join(worker.call_args.args[0]))
         self.assertEqual(worker.call_args.kwargs['timeout'], 45)
 
