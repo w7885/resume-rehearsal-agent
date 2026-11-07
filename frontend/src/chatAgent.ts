@@ -5,6 +5,12 @@ export type WebControlRequest = { requestId: string; expectedStateRevision: numb
 class StreamDisconnected extends Error {}
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+const interruptionMessage = (outcome: unknown) => {
+  const reason = outcome === 'run_timeout' ? '本次分析超过处理时限，已停止。'
+    : outcome === 'client_disconnected' ? '分析连接断开，本次处理已停止。'
+    : outcome === 'cancelled' ? '本次分析已取消。' : '本次分析已停止或未完成。';
+  return reason + '消息和当前稿仍已保存。';
+};
 
 /** One saved user turn, one stable request. Never resends the raw chat message. */
 export class ChatAgentOperation {
@@ -103,7 +109,7 @@ export class ChatAgentOperation {
           this.notify();
           if (event.type === 'done') {
             if (this.stopped || !['completed', 'waiting_user'].includes(event.payload.outcome)) {
-              throw new ApiError('本次分析已停止或未完成，消息和当前稿仍已保存。', 'agent_interrupted');
+              throw new ApiError(interruptionMessage(event.payload.outcome), 'agent_interrupted');
             }
             this.completed = true;
             // Persisted done is the result boundary; EOF is only transport cleanup.
@@ -157,7 +163,7 @@ export class ChatAgentOperation {
     }
     if (!observedFound || !last || last.type !== 'done' || !record(last.payload) || last.payload.outcome !== value.outcome) throw invalid();
     if (value.status !== 'done' || !['completed', 'waiting_user'].includes(String(value.outcome))) {
-      throw new ApiError('本次分析已停止或未完成，消息和当前稿仍已保存。', 'agent_interrupted');
+      throw new ApiError(interruptionMessage(value.outcome), 'agent_interrupted');
     }
     this.runId = last.runId as string;
     this.completed = true; this.progressMessage = ''; this.notify();

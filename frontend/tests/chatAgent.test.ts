@@ -16,6 +16,16 @@ function snapshot(id: string, outcome = 'completed', status = 'done') {
       JSON.parse(packet(id, 'done', 2, { outcome }).split('data: ')[1])] } };
 }
 
+test('SSE keepalive comments never become events or change sequence checks', async () => {
+  const operation = new ChatAgentOperation('s', 'm', 7, undefined, async (_, init) => {
+    const id = JSON.parse(String(init?.body)).requestId;
+    return stream(': keep-alive\n\n' + packet(id, 'progress', 1, { message:'working' }) +
+      ': keep-alive\n\n' + packet(id, 'done', 2, { outcome:'completed' }));
+  });
+  await operation.run();
+  assert.equal(operation.runId, 'r1');
+});
+
 test('successful done is terminal even when the connection fails on its next read', async () => {
   let reads = 0, posts = 0, cancelled = 0;
   const operation = new ChatAgentOperation('s', 'm', 7, undefined, async (_, init) => {
@@ -79,7 +89,7 @@ test('failed and interrupted snapshots remain failures even if a done event exis
       if (init?.method === 'POST') { id = JSON.parse(String(init.body)).requestId; return stream(''); }
       gets++; return Response.json(snapshot(id, outcome, status));
     });
-    await assert.rejects(operation.run(), /停止或未完成/);
+    await assert.rejects(operation.run(), /取消|停止或未完成/);
     assert.equal(gets, 1);
   }
 });
@@ -230,7 +240,7 @@ test('persisted interrupted replay is not represented as successful analysis', a
     const id = JSON.parse(String(init?.body)).requestId;
     return stream(packet(id, 'done', 1, { outcome: 'cancelled', replayed: true }));
   });
-  await assert.rejects(operation.run(), /停止或未完成/);
+  await assert.rejects(operation.run(), /已取消/);
 });
 
 test('stop calls the current run cancellation endpoint and does not resend messages', async () => {
@@ -266,4 +276,23 @@ test('validated search progress notifies UI and clears at completion', async () 
   });
   await operation.run();
   assert.deepEqual(seen,['正在查找目标岗位资料。','正在读取岗位来源。','']);
+});
+
+
+test('timeout and disconnected terminal outcomes remain failures with distinct explanations', async () => {
+  for (const [outcome, message] of [['run_timeout','超过处理时限'], ['client_disconnected','连接断开']]) {
+    for (const lost of [false,true]) {
+      let posts = 0;
+      const operation = new ChatAgentOperation('s','m',7,undefined,async (_,init) => {
+        if (init?.method === 'POST') {
+          posts++;
+          if (lost) throw new TypeError('lost connection');
+          return stream(packet(JSON.parse(String(init.body)).requestId,'done',1,{outcome}));
+        }
+        return Response.json(snapshot(operation.id,outcome,'interrupted'));
+      });
+      await assert.rejects(operation.run(), e => e instanceof Error && e.message.includes(message));
+      assert.equal(posts,1);
+    }
+  }
 });

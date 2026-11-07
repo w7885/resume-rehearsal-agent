@@ -158,6 +158,7 @@ class PostgresProtectionTests(unittest.TestCase):
 
 
 def load_tests(loader, tests, pattern):
+    import test_stream_keepalive
     if not URL:
         return tests
     import test_repository, test_api, test_proposal_snapshot, test_web_storage, test_agent_integration, test_auth
@@ -170,6 +171,7 @@ def load_tests(loader, tests, pattern):
         (test_proposal_snapshot.SnapshotPersistenceTests, setup_api, set()),
         (test_web_storage.WebStorageTests, setup_web, {'test_v12_upgrade_defaults_old_sessions_off_and_preserves_all_business_rows'}),
         (test_agent_integration.BudgetIntegrationTests, setup_api, set()),
+        (test_stream_keepalive.StreamKeepaliveTests, setup_api, set()),
     ]
     for base, setup, exclude in cases:
         overrides = {'setUp': setup}
