@@ -735,13 +735,12 @@ class Runtime:
                         + '当前稿与已保存回答保留。可以补充或纠正具体事实，或回复“保留原文，继续下一段”。')
         return 'limited' if outcome == 'limited' and not saved and not questions else 'completed'
 
-    async def _route(self, turn):
+    def _route_input(self, turn):
         from app.agent.adapters.a_repo import ARepoAdapter
         from app.agent.memory import load_session
         from app.agent_progress import label, plan
-        from app.agent_router import build_user_prompt, classify
+        from app.agent_router import build_user_prompt
         from app.agent.router import router_brief
-        from app.agent.route import normalize
         from app.agent_state import GuardedStateStore
         from app.material_tools import MaterialTools
         try:
@@ -769,7 +768,25 @@ class Runtime:
             blocks=brief['blocks'], focus_id=brief['focus_id'], question=brief['question'],
             suggestions=suggestions, recent=recent,
         )
-        result = await classify(self.llm, user=user, run_id=self.context.run_id)
+        return user, brief
+
+    async def _route(self, turn):
+        from app.agent_router import classify
+        from app.agent.route import normalize
+        # These helpers only read through unbound repositories. Each worker
+        # opens/closes its own connections; to_thread copies the caller's
+        # account ContextVar. No write transaction or connection crosses threads.
+        with timed_phase(self, 'route_prepare'):
+            prepared = await asyncio.to_thread(self._route_input, turn)
+        if prepared is None:
+            return None
+        user, brief = prepared
+        # A cancelled await cannot resume here. Concurrent edits are checked
+        # again before spending model budget and before consuming the answer.
+        await asyncio.to_thread(self.repo.get_session, self.context)
+        with timed_phase(self, 'route_model'):
+            result = await classify(self.llm, user=user, run_id=self.context.run_id)
+        await asyncio.to_thread(self.repo.get_session, self.context)
         if result.output is None:
             self._emit('warning', {'code': 'router_fallback',
                                    'fallback_reason': result.fallback_reason,
@@ -839,7 +856,7 @@ class Runtime:
                 self.llm=DeepSeekClient(LLMSettings.from_env(),budget=self.budget)
             from app.agent_text_intake import handle as handle_text
             with timed_phase(self, 'turn_context'):
-                turn=self.service.get_chat_turn_context(self.context,self.user_id)
+                turn=await asyncio.to_thread(self.service.get_chat_turn_context, self.context, self.user_id)
             from app.agent_progress import STOP, plain
             if plain(turn['userMessage']['content']) in STOP:
                 self._reply('已暂停后续处理。已保存的当前稿和待确认建议保留；需要时可回复“继续”。')
@@ -854,7 +871,7 @@ class Runtime:
             from app.agent_image_intake import recognize
             with timed_phase(self, 'image_intake'):
                 await recognize(self, turn['userMessage']['content'])
-            turn=self.service.get_chat_turn_context(self.context,self.user_id)
+            turn=await asyncio.to_thread(self.service.get_chat_turn_context, self.context, self.user_id)
             if turn.get('decisionReceipt'):
                 self._reply('这条答复的决定已经处理，请查看当前稿。')
             elif await self._materials(turn) or await handle_text(self, turn):
@@ -868,11 +885,11 @@ class Runtime:
                     outcome = 'completed'
                 else:
                     out = self._residual(out)
-                    turn = self.service.get_chat_turn_context(self.context, self.user_id)
+                    turn = await asyncio.to_thread(self.service.get_chat_turn_context, self.context, self.user_id)
                     if await self._decisions(turn, out):
                         pass
                     else:
-                        turn = self.service.get_chat_turn_context(self.context, self.user_id)
+                        turn = await asyncio.to_thread(self.service.get_chat_turn_context, self.context, self.user_id)
                         if await handle_text(self, turn):
                             pass
                         else:
