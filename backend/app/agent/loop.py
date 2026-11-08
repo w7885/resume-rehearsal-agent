@@ -12,6 +12,7 @@ from app.agent.context import assemble_context
 from app.agent.events import EventSink, RunEvent
 from app.agent.guard import (
     MAX_ROUNDS,
+    MAX_SLOT_FOLLOWUPS,
     MAX_STEPS,
     GuardState,
     call_signature,
@@ -24,6 +25,7 @@ from app.agent.memory import (
     StepTrace,
     derive_phase,
     effect_state,
+    followup_count,
     load_experience,
     reconcile,
     record_question,
@@ -129,10 +131,15 @@ def _requirement_question(doc, requirements):
     # 只有经历段有可对照的“经历”维度；信息/评价段不套用。
     if doc.kind not in EXPERIENCE_KINDS:
         return None
-    # 每个 declined 槽最多用岗位要求问一次；已问过或明确缺席/拒答的槽跳过。
     for slot in _SLOT_ORDER:
-        if (slot not in doc.declined or slot in doc.requirement_followups
-                or not requirement_reopen_allowed(doc, slot)):
+        if slot not in doc.declined or not requirement_reopen_allowed(doc, slot):
+            continue
+        # 效果槽沿用原“一次证据追问”上限；其余槽最多两次追问。
+        if slot == 'effect':
+            if any(question.slot == slot and question.evidence_quote
+                   for question in doc.questions):
+                continue
+        elif followup_count(doc, slot) >= MAX_SLOT_FOLLOWUPS:
             continue
         for item in requirements or []:
             quote = (item.get('quote') or '').strip()

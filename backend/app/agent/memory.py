@@ -90,7 +90,6 @@ class ExperienceDoc(BaseModel):
     summary: str = ""
     updated_at: str = ""
     supplement_quotes: dict[str, str] = Field(default_factory=dict)
-    requirement_followups: list[Slot] = Field(default_factory=list)
 
 
 class SessionDoc(BaseModel):
@@ -459,9 +458,6 @@ def record_question(
         evidence_quote=evidence_quote,
     )
     doc.questions.append(question)
-    # 每个槽最多借岗位要求追问一次，防止同一要求被反复包装成新问题。
-    if evidence_quote and slot and slot != "confirm" and slot not in doc.requirement_followups:
-        doc.requirement_followups.append(slot)
     return question
 
 

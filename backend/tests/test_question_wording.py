@@ -2,7 +2,7 @@
 import unittest
 from app.agent.guard import GuardState, check
 from app.agent.loop import _fallback_question
-from app.agent.memory import ExperienceDoc, Fact, Question, record_question
+from app.agent.memory import ExperienceDoc, Fact, Question, followup_count, record_question
 from app.agent.questions import detail_slot
 from app.agent.ports import SessionContext, SessionInfo
 from app.agent.questions import guided_question, with_answer_guidance
@@ -140,14 +140,14 @@ class QuestionWordingTests(unittest.TestCase):
         result = check(AskStep(action='ask_user', message='学生信息管理系统做完后带来了什么变化？比如省掉哪一步或收到哪条反馈。', slot='effect'), self.state())
         self.assertIsNone(result.violation)
 
-    def test_record_question_marks_requirement_followup(self):
+    def test_record_question_keeps_evidence_without_hidden_followup_state(self):
         doc = self.state().focus_doc
         question = record_question(doc, '岗位要求里提到「负责跨部门需求对接」，你有类似经历吗？',
                                    'responsibility', evidence_ref='req-1',
                                    evidence_quote='负责跨部门需求对接')
-        self.assertEqual(doc.requirement_followups, ['responsibility'])
         self.assertEqual(question.evidence_ref, 'req-1')
         self.assertEqual(question.evidence_quote, '负责跨部门需求对接')
+        self.assertEqual(followup_count(doc, 'responsibility'), 0)
 
     def test_two_question_words_in_the_question_are_still_multi(self):
         result = check(AskStep(action='ask_user', message='你是怎么发现什么问题这件事的？', slot='action'), self.state())
@@ -189,10 +189,26 @@ class RequirementQuestionTests(unittest.TestCase):
             action='ask_user', message=text, slot=slot,
             evidence_ref=ref, evidence_quote=quote), state).violation)
 
-    def test_no_second_requirement_question_for_the_same_slot(self):
-        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
-        doc.declined = ['responsibility']
-        doc.requirement_followups = ['responsibility']
+    def test_requirement_question_allows_second_followup_but_not_third(self):
+        doc = self.declined_doc()
+        doc.questions.append(Question(
+            id='q2', slot='responsibility', text='岗位要求追问一？', fingerprint='f2',
+            evidence_ref='req-1', evidence_quote='负责跨部门需求对接'))
+        self.assertIsNotNone(_requirement_question(doc, self.requirements()))
+        doc.questions.append(Question(
+            id='q3', slot='responsibility', text='岗位要求追问二？', fingerprint='f3',
+            evidence_ref='req-1', evidence_quote='负责跨部门需求对接'))
+        self.assertIsNone(_requirement_question(doc, self.requirements()))
+
+    def test_effect_requirement_followup_stays_once(self):
+        doc = self.declined_doc()
+        doc.declined = ['effect']
+        doc.questions.append(Question(
+            id='q2', slot='effect', text='你观察到了什么变化？', fingerprint='f2',
+            outcome='declined', answer_kind='uncertain'))
+        doc.questions.append(Question(
+            id='q3', slot='effect', text='岗位要求追问？', fingerprint='f3',
+            evidence_ref='req-1', evidence_quote='负责跨部门需求对接'))
         self.assertIsNone(_requirement_question(doc, self.requirements()))
 
     def test_no_requirements_means_no_generated_followup(self):
