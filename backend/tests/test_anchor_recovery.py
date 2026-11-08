@@ -44,27 +44,23 @@ class AnchorSnapshotTests(unittest.TestCase):
         self.assertEqual(result.steps[0].args['before'], text)
         self.assertEqual(repo.draft_blocks[0].markdown, text)
 
-    def test_explicitly_wrong_before_stays_rejected_and_records_bounded_evidence(self):
+    def test_model_supplied_before_is_ignored_and_snapshot_wins(self):
         for before_kind in ('normalized', 'wrong_text'):
             with self.subTest(kind=before_kind):
                 text, repo, store, args = self.setup_loop()
-                before = unicodedata.normalize('NFKC', text) if before_kind == 'normalized' else '另一段原文'
-                args['before'] = before
+                args['before'] = (
+                    unicodedata.normalize('NFKC', text) if before_kind == 'normalized'
+                    else '另一段原文')
                 decision = {'action': 'tool', 'tool': 'propose_change', 'args': args}
-                llm = FakeLLM(decide_script=[decision, decision])
+                llm = FakeLLM(decide_script=[decision, policy.FINISH])
                 result = asyncio.run(run_loop(run_id='mismatch', session_id=policy.SESSION,
                                               repo=repo, store=store, llm=llm,
                                               focus_experience_id='exp_01'))
-                warnings = [e.payload for e in result.events
-                            if e.type == 'warning' and e.payload.get('code') == 'stale_anchor']
-                self.assertEqual(len(warnings), 2)
-                evidence = warnings[0]['anchor_check']
-                self.assertEqual(evidence['expected_characters'], len(text.strip()))
-                self.assertEqual(evidence['provided_characters'], len(before.strip()))
-                self.assertNotIn('expected_text', evidence)
-                self.assertNotIn('provided_text', evidence)
-                self.assertNotEqual(evidence['expected_codepoint'], evidence['provided_codepoint'])
-                self.assertEqual(repo.suggestions, [])
+                self.assertFalse(any(
+                    e.type == 'warning' and e.payload.get('code') == 'stale_anchor'
+                    for e in result.events))
+                self.assertEqual(result.outcome, 'waiting_user')
+                self.assertEqual(repo.suggestions[0].before, text)
                 self.assertEqual(repo.draft_blocks[0].markdown, text)
 
     def test_omitted_before_does_not_bypass_target_or_personal_evidence_checks(self):
@@ -91,7 +87,8 @@ class AnchorRecoveryClient(recovery.RecoveryClient):
         result = await super().decide(**kwargs)
         if result.data.get('tool') == 'propose_change':
             if self.runtime.host.fail_anchor:
-                result.data['args']['before'] = '模型只复制了片段，而不是当前整段'
+                # before 已不再决定成败，改用格式错误模拟协议失败。
+                result.data['args']['operation'] = 'not_a_supported_operation'
                 self.proposed = False
             else:
                 result.data['args'].pop('before', None)

@@ -350,8 +350,9 @@ class ScopedChatTests(unittest.TestCase):
         self.assertEqual(host.test_visible_blocks, [projects[1]['blockId']])
         prompt = value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'], 'change_question', value)
-        self.assertFalse(any('这段经历做完或交付后' in m['content']
-                             for m in value['messages'] if m['role'] == 'assistant'))
+        # 原文效果不再自动算已确认，改写前允许且只允许问一次。
+        self.assertEqual(sum('这段经历做完或交付后' in m['content']
+                             for m in value['messages'] if m['role'] == 'assistant'), 1)
         answer = self.send(session, '采用这条改写。', request_id='accept', replyToMessageId=prompt['messageId'])
         events = self.analyze(session, answer, 'accept')
         self.assertEqual(events[-1]['payload']['outcome'], 'completed', events)

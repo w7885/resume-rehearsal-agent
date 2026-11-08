@@ -319,7 +319,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     question = re.split(r"[？?]", text, maxsplit=1)[0]
     if any(word in question for word in _CONJUNCTIONS):
         return Violation("question_multi", "一次只能问一个点")
-    if len(_QUESTION_WORDS.findall(question)) > 1:
+    # “有没有带来什么变化”是同一个询问点；按分句计，同一分句里多个疑问词不算多问。
+    if sum(bool(_QUESTION_WORDS.search(clause))
+           for clause in re.split(r"[，,、；;]", question)) > 1:
         return Violation("question_multi", "一次只能问一个点")
     if re.match(r'^(?:「[^」\n]*」|【[^】\n]*】|\[[^\]\n]*\]|“[^”\n]*”)\s*', text):
         return Violation("question_prefix", "直接自然提问，不在开头添加人名、标题或原文引用标签")
@@ -371,8 +373,17 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
                     return Violation("question_declined", "该维度已被用户拒绝")
                 return Violation("question_repeat", "已经问过同样的问题")
         recent = state.focus_doc.questions[-3:]
+        # 项目名等共同前缀会抬高相似度；比较前去掉，避免换角度提问被误判重复。
+        titles = [t for t in [state.focus_doc.title, *(state.other_titles or [])]
+                  if t and len(t) >= 2]
+        def _without_titles(value):
+            for title in titles:
+                value = value.replace(title, '')
+            return value
         # 无证据问题仍需相似度检查；要求型模板只因槽位不同而相似，跨槽不误判。
-        if not evidence and any(question_similarity(q.text, text) >= 0.6 for q in recent):
+        if not evidence and any(
+                question_similarity(_without_titles(q.text), _without_titles(text)) >= 0.6
+                for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
             if step.slot == 'effect' and effect_state(state.focus_doc) == 'absent':
@@ -411,14 +422,10 @@ def _evidence_gate(
     block_text = state.focus_block_markdown
     if not block_text and state.focus_doc is not None:
         block_text = state.focus_doc.raw_text
-    if args.before is not None and block_text and args.before.strip() != block_text.strip():
-        return GuardResult(
-            violation=Violation("stale_anchor", "before 必须逐字复制当前整段原文", True)
-        )
+    # before 只是模型抄写的冗余字段；服务端快照才是准，模型给错也不影响改写内容。
     if not args.after.strip():
         return GuardResult(violation=Violation("empty_after", "改文不能为空", True))
-    anchor = args.before if args.before is not None else block_text
-    if args.after.strip() == anchor.strip():
+    if args.after.strip() == (block_text or '').strip():
         return GuardResult(violation=Violation("no_change", "改文与原文相同", True))
     if not args.reason.strip():
         return GuardResult(violation=Violation("missing_reason", "请填写修改理由", True))
@@ -555,7 +562,7 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
 
     if decision.tool == "propose_change":
         # 只在“本人负责/参与”等空壳词上做差异的改写，等于没有新增信息。
-        if _no_information(args.before or state.focus_block_markdown, args.after):
+        if _no_information(state.focus_block_markdown or '', args.after):
             return GuardResult(
                 violation=Violation(
                     "no_information", "改写没有新增信息，请补充具体职责、动作或结果。", True
@@ -583,14 +590,13 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                         "ask_first", "当前段还没有问过用户，先问一个具体的职责问题。", True
                     )
                 )
+            # 原文效果表述不等于用户确认；只要没有效果事实或用户回答，就仍需问一次。
             effect = effect_state(state.focus_doc)
-            if effect == 'missing' and 'effect' in supported:
-                effect = 'confirmed'
             if effect == "followup":
                 return GuardResult(
                     violation=Violation(
                         "ask_effect_followup",
-                        "用户只说明了使用情况，请再追问一次具体变化；仍没有就照实改写。",
+                        "本轮不能改写。要继续处理，先调用 ask_user（slot=effect）追问一次具体变化。",
                         True,
                     )
                 )
@@ -598,7 +604,8 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 return GuardResult(
                     violation=Violation(
                         "ask_effect",
-                        "改写前必须先问这段经历带来的实际效果，不能把“有人使用/上线”当成效果。",
+                        "改写前必须问一次这段经历的实际变化；原文里的效果数字也要用户确认，"
+                        "不能把“有人使用/上线”当成效果。",
                         True,
                     )
                 )

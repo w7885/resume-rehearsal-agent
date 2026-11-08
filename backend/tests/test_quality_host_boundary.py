@@ -21,17 +21,26 @@ class QualityHostBoundaryTests(unittest.TestCase):
     count = integration.GoalAndConfirmationTests.count
     ready = integration.GoalAndConfirmationTests.ready
 
-    def test_complete_original_reaches_pending_proposal_without_reinterview(self):
+    def test_complete_original_confirms_effect_once_before_pending_proposal(self):
         original = ('我负责查询模块；使用Python实现姓名模糊查询；'
                     '将查询耗时从10分钟缩短到3分钟。')
 
         class DirectProposalClient(integration.TargetClient):
             async def decide(self, **kwargs):
+                user = kwargs['user']
                 if self.proposed:
                     return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
-                self.proposed = True
                 data = self.runtime.repo.get_session_context(self.runtime.context)
                 block = data['draft']['blocks'][0]
+                if '## 实际效果\n已确认：' not in user:
+                    if '这个变化是真实发生的吗' in user:
+                        return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
+                            'experience_id': block['blockId'],
+                            'facts': [{'slot': 'effect', 'statement': '查询耗时从10分钟缩短到3分钟'}]}})
+                    return SimpleNamespace(data={'action': 'ask_user',
+                        'message': '原文提到查询耗时缩短了，这个变化是真实发生的吗？',
+                        'slot': 'effect', 'rationale': '确认原效果'})
+                self.proposed = True
                 return SimpleNamespace(data={'action': 'tool', 'tool': 'propose_change', 'args': {
                     'operation': 'replace', 'target': block['blockId'], 'before': block['markdown'],
                     'after': original.replace('我负责', '负责'), 'reason': '整理已有明确事实', 'gaps': [],
@@ -48,14 +57,23 @@ class QualityHostBoundaryTests(unittest.TestCase):
             events = self.analyze(session, user)
             self.assertEqual(events[-1]['payload']['outcome'], 'waiting_user')
             value = self.conversation(session)
+            question = value['messages'][-1]
+            self.assertEqual(question['assistant']['kind'], 'question')
+            self.assertEqual(value['draft']['markdown'], original)
+            self.assertFalse(any((m.get('assistant') or {}).get('kind') == 'change_question'
+                                 for m in value['messages']))
+
+            reply = self.send(session, '是的，查询耗时确实从10分钟缩短到3分钟。',
+                              request_id='complete-original-effect', replyToMessageId=question['messageId'])
+            self.analyze(session, reply, 'complete-original-effect')
+            value = self.conversation(session)
             self.assertEqual(value['messages'][-1]['assistant']['kind'], 'change_question')
-            self.assertFalse(any(m.get('assistant', {}).get('kind') == 'question'
-                                 for m in value['messages'] if m.get('assistant')))
             self.assertEqual(value['draft']['markdown'], original)
             current = Repository(self.path).get_session_context(RequestContext(session['sessionId']))
             self.assertEqual(len(current['suggestions']), 1)
-            reply = self.send(session, '是', request_id='complete-original-accept')
-            self.analyze(session, reply, 'complete-original-accept')
+            accept = self.send(session, '是', request_id='complete-original-accept',
+                               replyToMessageId=value['messages'][-1]['messageId'])
+            self.analyze(session, accept, 'complete-original-accept')
             self.assertEqual(self.conversation(session)['draft']['markdown'], original.replace('我负责', '负责'))
 
     def test_unsubstantiated_credentials_and_skill_levels_never_reach_confirmation(self):

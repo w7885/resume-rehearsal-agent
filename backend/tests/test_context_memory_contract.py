@@ -6,7 +6,7 @@ import unittest
 from app.agent.context import assemble_context
 from app.agent.guard import GuardState, check
 from app.agent.memory import ExperienceDoc, Fact, NewFact, Question, merge_facts, save_experience, load_experience
-from app.agent.ports import SessionContext, SessionInfo, Message, SourceText, SourceRef, RepoError
+from app.agent.ports import SessionContext, SessionInfo, Message, SourceText, SourceRef
 from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep, SaveFactsArgs
 from app.agent.store import InMemoryStateStore
@@ -59,6 +59,31 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(fact.statement, statement)
         self.assertEqual(fact.source_refs[0].quote, statement)
 
+    def test_unsupported_fact_is_rejected_without_dropping_supported_ones(self):
+        answer = '少做的一步：人工配置改为自动配置，验证周期缩短。'
+        store = InMemoryStateStore()
+        save_experience(store, 's', ExperienceDoc(
+            experience_id='p1', seq=1, kind='project', raw_text='参与推荐策略验证。',
+        ), None)
+        context = SimpleNamespace(
+            session=SessionInfo(session_id='s', experience_order=['p1']),
+            messages=[Message(message_id='m', role='user', text=answer)],
+            sources=[SourceText(source_id='answer', kind='supplement', text=answer)],
+            web_context={'references': [{'referenceId': 'external-1'}]},
+        )
+        repo = SimpleNamespace(get_session_context=lambda sid: context)
+        args = SaveFactsArgs(experience_id='p1', facts=[
+            NewFact(slot='effect', statement='人工配置改为自动配置，验证周期缩短'),
+            NewFact(slot='effect', statement='效率提升 30%'),
+        ])
+        result = asyncio.run(_save_facts(args, ToolContext('s', repo, store, 'm')))
+        self.assertEqual(result['active_facts'], 1)
+        self.assertEqual(result['rejected'][0]['code'], 'no_literal_source')
+        self.assertEqual(
+            load_experience(store, 's', 'p1')[0].facts[0].statement,
+            '人工配置改为自动配置，验证周期缩短',
+        )
+
     def test_unrelated_negation_preserves_all_actions(self):
         doc = self.doc()
         merge_facts(doc, [NewFact(slot='action', statement='按姓名模糊查询'), NewFact(slot='action', statement='删除前确认')])
@@ -79,8 +104,8 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(updated.facts[1].status, 'active')
         context.messages[0].text = '我还写了查询功能。'
         bad = SaveFactsArgs(experience_id='p1', facts=[NewFact(slot='action', statement='没有查询功能', supersedes_fact_ids=['f2'])])
-        with self.assertRaises(RepoError):
-            asyncio.run(_save_facts(bad, ToolContext('s', repo, store, 'm')))
+        result = asyncio.run(_save_facts(bad, ToolContext('s', repo, store, 'm')))
+        self.assertEqual(result['rejected'][0]['code'], 'invalid_supersedes')
         self.assertEqual(load_experience(store, 's', 'p1')[0].facts[1].status, 'active')
 
     def test_active_fact_keeps_its_older_source_in_context(self):

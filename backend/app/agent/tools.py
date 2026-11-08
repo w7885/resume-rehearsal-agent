@@ -248,13 +248,17 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
     message = next((m for m in current.messages if m.message_id == ctx.message_id and m.role == 'user'), None)
     correction = bool(message and re.search(r'更正|纠正|说错|不对|不是.{0,40}而是|应为|应改为', message.text))
     active = {f.id: f for f in doc.facts if f.status == 'active'}
-    kept, skipped = [], []
+    kept, skipped, rejected = [], [], []
     for fact in args.facts:
         if any(ref.source_id.startswith('external-') for ref in fact.source_refs):
-            raise RepoError('invalid_input', '外部岗位参考不能成为个人事实来源。')
+            rejected.append({'statement': fact.statement, 'code': 'external_source',
+                             'message': '外部岗位参考不能成为个人事实来源。'})
+            continue
         if fact.supersedes_fact_ids and (not correction or any(
                 fid not in active or active[fid].slot != fact.slot for fid in fact.supersedes_fact_ids)):
-            raise RepoError('invalid_input', '替代事实必须对应用户明确纠正的同一维度事实编号。')
+            rejected.append({'statement': fact.statement, 'code': 'invalid_supersedes',
+                             'message': '替代事实必须对应用户明确纠正的同一维度事实编号。'})
+            continue
         # 空壳回答（“是我负责的”）没有新增信息，不写成事实，避免后续产出同义反复建议。
         if _is_shell_statement(fact.statement):
             skipped.append(fact.statement)
@@ -270,7 +274,9 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
             # memory. Bind a literal personal statement before merge_facts.
             support = _literal_fact_source(current,fact.statement)
             if support is None:
-                raise RepoError('invalid_input', '存在外部参考时，新事实必须使用可核对的个人原句。')
+                rejected.append({'statement': fact.statement, 'code': 'no_literal_source',
+                                 'message': '存在外部参考时，新事实必须使用可核对的个人原句。'})
+                continue
             fact.source_refs = [support]
         kept.append(fact)
     added = merge_facts(doc, kept, ctx.message_id) if kept else []
@@ -280,6 +286,7 @@ async def _save_facts(args: SaveFactsArgs, ctx: ToolContext) -> dict[str, Any]:
         "added": [fact.id for fact in added],
         "active_facts": len([f for f in doc.facts if f.status == "active"]),
         "skipped_tautology": skipped,
+        "rejected": rejected,
     }
 
 
@@ -294,8 +301,6 @@ async def _propose_change(
     snapshot = ctx.proposal_snapshot
     verify_proposal_snapshot(snapshot, ctx.repo.get_session_context(ctx.session_id),
                              ctx.session_id, args.target, run_id=ctx.run_id)
-    if args.before is not None and args.before.strip() != snapshot.before.strip():
-        raise RepoError('stale_anchor', '建议旧文与已固定的输入快照不一致。', False)
     doc, revision = _require_experience(ctx, args.target)
     external = {'external_reference_ids': args.external_reference_ids} if args.external_reference_ids else {}
     suggestion = ctx.repo.save_suggestion(

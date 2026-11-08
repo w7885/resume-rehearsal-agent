@@ -149,9 +149,24 @@ class QuestionWordingTests(unittest.TestCase):
         self.assertEqual(question.evidence_quote, '负责跨部门需求对接')
         self.assertEqual(followup_count(doc, 'responsibility'), 0)
 
-    def test_two_question_words_in_the_question_are_still_multi(self):
+    def test_two_question_words_in_one_clause_are_one_question(self):
         result = check(AskStep(action='ask_user', message='你是怎么发现什么问题这件事的？', slot='action'), self.state())
+        self.assertIsNone(result.violation)
+
+    def test_two_interrogative_clauses_are_multi(self):
+        result = check(AskStep(action='ask_user', message='学生信息管理系统里，你负责了哪部分，遇到过什么困难？', slot='action'), self.state('学生信息管理系统'))
         self.assertEqual(result.violation.code, 'question_multi')
+
+    def test_retargeted_question_is_not_repeat_when_only_title_overlaps(self):
+        state = self.state('学生信息管理系统')
+        state.focus_doc.questions.append(Question(
+            id='q1', slot='tech', outcome='answered',
+            text='学生信息管理系统里，这些接口你具体是怎么实现的？比如用了 Flask/SQLite，挑一种说说。',
+            fingerprint='q1'))
+        result = check(AskStep(
+            action='ask_user', slot='action',
+            message='学生信息管理系统里，这些接口做完后有没有实际用起来？比如同学试用过或只在本地跑通测试，挑一种说说。'), state)
+        self.assertIsNone(result.violation)
 
 
 from app.agent.loop import _fallback_ask, _requirement_question

@@ -78,8 +78,9 @@ class DiagnosisTests(unittest.TestCase):
     def test_original_personal_responsibility_actions_and_effect_are_recognized(self):
         value = doc('我负责查询模块；使用Python实现姓名模糊查询；将查询耗时从10分钟缩短到3分钟。')
         self.assertEqual(supported_experience_slots(value), {'responsibility', 'action', 'effect'})
-        self.assertEqual(effect_state(value), 'confirmed')
-        self.assertIn('已确认', _effect_block(value))
+        # 原文效果只是待核对线索，用户确认前不算已确认。
+        self.assertEqual(effect_state(value), 'missing')
+        self.assertIn('未经用户确认', _effect_block(value))
         self.assertNotEqual(_fallback_question(value)[1], 'responsibility')
 
     def test_vague_or_collective_original_does_not_confirm_personal_responsibility(self):
@@ -151,8 +152,9 @@ class DiagnosisTests(unittest.TestCase):
         value = doc('我负责查询模块；实现姓名查询；将耗时缩短到3分钟。')
         value.questions.append(Question(id='refuse', slot='effect', text='能确认效果吗？', fingerprint='refuse',
                                         outcome='declined', answer_kind='refused'))
-        self.assertEqual(effect_state(value), 'confirmed')
+        self.assertEqual(effect_state(value), 'absent')
         self.assertIn('effect', supported_experience_slots(value))
+        self.assertIn('原样保留', _effect_block(value))
         self.assertNotEqual(_fallback_question(value)[1], 'effect')
 
     def test_context_explains_available_original_without_active_effect_fact(self):
@@ -161,7 +163,7 @@ class DiagnosisTests(unittest.TestCase):
         text = assemble_context(context, [value], {}, 'p1', '开发实习')
         self.assertIn('已有材料诊断', text)
         self.assertIn('responsibility、action、effect', text)
-        self.assertIn('已确认', text)
+        self.assertIn('未经用户确认', text)
 
 
 class RouterAnswerTests(unittest.TestCase):

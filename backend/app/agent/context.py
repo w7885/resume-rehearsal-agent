@@ -78,9 +78,11 @@ def _effect_block(doc: ExperienceDoc) -> str:
                           if fact.slot == "effect" and fact.status == "active"), doc.raw_text)
         return f"已确认：{_clip(statement, 200)}"
     if state == "followup":
-        return "已追问 1 次，仍待具体变化（最多再问 1 次）"
+        return "已问过 1 次，仍待具体变化：本轮先追问一次，不能改写"
     if state == "absent":
-        return "用户已说明没有可确认的实际效果：照实改写，不写效果类结论"
+        return "用户已明确没有或拒绝确认实际效果：不再追问，不新增效果结论；原文已有表述可原样保留"
+    if 'effect' in supported_experience_slots(doc):
+        return "原文有成效表述但未经用户确认：先引用原文问一次是否属实或具体变化，确认后才能写效果结论"
     return "尚未询问"
 
 
@@ -195,7 +197,8 @@ def assemble_context(
             sections.append('## 已有材料诊断\n'
                             + '原文或已核实个人引用中可辨认的维度：'
                             + '、'.join(slot for slot in ('responsibility', 'action', 'effect') if slot in available)
-                            + '。只补影响改写的缺口；已有维度不重复采访。明确没有效果或拒答时按现有事实处理；'
+                            + '。只补影响改写的缺口；职责和动作可直接沿用，效果若只来自原文表述仍须确认一次。'
+                            '明确没有效果或拒答时按现有事实处理；'
                             '记不清时优先引用岗位要求换角度追问一次，没有依据就停止。')
         if focus.kind not in EXPERIENCE_KINDS:
             sections.append('## 当前段处理规则（本节优先，不套用经历采访）\n' + RULES[focus.kind]

@@ -255,12 +255,11 @@ def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent
                for f in doc.facts):
             return 'confirmed'
         return 'absent'
+    # 只有事实记忆里的效果才算用户确认；原文里的效果数字只是待核对线索。
     if any(
         fact.slot == "effect" and fact.status == "active" for fact in doc.facts
     ):
         return "confirmed"
-    if 'effect' in supported_experience_slots(doc):
-        return 'confirmed'
     settled = [
         question
         for question in doc.questions
