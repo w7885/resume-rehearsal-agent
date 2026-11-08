@@ -61,13 +61,13 @@ def pcm_audio(raw):
 def transcribe(raw):
     pcm = pcm_audio(raw)
     if not status()['available']:
-        raise VoiceError('voice_unavailable', '本地语音识别尚未就绪，请检查语音配置；文字输入仍可使用。', 503)
+        raise VoiceError('voice_unavailable', '语音识别尚未就绪，请联系维护者检查配置；文字输入仍可使用。', 503)
     if not _lock.acquire(blocking=False):
         raise VoiceError('voice_busy', '上一段语音还在转写，请稍候再试。', 429)
     try:
         # The worker receives only PCM and a trusted configuration path. Do not
         # pass model-service credentials into this offline recognition process.
-        env = {k: v for k, v in os.environ.items() if not re.search(r'API_KEY|TOKEN|SECRET|PASSWORD', k, re.I)}
+        env = {k: v for k, v in os.environ.items() if not re.search(r'API_KEY|TOKEN|SECRET|PASSWORD|DATABASE_URL', k, re.I)}
         path = model_path()
         # Vosk's Windows native file API cannot open some absolute Unicode
         # paths. Project-local model components are ASCII and resolve from cwd.

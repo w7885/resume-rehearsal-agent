@@ -7,6 +7,7 @@ import { WebContinuationController } from './webContinuation';
 import { WebControl } from './ChatWebControls';
 import { ChatSendOperation } from './chatSend';
 import { ChatAgentOperation } from './chatAgent';
+import { ConversationReadback } from './conversationReadback';
 import { ChatDeleteOperation } from './chatDelete';
 import { DeleteSessionDialog, RenameSessionDialog, SessionHistoryRow } from './ChatSessionActions';
 import { ChatRenameOperation, sessionTitleError } from './chatRename';
@@ -23,6 +24,7 @@ import { externalTextSegments, visibleMessageParagraphs, isLegacySegmentAnnounce
 import type { ChatAttachment } from './chatSend';
 import type { ChatMaterial, ChatMessage, ChatSession, Conversation } from './types';
 import './chat.css';
+import { workspaceCopy } from './workspaceMode';
 
 type ComposerDraft = { text: string; attachments: ChatAttachment[]; replyToMessageId?: string };
 type Pending = { key: string; operation: ChatSendOperation; initialWebEnabled?: boolean };
@@ -48,6 +50,9 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false), [loading, setLoading] = useState(true);
   const locked = useRef(false);
   const [error, setError] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const readback = useRef<ConversationReadback | null>(null);
+  const mounted = useRef(true);
   const [agentTask, setAgentTask] = useState<ChatAgentOperation | null>(null);
   const [queued, setQueued] = useState<string | null>(null);
   const [progressAnswer, setProgressAnswer] = useState<{ key: string; operationId: string; text: string } | null>(null);
@@ -121,11 +126,33 @@ export default function ChatPage() {
     window.history.replaceState(null, '', url);
   };
   const install = (value: Conversation | null) => {
+    if (active.current?.session.sessionId !== value?.session.sessionId) readback.current?.cancel();
     editor.activate(value); setInspecting(null);
     active.current = value; setConversation(value); setUrl(value?.session.sessionId ?? null);
     if (value) void web.load(value.session.sessionId);
   };
   const refreshList = async () => { setSessions(await api.listChatSessions()); };
+  const syncAfterAnalysis = async (sid: string) => {
+    readback.current?.cancel();
+    const operation = new ConversationReadback(); readback.current = operation;
+    try {
+      const fresh = await operation.read(sid, () => mounted.current ? active.current : null,
+        api.readConversation, () => { if (mounted.current) setSyncing(true); });
+      if (fresh && mounted.current && readback.current === operation) { install(fresh); scrollToEnd(); }
+      else if (operation.cancelled && mounted.current && active.current?.session.sessionId === sid && readback.current === operation) {
+        setError(previous => previous || '已停止同步，消息仍已保存。可重新读取会话，无需重试分析。');
+      }
+    } catch {
+      if (mounted.current && active.current?.session.sessionId === sid) {
+        setError(previous => previous || '消息已保存，结果暂未同步。请重新读取会话，无需重试分析。');
+      }
+    } finally {
+      if (readback.current === operation) {
+        readback.current = null;
+        if (mounted.current) setSyncing(false);
+      }
+    }
+  };
   const scrollToEnd = () => requestAnimationFrame(() => thread.current?.scrollTo({ top: thread.current.scrollHeight,
     behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
   const editDraft = (changes: Partial<ComposerDraft>) => {
@@ -165,6 +192,10 @@ export default function ChatPage() {
     } else await resumeWeb();
   };
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; readback.current?.cancel(); };
+  }, []);
   useEffect(() => {
     let live = true;
     void api.readRenameSupport().then(available => { if (live) setRenameAvailable(available); });
@@ -298,8 +329,7 @@ export default function ChatPage() {
           if (analysis.isStopped) { setAgentTask(null); setError(analysis.stopMessage); }
           else setError(`消息已保存。${errorText(failure)}`);
         }
-        try { install(await api.readConversation(value.session.sessionId)); scrollToEnd(); }
-        catch { setError('消息已保存，分析后的会话暂未读回。可重新读取会话。'); }
+        await syncAfterAnalysis(value.session.sessionId);
       }
     } catch (failure) {
       setError(task?.operation.isMessageSaved() ? '消息已保存，但会话暂未读回。请重试读取，原发送不会重复写入。' : errorText(failure));
@@ -320,7 +350,8 @@ export default function ChatPage() {
       await web.prepare(task.sessionId, agentWebChoice.current?.sid === task.sessionId ? agentWebChoice.current.enabled : undefined);
       agentWebChoice.current = null;
       await task.run();
-      install(await api.readConversation(task.sessionId)); setAgentTask(null); scrollToEnd();
+      setAgentTask(null);
+      await syncAfterAnalysis(task.sessionId);
     } catch (failure) { setError(errorText(failure)); }
     finally { locked.current = false; setSending(false); }
   };
@@ -517,23 +548,24 @@ export default function ChatPage() {
       <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
-      <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>消息保存在本机</small></span></footer>
+      <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>{workspaceCopy.history}</small></span></footer>
     </aside>
 
     {viewport > 680 && <PanelResizer kind="history" label="调整会话列表宽度" current={historyWidth} min={historyLimits.min} max={historyLimits.max} onResize={width => resizePanel('history', width)} onActiveChange={setPanelResizing} />}
 
     <main className="cp-chat" aria-label="真实聊天保存与恢复">
-      <header className="cp-chat-header"><div className="cp-header-title"><button className="cp-icon cp-menu" aria-label="展开会话列表" onClick={() => setHistoryOpen(true)}><Icon name="menu" /></button><h1>{conversation?.session.title ?? '新对话'}</h1><span className="cp-preview-badge">{readOnly ? '模拟历史' : '本机保存'}</span></div><div className="cp-live-header-tools"><button className="cp-icon" aria-label="重新读取会话" title="重新读取会话" disabled={loading || sending || !!pending} onClick={() => { void navigate(conversation?.session.sessionId ?? null); }}><Icon name="chat" size={17} /></button><button className={`cp-draft-toggle ${draftOpen ? 'cp-selected' : ''}`} aria-label="切换当前稿" title="当前稿" aria-pressed={draftOpen} onClick={() => setDraftOpen(!draftOpen)}><Icon name="panel" size={18} /><span>当前稿</span></button></div></header>
+      <header className="cp-chat-header"><div className="cp-header-title"><button className="cp-icon cp-menu" aria-label="展开会话列表" onClick={() => setHistoryOpen(true)}><Icon name="menu" /></button><h1>{conversation?.session.title ?? '新对话'}</h1><span className="cp-preview-badge">{readOnly ? '模拟历史' : workspaceCopy.storage}</span></div><div className="cp-live-header-tools"><button className="cp-icon" aria-label="重新读取会话" title="重新读取会话" disabled={loading || sending || !!pending} onClick={() => { void navigate(conversation?.session.sessionId ?? null); }}><Icon name="chat" size={17} /></button><button className={`cp-draft-toggle ${draftOpen ? 'cp-selected' : ''}`} aria-label="切换当前稿" title="当前稿" aria-pressed={draftOpen} onClick={() => setDraftOpen(!draftOpen)}><Icon name="panel" size={18} /><span>当前稿</span></button></div></header>
       <div className="cp-thread" ref={thread}>
-        {loading && !conversation && <p className="cp-live-system" role="status">正在读取本机历史…</p>}
+        {loading && !conversation && <p className="cp-live-system" role="status">{workspaceCopy.loading}</p>}
         {conversation?.messages.length ? <div className="cp-message-list"><div className="cp-chat-date">已保存的原始对话</div>{conversation.messages.filter(message => message.attachments.length || message.assistant?.sourceRefs.length || message.assistant?.externalReferences?.length || !isLegacySegmentAnnouncement(message.content, message.role)).map(message => <article key={message.messageId} className={`cp-message cp-${message.role}`} aria-label={message.role === 'user' ? '已保存用户消息' : '已保存助手消息'}>{message.role === 'assistant' && <div className="cp-agent-avatar" aria-hidden="true">历</div>}<div className="cp-message-content">{message.historical && <span className="cp-live-historical">历史内容 · 不自动作为当前事实</span>}{message.assistant?.mode === 'synthetic' && <span className="cp-live-historical">构造示例 · 非真实 Agent 回复</span>}{message.role === 'user' && message.replyToMessageId && <span className="cp-replied-to">回复：{conversation.messages.find(item => item.messageId === message.replyToMessageId)?.content.slice(0, 70) ?? '已保存的询问'}</span>}<MessageText content={message.content} role={message.role} />{message.attachments.map(material => <button className="cp-attachment" key={material.materialId} onClick={() => setInspecting(material)}><span className="cp-file-symbol"><Icon name="attach" size={18} /></span><span>{material.name}<small>{sizeLabel(material.byteSize)}{material.current ? '' : ' · 历史附件'}</small></span><Icon name="chevron" size={15} /></button>)}{message.assistant && <div className="cp-reply-tools">{!!message.assistant.sourceRefs.length && <button onClick={() => setInspecting({replyMessage:message})}>查看依据</button>}{message.assistant.questionState === 'awaiting_reply' && <button disabled={unavailable} aria-pressed={draft.replyToMessageId === message.messageId} onClick={() => selectReply(message)}>回复这条询问</button>}</div>}</div></article>)}{(readOnly || !conversation.capabilities.agentAvailable) && <p className="cp-live-system">{readOnly ? '这是旧版模拟会话，仅恢复原始记录；请新建对话保存个人材料。' : '消息与原件已保存。分析服务当前未启用，可以继续保存材料和编辑当前稿。'}</p>}</div>
-          : <div className="cp-welcome"><span className="cp-welcome-mark">历</span><h2>从你的经历开始</h2><p>说说你的求职方向，或先上传简历。<br />文字和原件会保存在本机，刷新后可以继续。</p><p className="cp-live-capability">发送消息或附件后，可在这里查看本次处理状态。</p></div>}
+          : <div className="cp-welcome"><span className="cp-welcome-mark">历</span><h2>从你的经历开始</h2><p>说说你的求职方向，或先上传简历。<br />{workspaceCopy.welcome}</p><p className="cp-live-capability">发送消息或附件后，可在这里查看本次处理状态。</p></div>}
       </div>
       <div className="cp-composer-area">
         <WebControl entry={webEntry} enabled={key === 'new' ? newWebEnabled : webEntry.settings?.enabled ?? false} staged={key === 'new'}
           disabled={loading || !!pending || !!deleteTarget || !!renameTarget || !!readOnly || (sending && !agentTask)}
           onToggle={() => { void toggleWeb().catch(failure => setError(errorText(failure))); }}
           onRetry={() => { if (key !== 'new') void web.retry(key); }} />
+        {syncing && <div role="status"><p>消息已保存，结果正在同步…</p><button onClick={() => readback.current?.cancel()}>停止同步</button></div>}
         {error && <div className="cp-live-error" role="alert"><p>{error}</p>{pending && <div><button disabled={sending || loading} onClick={() => { void send(); }}>{pending.operation.isMessageSaved() ? '重试读取已保存会话' : '重试原发送'}</button>{pending.operation.canReturnToEditing() && <button disabled={sending || loading} onClick={() => { void returnToEditing(); }}>返回编辑</button>}</div>}</div>}
         {controlEntry.error && <div className="cp-live-error" role="alert"><p>{controlEntry.error}</p><button disabled={sending || loading} onClick={() => { void resumeWeb(true); }}>{controlEntry.operation?.isStopped ? '核对停止状态' : '重试原联网接续'}</button></div>}
         {controlEntry.phase === 'pending' && <p className="cp-live-system" role="status">联网接续已保留，当前处理结束后继续。</p>}
@@ -555,11 +587,11 @@ export default function ChatPage() {
           {!!selections.length && <div className="cp-selected-files">{selections.map(item => <span key={item.localId}><Icon name="attach" size={14} />{item.material?.name ?? item.file?.name}{item.material ? ' · 原件已保存' : ''}<button disabled={unavailable} aria-label={`移除附件 ${item.material?.name ?? item.file?.name}`} onClick={() => editDraft({ attachments: draft.attachments.filter(value => value.localId !== item.localId) })}><Icon name="close" size={13} /></button></span>)}</div>}
           <label className="cp-sr-only" htmlFor="live-composer">聊天消息</label><textarea id="live-composer" ref={composer} value={draft.text} onChange={event => editDraft({ text: event.target.value })} maxLength={50000} placeholder={readOnly ? '模拟会话只供回顾，请新建对话…' : '输入消息，或添加附件…'} rows={1} readOnly={!!pending || !!readOnly || queued === key} disabled={loading || (sending && !agentTask)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void send(); } }} />
           <div className="cp-composer-tools"><button className="cp-attach-button" aria-label="添加附件" disabled={unavailable} onClick={() => fileInput.current?.click()}><Icon name="attach" size={19} /><span>添加附件</span></button>
-            <button className={`cp-voice-button ${voice.phase === 'recording' ? 'cp-recording' : ''}`} aria-label={voice.phase === 'recording' ? '停止录音并转成文字' : '语音输入'} aria-pressed={voice.phase === 'recording'} title="普通话录音，本机转写，校对后手动发送" disabled={baseUnavailable || !voice.available || voice.loading || voice.phase === 'requesting' || voice.phase === 'transcribing'} onClick={() => voice.phase === 'recording' ? voice.stop() : voice.start()}><Icon name={voice.phase === 'recording' ? 'stop' : 'mic'} size={18} /><span>{voice.phase === 'recording' ? '停止并转文字' : voice.phase === 'requesting' ? '等待授权…' : voice.phase === 'transcribing' ? '转写中…' : voice.canRetry ? '重新录音' : '语音输入'}</span>{voice.phase === 'recording' && <span aria-hidden="true" className="cp-voice-time">{voice.seconds}s</span>}</button>
+            <button className={`cp-voice-button ${voice.phase === 'recording' ? 'cp-recording' : ''}`} aria-label={voice.phase === 'recording' ? '停止录音并转成文字' : '语音输入'} aria-pressed={voice.phase === 'recording'} title={workspaceCopy.voiceTitle} disabled={baseUnavailable || !voice.available || voice.loading || voice.phase === 'requesting' || voice.phase === 'transcribing'} onClick={() => voice.phase === 'recording' ? voice.stop() : voice.start()}><Icon name={voice.phase === 'recording' ? 'stop' : 'mic'} size={18} /><span>{voice.phase === 'recording' ? '停止并转文字' : voice.phase === 'requesting' ? '等待授权…' : voice.phase === 'transcribing' ? '转写中…' : voice.canRetry ? '重新录音' : '语音输入'}</span>{voice.phase === 'recording' && <span aria-hidden="true" className="cp-voice-time">{voice.seconds}s</span>}</button>
             {voice.canRetry && <button className="cp-voice-action" disabled={baseUnavailable || voice.phase === 'transcribing'} onClick={voice.retry}>重试转写</button>}
             {voice.blocking && <button className="cp-voice-action" disabled={baseUnavailable} onClick={voice.cancel}>取消语音</button>}
             <span className="cp-composer-hint" role="status">{queued === key ? '消息在输入框中，当前处理结束后发送。' : sending ? agentTask ? 'Agent 正在处理…' : '正在保存，请稍候…' : pending ? '本次发送未完成，输入仍保留' : voice.blocking ? '语音不会自动发送' : 'Enter 发送，Shift + Enter 换行'}</span><button className="cp-send" aria-label="发送消息" disabled={queued === key || (unavailable && !(sending && agentTask && !pending && !webUnsettled && !readOnly && !voice.blocking && draft.text.trim())) || (!draft.text.trim() && !draft.attachments.length)} onClick={() => { void send(); }}><Icon name="send" size={21} /></button>{queued === key && <button onClick={() => setQueued(null)}>取消排队</button>}</div>
-          {(voice.error || voice.blocking) && <div className={`cp-voice-status ${voice.error ? 'cp-voice-error' : ''}`} role={voice.error ? 'alert' : 'status'}>{voice.error || (voice.phase === 'requesting' ? '请在浏览器中允许使用麦克风。' : voice.phase === 'recording' ? '正在录音，最长 60 秒。停止后可校对文字；切换会话会取消本段语音。' : '正在本机转写，已有文字仍保留；切换会话会取消本次结果。')}{!voice.available && !voice.loading && <button className="cp-voice-action" onClick={voice.reload}>重试语音服务</button>}</div>}
+          {(voice.error || voice.blocking) && <div className={`cp-voice-status ${voice.error ? 'cp-voice-error' : ''}`} role={voice.error ? 'alert' : 'status'}>{voice.error || (voice.phase === 'requesting' ? '请在浏览器中允许使用麦克风。' : voice.phase === 'recording' ? '正在录音，最长 60 秒。停止后可校对文字；切换会话会取消本段语音。' : workspaceCopy.transcribing)}{!voice.available && !voice.loading && <button className="cp-voice-action" onClick={voice.reload}>重试语音服务</button>}</div>}
           <input ref={fileInput} className="cp-sr-only" tabIndex={-1} type="file" multiple accept=".md,.docx,.pdf,.png,.jpg,.jpeg" disabled={unavailable} onChange={event => { chooseFiles(event.target.files); event.target.value = ''; }} />
         </div>
       </div>

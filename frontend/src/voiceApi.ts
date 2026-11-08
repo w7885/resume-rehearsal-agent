@@ -6,7 +6,7 @@ async function request(url: string, signal: AbortSignal, audio?: Blob): Promise<
   let response: Response;
   try { response = await apiFetch(url, { method: audio ? 'POST' : 'GET', signal, cache: 'no-store',
     headers: audio ? { 'Content-Type': 'audio/wav' } : undefined, body: audio }); }
-  catch (error) { if (signal.aborted) throw error; throw new Error('暂时无法连接本地语音服务，已有文字仍保留。'); }
+  catch (error) { if (signal.aborted) throw error; throw new Error('暂时无法连接语音服务，已有文字仍保留。'); }
   const result: unknown = await response.json().catch(() => null);
   if (!object(result) || typeof result.ok !== 'boolean') throw new Error('语音服务返回异常，可重试转写，已有文字不会丢失。');
   if (!response.ok || !result.ok) throw new Error(object(result.error) && typeof result.error.message === 'string' ? result.error.message : '语音暂未转写成功，请重试。');

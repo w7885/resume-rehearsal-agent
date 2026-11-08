@@ -395,6 +395,7 @@ class AgentIntegrationTests(unittest.TestCase):
         self.runner.run(disconnect())
         self.assertFalse(self.host.active)
         self.assertEqual(self.host.snapshot(session['sessionId'],'stream')['status'],'interrupted')
+        self.assertEqual(self.host.snapshot(session['sessionId'],'stream')['outcome'],'client_disconnected')
         self.assertEqual(self.conversation(session)['messages'][0]['content'],user['content'])
 
 
