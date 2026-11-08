@@ -392,9 +392,37 @@ class Runtime:
             return '图片原件已保存，可打开预览；' + reason + '你可以粘贴简历和岗位描述的文字，或上传 DOCX／文字型 PDF 继续。'
         return '请先上传可读的简历，或说明希望修改的经历。'
 
-    def _activate(self, selected, candidates, *, reference_ids=()):
+    async def _resume_boundaries(self, selected, candidates):
+        """LLM 只补行号；PDF/Word/文本都走同一份提取后的纯文本。
+
+        按 ``_activate`` 将要拼进草稿的顺序取原文，行号才能直接复用。
+        """
+        allowed = {item['materialId']: item for item in candidates}
+        texts = []
+        with self.repo._operation(self.context) as (connection, _):
+            for item in selected:
+                if not isinstance(item, dict) or item.get('role') != 'resume':
+                    continue
+                saved = allowed.get(item.get('materialId'))
+                if saved is None:
+                    continue
+                for source in saved['sources']:
+                    row = connection.execute(
+                        'SELECT text FROM source_blocks WHERE session_id=? AND source_id=?'
+                        ' ORDER BY source_revision DESC LIMIT 1',
+                        (self.sid, source['source_id'])).fetchone()
+                    if row is not None:
+                        texts.append(row['text'])
+        if not texts:
+            return None
+        from app.agent_segmentation import refine
+        from app.draft_actions import join_markdown
+        return await refine(self, join_markdown([{'markdown': text} for text in texts]))
+
+    async def _activate(self, selected, candidates, *, reference_ids=()):
         if not isinstance(selected,list) or not selected or len(selected)>10:
             raise RepositoryError('invalid_input','附件用途结果无效。')
+        boundaries = await self._resume_boundaries(selected, candidates)
         allowed={item['materialId']:item for item in candidates}
         seen=set()
         with self.repo._operation(self.context,write=True) as (connection,session):
@@ -425,7 +453,7 @@ class Runtime:
             if initial:
                 current=bound.get_session(RequestContext(self.sid))
                 from app.resume_structure import structure_blocks
-                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial))
+                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial,boundaries=boundaries))
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
             connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))

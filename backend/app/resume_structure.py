@@ -319,10 +319,15 @@ def section_kinds(markdowns):
     return result
 
 
-def split_resume(text):
-    """Keep each heading with its content; preserve every byte-equivalent character."""
+def split_resume(text, boundaries=None):
+    """Keep each heading with its content; preserve every byte-equivalent character.
+
+    ``boundaries`` 是额外的新段起始行号（只来自模型返回的行号，不来自模型文本）。
+    """
     starts, offset, fence, in_experience = [0], 0, None, False
     entries = experience_boundaries(text)
+    if boundaries:
+        entries |= set(boundaries)
     for line_index, line in enumerate(text.splitlines(keepends=True)):
         token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
         if token:
@@ -346,10 +351,10 @@ def split_resume(text):
     return [text[a:b] for a, b in zip(starts, starts[1:]) if text[a:b].strip()]
 
 
-def structure_blocks(blocks):
+def structure_blocks(blocks, boundaries=None):
     """Map split/grouped draft blocks back to exact per-source substring quotes."""
     whole = join_markdown(blocks)
-    parts = split_resume(whole)
+    parts = split_resume(whole, boundaries=boundaries)
     if len(parts) <= 1:
         return blocks
     originals, offset = [], 0

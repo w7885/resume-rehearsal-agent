@@ -356,7 +356,7 @@ class AgentIntegrationTests(unittest.TestCase):
         with runtime.repo._operation(runtime.context) as (c,_):
             materials=json.loads(c.execute('SELECT materials_json FROM agent_material_prompts WHERE prompt_message_id=?',(prompt['messageId'],)).fetchone()[0])
         with patch.object(type(runtime.repo),'create_initial_draft',side_effect=OSError('construct write failure')):
-            with self.assertRaises(OSError):runtime._activate([{'materialId':materials[0]['materialId'],'role':'resume'}],materials)
+            with self.assertRaises(OSError):asyncio.run(runtime._activate([{'materialId':materials[0]['materialId'],'role':'resume'}],materials))
         value=self.conversation(session)
         self.assertEqual(value['materials'][0]['role'],'unknown')
         self.assertEqual(value['draft']['markdown'],'')

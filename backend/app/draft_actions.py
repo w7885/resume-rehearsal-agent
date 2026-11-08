@@ -216,7 +216,7 @@ def replace_draft(repo, context, payload):
         connection.execute("UPDATE sessions SET current_resume_generation = ?, draft_revision = draft_revision + 1 WHERE session_id = ?", (generation, context.session_id))
         updated = _current(connection, context.session_id)
         from app.resume_structure import structure_blocks
-        blocks = structure_blocks([{'markdown': source['text'], 'sourceRefs': [{'sourceId': source['source_id'], 'sourceRevision': source['source_revision'], 'quote': source['text']}]} for source in rows])
+        blocks = structure_blocks([{'markdown': source['text'], 'sourceRefs': [{'sourceId': source['source_id'], 'sourceRevision': source['source_revision'], 'quote': source['text']}]} for source in rows], boundaries=payload.get('boundaries'))
         for position, block in enumerate(blocks):
             _write_block(connection, updated, block['markdown'], position, 'replacement', block['sourceRefs'])
         next_scope = [row[0] for row in connection.execute(

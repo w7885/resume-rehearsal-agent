@@ -92,8 +92,9 @@ def snapshot(runtime, candidates):
     return values
 
 
-def replace(runtime, item, candidates, accompanying=()):
+async def replace(runtime, item, candidates, accompanying=()):
     """Reuse the existing user transaction, bound to this exact saved user turn."""
+    boundaries = await runtime._resume_boundaries([{'materialId': item['materialId'], 'role': 'resume'}], candidates)
     with runtime.repo._operation(runtime.context, write=True) as (connection, session):
         bound = Repository(runtime.repo.path, _connection=connection)
         allowed = {c['materialId']: c for c in candidates}
@@ -126,7 +127,7 @@ def replace(runtime, item, candidates, accompanying=()):
         bound.replace_draft(RequestContext(runtime.sid, current['stateRevision']), {
             'requestId': runtime.request_id, 'expectedDraftRevision': session['draft_revision'],
             'materialId': item['materialId'], 'authorizationMessageId': runtime.user_id,
-            'confirmed': True, 'completeConfirmed': True})
+            'confirmed': True, 'completeConfirmed': True, 'boundaries': boundaries})
         current = bound.get_session(RequestContext(runtime.sid))
         # Keep only the actual authorization turn current; all earlier personal context stays historical.
         connection.execute("UPDATE messages SET use_status='active',resume_generation=? WHERE session_id=? AND message_id=?", (current['currentResumeGeneration'], runtime.sid, runtime.user_id))
@@ -215,7 +216,7 @@ async def handle(runtime, turn):
             # JD survives replacement. Personal reference material needs its own later use decision.
             accompanying = [other for other in known if other is not item]
             if all(other['role'] == 'jd' for other in accompanying):
-                replace(runtime, item, candidates, accompanying)
+                await replace(runtime, item, candidates, accompanying)
                 runtime._reply('已按你的明确要求以新版简历替换当前稿，旧对话与历史保留，旧改写未混入新版。')
                 return True
             unresolved.append(item['materialId'])
@@ -232,7 +233,7 @@ async def handle(runtime, turn):
     selected = [{'materialId': item['materialId'], 'role': 'unknown' if item['materialId'] in reference_ids else item['role']} for item in known]
     if not selected:
         return False
-    runtime._activate(selected, candidates, reference_ids=reference_ids)
+    await runtime._activate(selected, candidates, reference_ids=reference_ids)
     runtime._continue()
     labels = {'resume': '待修改简历', 'jd': '岗位描述', 'supplement': '个人补充材料', 'unknown': '仅供参考的材料，不作为个人事实'}
     names = {m['materialId']: m['name'] for m in materials}
