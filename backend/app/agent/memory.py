@@ -508,6 +508,11 @@ def requirement_reopen_allowed(doc: ExperienceDoc, slot: Slot) -> bool:
     return latest is not None and latest.answer_kind in {"uncertain", "legacy"}
 
 
+def followup_count(doc: ExperienceDoc, slot: Slot) -> int:
+    """该槽第一次提问之后的追问次数；效果槽不使用。"""
+    return max(0, sum(1 for question in doc.questions if question.slot == slot) - 1)
+
+
 def record_declined(doc: ExperienceDoc, slots: list[Slot]) -> None:
     for slot in slots:
         if slot != "confirm" and slot not in doc.declined:

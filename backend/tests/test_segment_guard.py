@@ -1,8 +1,8 @@
 """Each segment must be asked about before rewriting, and only the focus segment."""
 import unittest
 
-from app.agent.guard import GuardState, check
-from app.agent.memory import ExperienceDoc, Fact, Question
+from app.agent.guard import MAX_SLOT_FOLLOWUPS, GuardState, check
+from app.agent.memory import ExperienceDoc, Fact, Question, followup_count
 from app.agent.ports import DraftBlock, SessionContext, SessionInfo
 from app.agent.questions import requirement_question
 from app.agent.schemas import AskStep, StepDecisionAdapter
@@ -57,9 +57,12 @@ def evidence_state(declined=True, followups=(), answer_kind='legacy'):
     doc.questions.append(Question(id='q1', slot='responsibility',
                                   text='你负责哪部分？', fingerprint='f',
                                   outcome='declined', answer_kind=answer_kind))
+    for index, slot in enumerate(followups, start=2):
+        doc.questions.append(Question(
+            id=f'q{index}', slot=slot, text=f'岗位要求追问{index}？', fingerprint=f'f{index}',
+            evidence_ref='req-1', evidence_quote='负责跨部门需求对接'))
     if declined:
         doc.declined = ['responsibility']
-    doc.requirement_followups = list(followups)
     return GuardState(
         session=SessionContext(session=SessionInfo(session_id='test', experience_order=['p1']),
                                draft_blocks=[DraftBlock(block_id='p1', markdown=BEFORE)],
@@ -92,8 +95,21 @@ class RequirementEvidenceGuardTests(unittest.TestCase):
                 result = check(evidence_ask(), evidence_state(answer_kind=kind))
                 self.assertEqual(result.violation.code, 'question_declined')
 
-    def test_same_slot_cannot_be_followed_up_twice(self):
-        result = check(evidence_ask(), evidence_state(followups=['responsibility']))
+    def test_followup_count_excludes_first_question(self):
+        doc = evidence_state(declined=False).focus_doc
+        self.assertEqual(followup_count(doc, 'responsibility'), 0)
+        doc.questions.append(Question(id='q2', slot='responsibility',
+                                      text='第二问？', fingerprint='f2'))
+        self.assertEqual(followup_count(doc, 'responsibility'), 1)
+        self.assertEqual(MAX_SLOT_FOLLOWUPS, 2)
+
+    def test_second_same_slot_followup_is_allowed(self):
+        self.assertIsNone(
+            check(evidence_ask(), evidence_state(followups=['responsibility'])).violation)
+
+    def test_third_same_slot_followup_is_rejected(self):
+        result = check(evidence_ask(),
+                       evidence_state(followups=['responsibility', 'responsibility']))
         self.assertEqual(result.violation.code, 'question_declined')
 
     def test_other_slot_requirement_followup_is_not_a_repeat(self):
@@ -110,15 +126,36 @@ class RequirementEvidenceGuardTests(unittest.TestCase):
             evidence_quote=REQUIREMENTS[0]['quote'])
         self.assertIsNone(check(ask, state).violation)
 
-    def test_non_declined_slot_followup_allowed_only_once(self):
-        # partial/uncertain 槽不在 declined 中，但“每槽一次”上限同样生效：
-        # 第一次带合法证据放行，换措辞再次追问同一槽要被拦。
-        self.assertIsNone(check(evidence_ask(), evidence_state(declined=False)).violation)
-        second = evidence_ask(
-            message='岗位要求提到「排期推进」，你有推进排期的经历吗？')
-        result = check(second, evidence_state(declined=False,
-                                              followups=['responsibility']))
+    def test_non_declined_slot_allows_two_followups_then_blocks(self):
+        self.assertIsNone(
+            check(evidence_ask(), evidence_state(declined=False)).violation)
+        self.assertIsNone(check(
+            evidence_ask(message='岗位要求提到「排期推进」，你有推进排期的经历吗？'),
+            evidence_state(declined=False, followups=['responsibility'])).violation)
+        result = check(
+            evidence_ask(message='岗位要求提到「跨部门协作」，你参与过协作吗？'),
+            evidence_state(declined=False, followups=['responsibility', 'responsibility']))
         self.assertEqual(result.violation.code, 'question_repeat')
+
+    def test_identical_question_is_rejected_even_with_evidence(self):
+        state = evidence_state(declined=False)
+        state.focus_doc.questions.append(Question(
+            id='q2', slot='responsibility',
+            text='岗位要求里提到「负责跨部门需求对接」，你有类似的对接经历吗？',
+            fingerprint='f2', evidence_ref='req-1', evidence_quote='负责跨部门需求对接'))
+        result = check(evidence_ask(), state)
+        self.assertEqual(result.violation.code, 'question_repeat')
+
+    def test_effect_slot_stays_on_effect_gate(self):
+        state = evidence_state(declined=False)
+        for index in range(2):
+            state.focus_doc.questions.append(Question(
+                id=f'e{index}', slot='effect', text=f'效果问题{index}？',
+                fingerprint=f'ef{index}'))
+        result = check(AskStep(action='ask_user',
+                               message='这段经历带来了什么实际变化？',
+                               slot='effect'), state)
+        self.assertEqual(result.violation.code, 'effect_exhausted')
 
     def test_declined_slot_without_evidence_stays_blocked(self):
         result = check(AskStep(action='ask_user', message='你负责哪部分？',

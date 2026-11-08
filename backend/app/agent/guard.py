@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from app.agent.memory import (
     ExperienceDoc,
     effect_state,
+    followup_count,
+    question_fingerprint,
     question_similarity,
     requirement_reopen_allowed,
     supported_experience_slots,
@@ -28,6 +30,7 @@ from app.agent.claim_text import claim_comparison_text
 
 MAX_STEPS = 8
 MAX_ROUNDS = 6
+MAX_SLOT_FOLLOWUPS = 2
 EFFECT_EXHAUSTED_TEXT = "效果已经问过两次，请基于职责、动作和方法照实改写。"
 _EFFECT_CLAIMS = (
     "提升", "提高", "降低", "减少", "节省", "加快", "缩短",
@@ -352,15 +355,23 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         if declined_block and not (evidence and requirement_reopen_allowed(
                 state.focus_doc, step.slot)):
             return Violation("question_declined", "该维度已被用户拒绝")
-        # “每槽一次”上限对所有槽生效，而非仅 declined：否则换种措辞再带证据即可反复追问
-        # partial/uncertain 槽。declined 槽沿用“已拒绝”语义，其余槽报重复。
-        if evidence and step.slot in state.focus_doc.requirement_followups:
-            if declined_block:
-                return Violation("question_declined", "该维度已被用户拒绝")
-            return Violation("question_repeat", "该维度已用岗位要求追问过一次")
+        # 非效果槽最多追问两次（基础提问不计）；问句完全相同即使换了答法提示也算重复。
+        if step.slot is not None and step.slot not in {'effect', 'confirm'}:
+            if followup_count(state.focus_doc, step.slot) >= MAX_SLOT_FOLLOWUPS:
+                if declined_block:
+                    return Violation("question_declined", "该维度已被用户拒绝")
+                return Violation("question_repeat", "该维度已追问两次")
+            fingerprint = question_fingerprint(text)
+            if any(
+                question_fingerprint(question.text) == fingerprint
+                for question in state.focus_doc.questions
+                if question.slot == step.slot
+            ):
+                if declined_block:
+                    return Violation("question_declined", "该维度已被用户拒绝")
+                return Violation("question_repeat", "已经问过同样的问题")
         recent = state.focus_doc.questions[-3:]
-        # 要求型模板只因槽位标签不同而高度相似；跨槽的首次追问不应被
-        # 相似度误判为重复。每槽一次的上限已由上方 requirement_followups 单独保证。
+        # 无证据问题仍需相似度检查；要求型模板只因槽位不同而相似，跨槽不误判。
         if not evidence and any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
