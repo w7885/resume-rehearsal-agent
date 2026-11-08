@@ -62,19 +62,7 @@ def _is_decline(text: str) -> bool:
 def _effect_answer_kind(text: str) -> str:
     """Classify the saved user's response, not an inferred model fact."""
     value = re.sub(r'\s+', '', text).strip('。！!？?，,')
-    refusal_pattern = (
-        r'不想(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|'
-        r'别问|不要再问|不再问|跳过|先不说'
-    )
-    for match in re.finditer(refusal_pattern, value):
-        prefix = re.split(r'[，,。；;！？!?]', value[:match.start()])[-1]
-        # Quoted/hypothetical wording and "不是不愿意" are not the user's
-        # present refusal. Do not suppress a legitimate follow-up for them.
-        if (any(marker in prefix for marker in ('如果', '假如', '假设', '“', '「', '『', '"', "'"))
-                or re.search(r'(?:不是|并非|不代表|不表示|没有说|没说)$', prefix)):
-            continue
+    if _genuine_refusal(value):
         return 'refused'
     # A delivery status is not an effect refusal. Mixed replies with an actual
     # change remain available for the normal fact-recording path.
@@ -86,6 +74,93 @@ def _effect_answer_kind(text: str) -> str:
         if re.search(r'(?:没有|没|未)(?:观察到|发现|看到|产生|带来)?(?:任何|什么|明显|实际|可确认的|更多)?(?:效果|变化|改善|提升|反馈|结果)', value):
             return 'absent'
     return 'answered'
+
+
+_UNCERTAIN = re.compile(r'不记得|记不清|忘记|忘了|不确定|不清楚|不知道|应该吧|大概吧|可能吧')
+_REFUSAL = re.compile(
+    r'不想(?:再|继续)?(?:说|回答|聊|讨论)|'
+    r'不愿(?:意)?(?:再|继续)?(?:说|回答|聊|讨论)|'
+    r'不方便(?:再|继续)?(?:说|回答|聊|讨论)|别问|不要再问|不再问|跳过|先不说'
+)
+
+
+def _genuine_refusal(value: str) -> bool:
+    # 引号里的转述、假设句和“不是不愿意”都不是用户此刻的拒绝；
+    # 误判会把槽位永久关闭，所以效果分类和分句质量共用同一判定。
+    for match in _REFUSAL.finditer(value):
+        prefix = re.split(r'[，,。；;！？!?]', value[:match.start()])[-1]
+        if (any(marker in prefix for marker in ('如果', '假如', '假设', '“', '「', '『', '"', "'"))
+                or re.search(r'(?:不是|并非|不代表|不表示|没有说|没说)$', prefix)):
+            continue
+        return True
+    return False
+
+
+_FIELD_WORDS = {
+    'responsibility': ('负责', '参与', '分工', '承担'),
+    'action': ('实现', '开发', '搭建', '完成', '处理', '做'),
+    'effect': ('效果', '结果', '提升', '减少', '反馈', '变化', '上线', '验收'),
+    'tech': ('技术', '工具', '框架', '语言', 'sql', 'python', 'java'),
+    'context': ('背景', '目标', '问题', '为什么'),
+    'evidence': ('文档', '代码', '测试', '记录', '截图'),
+}
+
+
+def _quality_from_text(text: str) -> str:
+    # 按分句判断，避免一句“忘了”把整段有内容的回答判成整条不确定。
+    value = re.sub(r'\s+', '', text or '')
+    clauses = [clause for clause in re.split(r'[。；;\n，,]', value) if clause]
+    if not clauses:
+        return 'uncertain'
+    if any(_genuine_refusal(clause) for clause in clauses):
+        return 'refused'
+    # 裸缺失回答没有效果词可匹配，只能整句相等识别，否则会落到 uncertain 并被多追问一次。
+    if value.strip('。！!？?，,') in {'没有', '没了', '无', '没有了', '就这些'}:
+        return 'absent'
+    uncertain = [clause for clause in clauses if _UNCERTAIN.search(clause)]
+    rest = [clause for clause in clauses if clause not in uncertain]
+    if not rest:
+        return 'uncertain'
+    if (not re.search(r'不是没有|并非没有|但|不过|可是|然而', value)
+            and re.search(r'(?:没有|没|未)(?:观察到|发现|看到|产生|带来)?'
+                          r'(?:任何|什么|明显|实际|可确认的|更多)?'
+                          r'(?:效果|变化|改善|提升|反馈|结果)', value)):
+        return 'absent'
+    if not uncertain:
+        # 没有不确定分句就不存在“部分知道”，短回答（如“写接口”）也是有效回答，不能按长度判 uncertain。
+        return 'full'
+    if sum(len(clause) for clause in rest) >= 4:
+        return 'partial'
+    # 不确定分句外仍有内容时，短内容也是有效回答；按规范算 full，不能永久关闭槽位。
+    return 'full'
+
+
+def _map_uncertain_fields(spans, fallback=None):
+    fields = []
+    for span in spans or []:
+        value = (span or '').casefold()
+        # 只认同时带不确定语气和字段线索的片段，模型不能凭一个词扩出字段。
+        if not _UNCERTAIN.search(value):
+            continue
+        for slot, words in _FIELD_WORDS.items():
+            if any(word in value for word in words) and slot not in fields:
+                fields.append(slot)
+    if not fields and fallback:
+        fields.append(fallback)
+    return fields
+
+
+def _answer_record(answer_text, question, quality=None, spans=None, action='answer'):
+    if action == 'refuse':
+        return True, 'refused', [], []
+    spans = [span for span in (spans or []) if span]
+    value = quality or _quality_from_text(answer_text)
+    if value not in {'full', 'partial', 'uncertain', 'absent', 'refused'}:
+        value = _quality_from_text(answer_text)
+    fields = _map_uncertain_fields(spans, question.slot) if value in {'partial', 'uncertain'} else []
+    kind = 'answered' if value == 'full' else value
+    # partial 已有有效内容，不能把整个槽标成 declined；只有整条无效回答才拒答该维度。
+    return value in {'uncertain', 'absent', 'refused'}, kind, fields, spans
 
 
 def _asked_question(doc: ExperienceDoc):
@@ -108,6 +183,24 @@ def _load_docs(
         if loaded is not None:
             docs.append(loaded[0])
     return docs
+
+
+def _foreign_segment(quote, focus_doc, docs):
+    """回答逐字命中另一段原文时，不记到当前段，避免跨经历串答。"""
+    value = re.sub(r'\s+', '', quote or '')
+    # 短词（如“使用Python”）可能两段都适用，只拦较完整的句子。
+    if focus_doc is None or len(value) < 10:
+        return None
+    focus_text = re.sub(r'\s+', '', (focus_doc.title or '') + focus_doc.raw_text)
+    if value in focus_text:
+        return None
+    for doc in docs:
+        if doc.experience_id == focus_doc.experience_id:
+            continue
+        text = re.sub(r'\s+', '', (doc.title or '') + doc.raw_text)
+        if value in text:
+            return doc
+    return None
 
 
 def _phases(ctx: SessionContext, docs: list[ExperienceDoc]) -> dict[str, Phase]:
@@ -426,6 +519,13 @@ async def _execute(
         close('cancelled', action=action)
         return
 
+    foreign = _foreign_segment(decision.answer_quote, focus_doc, docs)
+    if foreign is not None:
+        sink.emit('notice', code='answer_other_segment',
+                  text=context_reply(focus_doc, f'这句内容更像属于「{foreign.title}」这一段。'))
+        close('waiting_user', action=action)
+        return
+
     if focus_doc is not None and decision.answer_quote and message_id:
         focus_doc.supplement_quotes[message_id] = decision.answer_quote
         _persist_doc(store, session_id, focus_doc)
@@ -506,20 +606,30 @@ async def _execute(
             None,
         )
         if pending is not None:
-            repo.apply_suggestion_decision(
-                pending.suggestion_id, "reject", "message", message_id
-            )
+            try:
+                repo.apply_suggestion_decision(
+                    pending.suggestion_id, "reject", "message", message_id
+                )
+            except Exception as error:
+                # 内层没有写权限：有待确认建议时交回外层，避免落到通用失败提示。
+                if getattr(error, 'code', None) != 'scope_violation':
+                    raise
+                sink.emit('notice', code='confirm_deferred',
+                          text='当前有待确认的改写，请先采用、拒绝或说明调整要求。')
+                close('waiting_user', action=action)
+                return
 
     if action in ('answer', 'refuse'):
         question = _asked_question(focus_doc)
         if question is not None and (decision.answers_pending or action == 'refuse'):
             answer_text = decision.answer_quote or text
-            declined = _is_decline(answer_text) or action == 'refuse'
-            kind = 'refused' if action == 'refuse' else _effect_answer_kind(answer_text)
-            declined = declined or kind in {'absent', 'refused', 'uncertain'}
+            declined, kind, fields, spans = _answer_record(
+                answer_text, question, decision.answer_quality,
+                decision.uncertain_spans, action)
             record_answer(
                 focus_doc, question.id, message_id, declined=declined, answer_kind=kind,
-                answer_quote=decision.answer_quote,
+                answer_quote=decision.answer_quote, uncertain_fields=fields,
+                uncertain_spans=spans,
             )
             _persist_doc(store, session_id, focus_doc)
             answered = True

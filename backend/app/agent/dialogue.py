@@ -1,21 +1,17 @@
 """Trusted state transitions around semantic intent classification."""
 import re
 
-from app.agent_answer_sources import factual_answer
-
 
 def factual_quote(message, quote):
-    """Accept a complete original sentence span, never a model paraphrase.
+    """Accept a verbatim span that starts and ends on a sentence boundary.
 
-    Commas are not boundaries: dropping '如果' or '不' before a comma can
-    turn a hypothesis/denial into a false personal claim.
+    Commas are not boundaries: a mid-sentence fragment can drop the negation
+    or the person who actually did the work.
     """
-    if not quote or not quote.strip() or not factual_answer(quote):
+    if not quote or not quote.strip():
         return None
     for match in re.finditer(re.escape(quote), message):
         left, right = message[:match.start()].rstrip(' \t\r'), message[match.end():].lstrip(' \t\r')
-        if re.search(r'如果|假如|假设|他说|她说|他人|示例|虚构', left):
-            continue
         if left and left[-1] not in '。；;！!？?\n':
             continue
         if right and quote.rstrip()[-1] not in '。；;！!' and right[0] not in '。；;！!？?\n':

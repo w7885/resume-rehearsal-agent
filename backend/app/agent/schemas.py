@@ -77,6 +77,8 @@ class AskStep(BaseModel):
     message: str
     slot: Slot | None = None
     related_source_ids: list[str] = Field(default_factory=list)
+    evidence_ref: str | None = Field(default=None, max_length=40)
+    evidence_quote: str | None = Field(default=None, max_length=200)
     rationale: str = Field(default="", max_length=40)
 
 
@@ -178,6 +180,8 @@ class RouterOutput(BaseModel):
     clarification: Clarification | None = None
     answers_pending: StrictBool = False
     answer_quote: str | None = Field(default=None, max_length=4000)
+    answer_quality: Literal['full', 'partial', 'uncertain', 'absent', 'refused'] | None = None
+    uncertain_spans: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=5)
     reply: str | None = Field(default=None, max_length=600)
     pending_resolution: PendingResolution | None = None
     mixed: list[SubIntent] = Field(default_factory=list)

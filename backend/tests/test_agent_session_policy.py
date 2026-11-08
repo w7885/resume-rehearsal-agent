@@ -348,7 +348,7 @@ class BrakeTests(unittest.TestCase):
         text = assemble_context(
             ctx, [doc], {"exp_01": "interviewing"}, "exp_01"
         )
-        self.assertIn("用户已说明没有可确认的实际效果", text)
+        self.assertIn("用户已明确没有或拒绝确认实际效果", text)
 
 
 class DuplicateToolTests(unittest.TestCase):

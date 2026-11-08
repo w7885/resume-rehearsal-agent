@@ -164,6 +164,99 @@ class IntakeHostTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.conversation(session)['messages'][-1]['assistant']['kind'], 'change_question')
 
+    def test_bare_decline_defers_without_repeating_target_question(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        prompt = self.conversation(session)['messages'][-1]
+        self.user_turn(session, '不查了', 'decline', prompt['messageId'])
+        self.assertEqual(len(self.sent), 1)
+        with database(self.path) as c:
+            self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'deferred')
+        self.assertNotIn('哪类岗位', self.conversation(session)['messages'][-1]['content'])
+
+    def test_duplicate_source_is_deduped_instead_of_failing(self):
+        class DuplicateSourceClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    ref = json.loads(user)['references'][0]
+                    return SimpleNamespace(data={'candidates': [
+                        {'referenceId': ref['referenceId'], 'company': '构造公司',
+                         'role': '工程实习生', 'location': '广州', 'employmentType': '实习'},
+                        {'referenceId': ref['referenceId'], 'company': '构造公司',
+                         'role': '工程实习', 'location': '广州', 'employmentType': '实习'}]})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: DuplicateSourceClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        with database(self.path) as c:
+            self.assertEqual(len(web_intake.load(c, session['sessionId'])['candidates']), 1)
+
+    def test_list_and_aggregate_pages_are_not_offered_as_candidates(self):
+        from app.web_intake_host import _list_page_url
+        for url in ('https://m.liepin.com/s/82f59e87ee8339d7ff62799a89f31fb4/pn6/',
+                    'https://m.liepin.com/zpxiaoshougang/',
+                    'https://m.58.com/w/ppezw1020/',
+                    'https://www.zhaopin.com/sou/jl636/kwHM2LS0JK0Q6IEL2O/p1',
+                    'https://m.zhipin.com/zhaopin/cf9516b9b794444003B50tW4EA~~/',
+                    'https://www.shixiseng.com/interns?keyword=x'):
+            self.assertTrue(_list_page_url(url), url)
+        for url in ('https://m.zhaopin.com/jobs/CC560902920J40775926606.htm',
+                    'https://msearch.51job.com/jobs/wuxi-xsq/174019992.html',
+                    'https://www.zhipin.com/job_detail/a99cf9190b2671a81Hx52tW_F1BT.html',
+                    'https://zhaopin.meituan.com/m/position/detail?jobUnionId=1',
+                    'https://www.shixiseng.com/intern/inn_abc123',
+                    'https://example.com/jobs/1'):
+            self.assertFalse(_list_page_url(url), url)
+
+    def test_unclear_list_row_does_not_abort_the_candidate_batch(self):
+        # 列表页的岗位行常缺公司名；模型偶尔仍会列出，不能让一条坏候选作废整批。
+        class MixedClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    ref = json.loads(user)['references'][0]
+                    return SimpleNamespace(data={'candidates': [
+                        {'referenceId': ref['referenceId'], 'company': '', 'role': '销售代表',
+                         'location': '广州', 'employmentType': ''},
+                        {'referenceId': ref['referenceId'], 'company': '构造公司', 'role': '工程实习',
+                         'location': '广州', 'employmentType': '实习'}]})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: MixedClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        self.assertNotIn('本次联网读取或核对未完成', value['messages'][-1]['content'])
+        with database(self.path) as c:
+            state = web_intake.load(c, session['sessionId'])
+        self.assertEqual(len(state['candidates']), 1)
+        self.assertEqual(state['candidates'][0]['company'], '构造公司')
+
+    def test_candidate_extraction_tolerates_echoed_type_field(self):
+        class EchoTypeClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    normal = await super().complete_json(system=system, user=user, run_id=run_id)
+                    return SimpleNamespace(data={'type': 'json_object', **normal.data})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: EchoTypeClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_bare_direction_answer_is_searched_without_model_fields(self):
+        session = self.ready(direction='')
+        self.user_turn(session, '找岗位', 'ask-direction')
+        prompt = self.conversation(session)['messages'][-1]
+        self.assertIn('哪类岗位', prompt['content'])
+        self.user_turn(session, 'Python后端开发实习生', 'answer', prompt['messageId'])
+        value = self.conversation(session)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn('候选', value['messages'][-1]['content'])
+
     def test_direction_reply_is_used_without_repeating_company_question(self):
         session = self.ready(direction='构造公司')
         self.user_turn(session, '想找岗位。', 'company')
@@ -207,6 +300,27 @@ class IntakeHostTests(unittest.TestCase):
         with database(self.path) as c:
             self.assertFalse(c.execute("SELECT 1 FROM source_blocks WHERE session_id=? AND role='supplement' AND text='第一个'",
                                        (session['sessionId'],)).fetchone())
+
+    def test_unbound_ordinary_text_keeps_candidate_state(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        self.user_turn(session, '帮我看看简历', 'ordinary')
+        value = self.conversation(session)
+        with database(self.path) as c:
+            state = web_intake.load(c, session['sessionId'])
+        self.assertEqual(state['phase'], 'awaiting_selection')
+        self.assertIsNone(state['selectedCandidateId'])
+        # 普通输入不再被重问候选；常规路由可能按已给方向再查一次岗位，但不会读取候选正文。
+        self.assertNotIn('候选编号', value['messages'][-1]['content'])
+        self.assertFalse(any('Url' in request for request in self.sent))
+
+    def test_unbound_segment_word_selects_without_switching_experience(self):
+        session = self.ready()
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        self.user_turn(session, '第一段', 'segment')
+        self.assertEqual(len(self.sent), 2)
+        with database(self.path) as c:
+            self.assertEqual(web_intake.load(c, session['sessionId'])['phase'], 'ready')
 
     def test_single_candidate_yes_is_not_swallowed_by_social_router(self):
         session = self.ready()

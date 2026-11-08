@@ -13,6 +13,13 @@ from test_web_provider import fetch_response
 import test_web_intake_service as fixture
 
 
+class ChoiceParsingTests(unittest.TestCase):
+    def test_chinese_two_is_a_choice(self):
+        for text in ('两个', '就两个吧'):
+            with self.subTest(text=text):
+                self.assertEqual(candidates.parse_choice(text), 2)
+
+
 class CandidateTests(unittest.TestCase):
     setUp = fixture.IntakeServiceTests.setUp
     settings = fixture.IntakeServiceTests.settings
@@ -41,11 +48,12 @@ class CandidateTests(unittest.TestCase):
             return candidates.record_prompt(c, s, episode_id=state['episodeId'],
                 expected_revision=state['revision'], message_id='choice-prompt')
 
-    def choose(self, state, text='1'):
+    def choose(self, state, text='1', message_id='choice-answer'):
         with self.repo._operation(self.context, write=True) as (c, s):
-            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-answer',?,'user',?,'chat')", (self.sid, text))
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES (?,?,'user',?,'chat')",
+                      (message_id, self.sid, text))
             return candidates.select(c, s, episode_id=state['episodeId'],
-                expected_revision=state['revision'], user_message_id='choice-answer')
+                expected_revision=state['revision'], user_message_id=message_id)
 
     def test_offer_requires_selection_even_with_one_result(self):
         state = self.offered()
@@ -65,6 +73,49 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(c.execute('select count(*) from external_assessments').fetchone()[0], 0)
         self.assertEqual(self.repo.get_draft(self.user), before)
 
+    def reprompt(self, state, suffix):
+        """select 成功后阶段已推进；重新展示候选以便复用同一用例测多种说法。"""
+        with self.repo._operation(self.context, write=True) as (c, s):
+            state = candidates.offer(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], candidates=[self.candidate])
+            prompt_id = 'choice-prompt-' + suffix
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES (?,?,'assistant',?,'chat')",
+                      (prompt_id, self.sid, candidates.question(state)))
+            c.execute("INSERT INTO assistant_messages VALUES (?, ?, 'user-link', 'run-test-001', 'question', 'host', ?, ?, ?, '[]')",
+                      (self.sid, prompt_id, s['state_revision'], s['draft_revision'], s['current_resume_generation']))
+            return candidates.record_prompt(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], message_id=prompt_id)
+
+    def test_segment_word_selects_candidate_without_switching_experience(self):
+        state = self.prompted()
+        for index, text in enumerate(('第一段', '第1个岗位', '1'), start=1):
+            with self.subTest(text=text):
+                if index > 1:
+                    state = self.reprompt(state, str(index))
+                chosen = self.choose(state, text, f'choice-{index}')
+                self.assertEqual(chosen['selectedCandidateId'],
+                                 state['candidates'][0]['candidateId'])
+                state = chosen
+
+    def test_explicit_choice_index_ignores_message_text(self):
+        state = self.prompted()
+        with self.repo._operation(self.context, write=True) as (c, s):
+            c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-index',?,'user','随便','chat')", (self.sid,))
+            chosen = candidates.select(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], user_message_id='choice-index',
+                choice_index=1)
+        self.assertEqual(chosen['selectedCandidateId'], state['candidates'][0]['candidateId'])
+
+    def test_choice_index_out_of_range_is_ambiguous(self):
+        state = self.prompted()
+        with self.assertRaises(RepositoryError) as error:
+            with self.repo._operation(self.context, write=True) as (c, s):
+                c.execute("INSERT INTO messages(message_id,session_id,role,content,input_channel) VALUES ('choice-range',?,'user','1','chat')", (self.sid,))
+                candidates.select(c, s, episode_id=state['episodeId'],
+                    expected_revision=state['revision'], user_message_id='choice-range',
+                    choice_index=3)
+        self.assertEqual(error.exception.code, 'ambiguous_selection')
+
     def test_generic_continue_is_not_candidate_selection(self):
         state = self.prompted()
         with self.assertRaises(RepositoryError) as error:
@@ -77,14 +128,16 @@ class CandidateTests(unittest.TestCase):
             self.choose(state)
         self.assertEqual(error.exception.code, 'stale_state')
 
-    def test_candidates_cannot_invent_company_or_reuse_one_source_twice(self):
+    def test_candidates_cannot_invent_company_and_dedupe_one_source(self):
         state = self.offered()
-        for values in [[{**self.candidate, 'company': '伪造公司'}],
-                       [self.candidate, self.candidate]]:
-            with self.assertRaises(RepositoryError):
-                with self.repo._operation(self.context, write=True) as (c, s):
-                    candidates.offer(c, s, episode_id=state['episodeId'],
-                        expected_revision=state['revision'], candidates=values)
+        with self.assertRaises(RepositoryError):
+            with self.repo._operation(self.context, write=True) as (c, s):
+                candidates.offer(c, s, episode_id=state['episodeId'],
+                    expected_revision=state['revision'], candidates=[{**self.candidate, 'company': '伪造公司'}])
+        with self.repo._operation(self.context, write=True) as (c, s):
+            deduped = candidates.offer(c, s, episode_id=state['episodeId'],
+                expected_revision=state['revision'], candidates=[self.candidate, self.candidate])
+        self.assertEqual(len(deduped['candidates']), 1)
 
     def test_stale_settings_or_intent_cannot_select(self):
         state = self.prompted()
@@ -122,7 +175,7 @@ class CandidateTests(unittest.TestCase):
                 candidates.offer(c, s, episode_id=state['episodeId'],
                     expected_revision=state['revision'], candidates=[{**self.candidate, 'referenceId': 'other-session-ref'}])
 
-    def body(self, *, selected=True, text='构造公司 工程实习\n岗位职责：负责接口开发和测试。'):
+    def body(self, *, selected=True, text='构造公司 工程实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。'):
         state = self.prompted()
         if selected:
             self.choose(state)
@@ -136,14 +189,44 @@ class CandidateTests(unittest.TestCase):
         self.bridge = AgentWebBridge(runtime)
         self.body_id = ref['referenceId']
         return Evidence(reference_id=self.body_id, match='matched', company_quote='构造公司',
-                        role_quote='工程实习', duties_quote='负责接口开发和测试')
+                        role_quote='工程实习', duties_quote='负责接口开发和测试',
+                        requirements_quote='熟悉Python')
 
-    def test_selected_body_with_only_duties_is_usable_but_not_published(self):
+    def test_selected_body_with_duties_and_requirements_is_usable_but_not_published(self):
         proof = self.body()
         verdict = self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'), self.body_id, proof)
         self.assertEqual(verdict, 'accepted')
         with database(self.path) as c:
             self.assertEqual(c.execute('select count(*) from external_assessments').fetchone()[0], 0)
+
+    def test_selected_body_without_company_name_uses_candidate_binding(self):
+        # 详情页正文可能抽不到公司名；选中候选已绑定同一 URL 与公司。
+        proof = self.body(text='工程实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote = ''
+        self.assertEqual(self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'),
+            self.body_id, proof), 'accepted')
+
+    def test_single_line_quote_satisfies_location_and_type_together(self):
+        # 详情页常把“城市 类型”写在同一行；整行引用不能因别名替换而失配。
+        proof = self.body(text='工程实习\n上海 实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote, proof.location_quote, proof.type_quote = '', '上海 实习', '上海 实习'
+        self.assertEqual(self.bridge.intake_body_verdict(
+            PublicTarget('构造公司', '工程实习', '上海', '实习'), self.body_id, proof), 'accepted')
+
+    def test_field_evidence_may_come_from_a_different_quote(self):
+        # 字段只需逐字证据支持，不要求模型把证据放进与字段同名的 quote。
+        proof = self.body(text='工程实习\n上海 实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote = proof.location_quote = proof.type_quote = ''
+        proof.content_quote = '上海 实习'
+        self.assertEqual(self.bridge.intake_body_verdict(
+            PublicTarget('构造公司', '工程实习', '上海', '实习'), self.body_id, proof), 'accepted')
+
+    def test_body_with_only_duties_is_not_qualified(self):
+        # 列表/聚合页常能凑出一句职责，缺任职要求说明不是单个岗位详情页。
+        proof = self.body()
+        proof.requirements_quote = ''
+        self.assertEqual(self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'),
+            self.body_id, proof), 'needs_body')
 
     def test_body_without_user_selection_remains_unconfirmed(self):
         proof = self.body(selected=False)

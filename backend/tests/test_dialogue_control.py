@@ -4,7 +4,8 @@ import unittest
 from app.agent.dialogue import factual_quote
 from app.agent.dialogue import context_reply
 from app.agent.questions import guided_question
-from app.agent.memory import load_experience, load_session, sync_experiences
+from app.agent.memory import ExperienceDoc, load_experience, load_session, save_experience, sync_experiences
+from app.agent.ports import DraftBlock
 from app.agent.store import InMemoryStateStore
 from app.resume_structure import section_kinds, block_kinds
 from fakes import FakeLLM
@@ -62,6 +63,29 @@ class DialogueControlTests(unittest.TestCase):
         self.assertEqual(doc.no_fact_streak, 0)
         self.assertFalse(any(kind == 'decide' for kind, _ in llm.calls))
 
+    def test_answer_about_another_segment_is_not_recorded(self):
+        repo = policy.make_repo(direction='开发实习', direction_confirmed=True)
+        repo.session.experience_order = ['exp_01', 'exp_02']
+        other_text = '个人博客网站\n使用 Python 开发个人博客，实现了文章发布和查看功能。'
+        repo.draft_blocks.append(DraftBlock(
+            block_id='exp_02', experience_id='exp_02', block_revision=1,
+            markdown=other_text))
+        store = InMemoryStateStore()
+        policy.seed_experience(store, asked='你实际用到了什么工具或方法？', slot='tech')
+        save_experience(store, policy.SESSION, ExperienceDoc(
+            experience_id='exp_02', seq=2, kind='project', title='个人博客网站',
+            raw_text=other_text, source_ids=['src_1'],
+            block_id='exp_02', block_revision=1), None)
+        quote = '使用 Python 开发个人博客'
+        llm = FakeLLM(route_script=[intent('answer', answers_pending=True, answer_quote=quote)])
+        events = policy.run_turn(repo, store, llm, quote)
+        value = load_experience(store, policy.SESSION, 'exp_01')[0]
+        self.assertEqual(value.questions[0].outcome, 'asked')
+        self.assertEqual(value.supplement_quotes, {})
+        self.assertTrue(any(e.type == 'notice' and '个人博客网站' in e.payload['text']
+                            for e in events))
+        self.assertFalse(any(kind == 'decide' for kind, _ in llm.calls))
+
     def test_supplement_for_another_dimension_does_not_answer_pending_question(self):
         repo, store = self.ready(slot='effect')
         quote = '我使用Python实现查询。'
@@ -104,6 +128,20 @@ class DialogueControlTests(unittest.TestCase):
         policy.run_turn(repo, store, llm, '你说的是哪个任务？')
         self.assertEqual(load_experience(store, policy.SESSION, 'exp_01')[0].questions[0].outcome, 'asked')
 
+    def test_blocked_attempt_records_what_the_model_wanted_to_ask(self):
+        repo, store = policy.make_repo(direction='开发实习', direction_confirmed=True), InMemoryStateStore()
+        policy.seed_experience(store, asked='你负责哪部分？', slot='responsibility', answered=True)
+        ask = {'action': 'ask_user', 'message': '你是不是独立完成了这个平台？',
+               'slot': 'responsibility', 'rationale': '确认职责'}
+        llm = FakeLLM(decide_script=[ask, ask])
+        result = policy.run_loop_once(repo, store, llm, answered=True)
+        blocked = [e.payload for e in result.events
+                   if e.type == 'warning' and e.payload.get('code') == 'question_leading']
+        self.assertEqual(len(blocked), 2)
+        self.assertEqual(blocked[0]['attempted']['slot'], 'responsibility')
+        self.assertIn('独立完成了这个平台', blocked[0]['attempted']['message'])
+        self.assertTrue(result.fallback_used)
+
     def test_refusal_closes_only_the_current_dimension(self):
         repo, store = self.ready(slot='effect')
         llm = FakeLLM(route_script=[intent('refuse')], decide_script=[policy.FINISH])
@@ -134,13 +172,14 @@ class DialogueControlTests(unittest.TestCase):
         self.assertEqual(session.goal, '')
         self.assertFalse(any(kind == 'decide' for kind, _ in llm.calls))
 
-    def test_fragment_validation_keeps_negation_hypotheses_and_sentence_boundaries(self):
+    def test_fragment_validation_keeps_negation_and_sentence_boundaries(self):
         for text, quote in [('我不熟悉Python。', '熟悉Python。'),
                             ('如果我负责测试，完成接口验证。', '完成接口验证。'),
-                            ('假设是这样？我熟悉Python。', '我熟悉Python。'),
                             ('我负责接口测试。', '负责接口测试。')]:
             with self.subTest(text=text, quote=quote):
                 self.assertIsNone(factual_quote(text, quote))
+        # 跨句引用只受句界约束；前一句是否假设由路由判断，不再用词表猜。
+        self.assertEqual(factual_quote('假设是这样？我熟悉Python。', '我熟悉Python。'), '我熟悉Python。')
         quote = '我负责接口测试。'
         self.assertEqual(factual_quote(quote + '为什么要问？', quote), quote)
 

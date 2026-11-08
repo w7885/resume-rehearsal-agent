@@ -32,6 +32,8 @@ _MODIFY = ("但", "不过", "改成", "改短", "改一下", "第二句", "第�
 _CANCEL = {"算了", "取消", "不改了"}
 _DELEGATE = {"随便", "你决定", "都可以", "你看着办"}
 _TITLE_MATCH_LIMIT = 5
+# 只有出现这些强标记，才按“整体改写”处理；否则视为当前段的措辞调整。
+_GLOBAL_MARKERS = re.compile(r"整份|整体|全部|所有段|每一段|都改")
 
 
 def _cn_to_int(token: str) -> int | None:
@@ -61,6 +63,8 @@ class RouteResult:
     drop: bool = False
     answers_pending: bool = False
     answer_quote: str | None = None
+    answer_quality: str | None = None
+    uncertain_spans: list[str] = None
     reply: str | None = None
 
 
@@ -452,6 +456,10 @@ async def route_message(
         if has_pending_question and result.action in {'answer', 'correct'}:
             result.action, result.answers_pending = 'meta', False
             result.reply = '先核对这条消息与当前问题的关系，再继续处理。'
+    # 没出现“整份/全部/都改”等强标记时，不按整体改写处理，改为当前段措辞调整。
+    if result.action == 'global_edit' and not _GLOBAL_MARKERS.search(text):
+        result.action = 'correct'
+        result.rationale = (result.rationale + '；无整体标记，按当前段处理')[:40]
     if result.action == "focus":
         target = next(
             (doc for doc in docs if doc.experience_id == result.target_experience_id),
@@ -493,6 +501,8 @@ def to_route_result(output, *, ctx, docs, phases, text) -> RouteResult:
         clarification=output.clarification,
         answers_pending=output.answers_pending,
         answer_quote=factual_quote(text, output.answer_quote or output.quote),
+        answer_quality=output.answer_quality if output.answer_quote else None,
+        uncertain_spans=list(output.uncertain_spans or []),
         reply=output.reply,
     )
 
@@ -587,6 +597,19 @@ def normalize(
 
     if out.answer_quote and factual_quote(message, out.answer_quote) is None:
         out.answer_quote, out.answers_pending = None, False
+
+    if out.answer_quality and out.intent in {'answer', 'skip'} and out.answer_quote:
+        spans = []
+        for span in out.uncertain_spans[:5]:
+            # 不确定片段必须逐字来自用户消息，模型不能编造“忘了”来降低记录质量。
+            accepted = factual_quote(message, span) if len(span) <= 200 else None
+            if accepted:
+                spans.append(accepted)
+        out.uncertain_spans = spans
+        if out.answer_quality in {'partial', 'uncertain'} and not spans:
+            out.answer_quality = None
+    else:
+        out.answer_quality, out.uncertain_spans = None, []
 
     if out.clarification is not None:
         out.clarification = _sanitize(out.clarification, message, docs, phases)

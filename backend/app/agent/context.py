@@ -59,6 +59,11 @@ def _questions_block(doc: ExperienceDoc) -> str:
     recent = [q for q in doc.questions if q.outcome != "asked"][-3:]
     for question in recent:
         lines.append(f"- 已问（{question.outcome}）：{question.text}")
+    partial = [q for q in doc.questions
+               if q.outcome == 'answered' and q.answer_kind == 'partial']
+    for question in partial[-2:]:
+        fields = ', '.join(question.uncertain_fields) or '部分细节'
+        lines.append(f'- 回答不完整，未确认：{fields}（可引用岗位要求换角度问一次）')
     if doc.declined:
         lines.append(f"- 已拒绝的维度：{', '.join(doc.declined)}")
     return "\n".join(lines) if lines else "（暂无）"
@@ -73,9 +78,11 @@ def _effect_block(doc: ExperienceDoc) -> str:
                           if fact.slot == "effect" and fact.status == "active"), doc.raw_text)
         return f"已确认：{_clip(statement, 200)}"
     if state == "followup":
-        return "已追问 1 次，仍待具体变化（最多再问 1 次）"
+        return "已问过 1 次，仍待具体变化：本轮先追问一次，不能改写"
     if state == "absent":
-        return "用户已说明没有可确认的实际效果：照实改写，不写效果类结论"
+        return "用户已明确没有或拒绝确认实际效果：不再追问，不新增效果结论；原文已有表述可原样保留"
+    if 'effect' in supported_experience_slots(doc):
+        return "原文有成效表述但未经用户确认：先引用原文问一次是否属实或具体变化，确认后才能写效果结论"
     return "尚未询问"
 
 
@@ -177,7 +184,9 @@ def assemble_context(
                         '本轮明确要求具体岗位适配且缺依据时先取证；只做通用整理不机械搜索。'
                         '完整用户JD优先，不重复搜索岗位要求；目标不唯一时先澄清。'
                         '引用仅用已给referenceId，不能把外部编号放入source_refs，不能把岗位要求写成已有技能。'
-                        '状态未核实不代表在招；明确下线或实际冲突不用于当前岗位适配。')
+                        '状态未核实不代表在招；明确下线或实际冲突不用于当前岗位适配。'
+                        + '\n岗位要求原文只能逐字引用，不得改写、拼接、翻译；引导提问引用时填写 evidence_ref 与 evidence_quote。'
+                        '没有requirements时不得声称按岗位要求引导。')
     if focus is None:
         sections.append("## 当前焦点\n（未指定）")
     else:
@@ -188,7 +197,9 @@ def assemble_context(
             sections.append('## 已有材料诊断\n'
                             + '原文或已核实个人引用中可辨认的维度：'
                             + '、'.join(slot for slot in ('responsibility', 'action', 'effect') if slot in available)
-                            + '。只补影响改写的缺口；已有维度不重复采访。明确没有效果或拒答时按现有事实处理；记不清最多换角度追问一次。')
+                            + '。只补影响改写的缺口；职责和动作可直接沿用，效果若只来自原文表述仍须确认一次。'
+                            '明确没有效果或拒答时按现有事实处理；'
+                            '记不清时优先引用岗位要求换角度追问一次，没有依据就停止。')
         if focus.kind not in EXPERIENCE_KINDS:
             sections.append('## 当前段处理规则（本节优先，不套用经历采访）\n' + RULES[focus.kind]
                             + '\n可以直接整理清楚的原文，不必先问职责、动作或效果。只修改当前目标块，其他个人材料仅作依据。')

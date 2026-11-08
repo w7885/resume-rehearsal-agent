@@ -6,7 +6,15 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from app.agent.memory import ExperienceDoc, effect_state, question_similarity, supported_experience_slots
+from app.agent.memory import (
+    ExperienceDoc,
+    effect_state,
+    followup_count,
+    question_fingerprint,
+    question_similarity,
+    requirement_reopen_allowed,
+    supported_experience_slots,
+)
 from app.agent.ports import SessionContext
 from app.agent.schemas import (
     AskStep,
@@ -16,12 +24,13 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.tools import TOOL_SPECS, parse_args
-from app.agent.questions import MAX_QUESTION_LENGTH
+from app.agent.questions import MAX_QUESTION_LENGTH, needs_detail, needs_effect_detail
 from app.agent.section_policy import EXPERIENCE_KINDS
 from app.agent.claim_text import claim_comparison_text
 
 MAX_STEPS = 8
 MAX_ROUNDS = 6
+MAX_SLOT_FOLLOWUPS = 2
 EFFECT_EXHAUSTED_TEXT = "效果已经问过两次，请基于职责、动作和方法照实改写。"
 _EFFECT_CLAIMS = (
     "提升", "提高", "降低", "减少", "节省", "加快", "缩短",
@@ -51,14 +60,20 @@ _UNANSWERABLE = ("DAU", "日活", "代码行数", "后台数据", "数据库密�
 _ROLE_WORDS = ("负责人", "主管", "主导", "架构师", "leader", "牵头", "经理")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 _CN_NUMBER = re.compile(r"[一二三四五六七八九十百千万两]+(?=[个项条次人页年月天%])")
+_QUANTIFIER_TAILS = ("个", "项", "条", "页", "步", "次", "人")
+# 只有经历维度能引用岗位要求引导；评价/信息段没有"经历"可对照。
+_EVIDENCE_SLOTS = frozenset({'responsibility', 'action', 'effect', 'context', 'evidence', 'tech'})
 
 
 def _cn_numbers(text: str):
+    # 中文数量声明；"一项/一条/一步"是量词，"第一项"是序数，都不算数量。
     for match in _CN_NUMBER.finditer(text):
+        token = match.group()
         tail = text[match.end() : match.end() + 1]
-        if match.group() == "一" and tail in ("个", "次", "人"):
+        prefix = text[match.start() - 1 : match.start()]
+        if token == "一" and (tail in _QUANTIFIER_TAILS or prefix == "第"):
             continue
-        yield match.group()
+        yield token
 
 
 _PROPER_NOUN = re.compile(r"[A-Za-z][A-Za-z0-9+.#-]{2,}")
@@ -267,6 +282,32 @@ def _personal_change_evidence_parts(args: ProposeChangeArgs, state: GuardState) 
     return [original, *quotes]
 
 
+def _no_information(before: str, after: str) -> bool:
+    """改写只在“本人/负责/参与”等空壳词上有差异时，视为没有新增信息。"""
+    def normalize(value: str) -> str:
+        text = re.sub(r'[\s，。；：！？、,.!?;:（）()]', '', value or '')
+        for word in ('本人', '负责', '参与', '开发', '工作', '该', '项目', '的', '了', '进行', '相关'):
+            text = text.replace(word, '')
+        return text
+    # 只拦“变长且新增的只是空壳词”；纯删减（精简表达）和同长度替换（参与→负责）放行。
+    return (normalize(before) == normalize(after)
+            and len((after or '').strip()) > len((before or '').strip()))
+
+
+def verified_evidence(step, state: GuardState) -> tuple[str, str] | tuple[None, None]:
+    """只认逐字来自当前联网参考的岗位要求引用，其余标注视为普通问句。"""
+    if not (step.evidence_ref and step.evidence_quote
+            and step.slot in _EVIDENCE_SLOTS):
+        return None, None
+    requirements = (state.session.web_context or {}).get('requirements') or []
+    match = next((item for item in requirements
+                  if item.get('requirementId') == step.evidence_ref), None)
+    quote = step.evidence_quote.strip()
+    if match is not None and len(quote) >= 4 and quote in (match.get('quote') or ''):
+        return step.evidence_ref, step.evidence_quote
+    return None, None
+
+
 def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     text = step.message.strip()
     marks = text.count("？") + text.count("?")
@@ -274,9 +315,13 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         return Violation("question_shape", "问题必须恰好一个问号")
     if len(text) > MAX_QUESTION_LENGTH:
         return Violation("question_too_long", f"问题与回答提示合计不能超过 {MAX_QUESTION_LENGTH} 字")
-    if any(word in text for word in _CONJUNCTIONS):
+    # 问号后的回答提示（“比如省掉哪一步”）不是第二个问题，只检查问句本身。
+    question = re.split(r"[？?]", text, maxsplit=1)[0]
+    if any(word in question for word in _CONJUNCTIONS):
         return Violation("question_multi", "一次只能问一个点")
-    if len(_QUESTION_WORDS.findall(text)) > 1:
+    # “有没有带来什么变化”是同一个询问点；按分句计，同一分句里多个疑问词不算多问。
+    if sum(bool(_QUESTION_WORDS.search(clause))
+           for clause in re.split(r"[，,、；;]", question)) > 1:
         return Violation("question_multi", "一次只能问一个点")
     if re.match(r'^(?:「[^」\n]*」|【[^】\n]*】|\[[^\]\n]*\]|“[^”\n]*”)\s*', text):
         return Violation("question_prefix", "直接自然提问，不在开头添加人名、标题或原文引用标签")
@@ -289,23 +334,60 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     if any(word.lower() in text.lower() for word in _UNANSWERABLE):
         return Violation("question_unanswerable", "不能要求用户查后台数据")
 
+    # 证据标注只是可选增强：非逐字引用或残缺标注按普通问句处理，
+    # 但不获得“重开已拒绝槽位”和数字豁免。
+    ref, verified_quote = verified_evidence(step, state)
+    evidence = (ref, verified_quote) if ref else None
+
     if state.focus_doc is not None:
+        if needs_detail(state.focus_doc) and step.slot in {
+                'effect', 'context', 'evidence', 'result'}:
+            return Violation(
+                'ask_detail_first',
+                '职责刚确认，先追问具体做法或技术选型，再问效果。',
+                True,
+            )
+        # 已拒绝槽位先于重复检查：同一句重问也应报“已拒绝”，而不是“重复”。
+        exempt_effect_followup = (
+            step.slot == "effect"
+            and effect_state(state.focus_doc) == "followup"
+        )
+        declined_block = step.slot in state.focus_doc.declined and not exempt_effect_followup
+        # 即使有证据，也只有 uncertain/legacy 的拒绝值得再引导；absent/refused 不再追问。
+        if declined_block and not (evidence and requirement_reopen_allowed(
+                state.focus_doc, step.slot)):
+            return Violation("question_declined", "该维度已被用户拒绝")
+        # 非效果槽最多追问两次（基础提问不计）；问句完全相同即使换了答法提示也算重复。
+        if step.slot is not None and step.slot not in {'effect', 'confirm'}:
+            if followup_count(state.focus_doc, step.slot) >= MAX_SLOT_FOLLOWUPS:
+                if declined_block:
+                    return Violation("question_declined", "该维度已被用户拒绝")
+                return Violation("question_repeat", "该维度已追问两次")
+            fingerprint = question_fingerprint(text)
+            if any(
+                question_fingerprint(question.text) == fingerprint
+                for question in state.focus_doc.questions
+                if question.slot == step.slot
+            ):
+                if declined_block:
+                    return Violation("question_declined", "该维度已被用户拒绝")
+                return Violation("question_repeat", "已经问过同样的问题")
         recent = state.focus_doc.questions[-3:]
-        if any(question_similarity(q.text, text) >= 0.6 for q in recent):
+        # 项目名等共同前缀会抬高相似度；比较前去掉，避免换角度提问被误判重复。
+        titles = [t for t in [state.focus_doc.title, *(state.other_titles or [])]
+                  if t and len(t) >= 2]
+        def _without_titles(value):
+            for title in titles:
+                value = value.replace(title, '')
+            return value
+        # 无证据问题仍需相似度检查；要求型模板只因槽位不同而相似，跨槽不误判。
+        if not evidence and any(
+                question_similarity(_without_titles(q.text), _without_titles(text)) >= 0.6
+                for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
-            supported = supported_experience_slots(state.focus_doc,
-                source_texts=state.source_texts, source_kinds=state.source_kinds)
-            if step.slot in supported and step.slot in {'responsibility', 'action', 'effect'}:
-                return Violation('question_answered', '个人材料已明确支持该维度，不要重复询问。', True)
             if step.slot == 'effect' and effect_state(state.focus_doc) == 'absent':
                 return Violation('question_declined', '效果已明确没有、拒答或达到追问上限，按已有事实处理。', True)
-            exempt_effect_followup = (
-                step.slot == "effect"
-                and effect_state(state.focus_doc) == "followup"
-            )
-            if step.slot in state.focus_doc.declined and not exempt_effect_followup:
-                return Violation("question_declined", "该维度已被用户拒绝")
             if step.slot == "confirm":
                 return None
 
@@ -314,6 +396,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
             return Violation("question_cross_segment", "不能提及其他经历")
 
     compact = re.sub(r"\s+", "", _evidence_text(state))
+    # 只有逐字核验过的岗位要求原文才豁免数字检查。
+    if verified_quote:
+        compact += re.sub(r"\s+", "", verified_quote)
     for number in _NUMBER.findall(text):
         if number not in compact:
             return Violation("question_new_number", "问题里不能出现事实中没有的数字")
@@ -337,14 +422,10 @@ def _evidence_gate(
     block_text = state.focus_block_markdown
     if not block_text and state.focus_doc is not None:
         block_text = state.focus_doc.raw_text
-    if args.before is not None and block_text and args.before.strip() != block_text.strip():
-        return GuardResult(
-            violation=Violation("stale_anchor", "before 必须逐字复制当前整段原文", True)
-        )
+    # before 只是模型抄写的冗余字段；服务端快照才是准，模型给错也不影响改写内容。
     if not args.after.strip():
         return GuardResult(violation=Violation("empty_after", "改文不能为空", True))
-    anchor = args.before if args.before is not None else block_text
-    if args.after.strip() == anchor.strip():
+    if args.after.strip() == (block_text or '').strip():
         return GuardResult(violation=Violation("no_change", "改文与原文相同", True))
     if not args.reason.strip():
         return GuardResult(violation=Violation("missing_reason", "请填写修改理由", True))
@@ -424,7 +505,7 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 for question in state.focus_doc.questions
                 if question.slot == "effect"
             )
-            if effect_questions >= 2:
+            if effect_questions >= 2 and not needs_effect_detail(state.focus_doc):
                 return GuardResult(
                     violation=Violation(
                         "effect_exhausted", EFFECT_EXHAUSTED_TEXT, True
@@ -480,6 +561,13 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
         )
 
     if decision.tool == "propose_change":
+        # 只在“本人负责/参与”等空壳词上做差异的改写，等于没有新增信息。
+        if _no_information(state.focus_block_markdown or '', args.after):
+            return GuardResult(
+                violation=Violation(
+                    "no_information", "改写没有新增信息，请补充具体职责、动作或结果。", True
+                )
+            )
         if state.focus_doc is not None:
             if getattr(args, "target", None) != state.focus_doc.experience_id:
                 return GuardResult(
@@ -502,14 +590,13 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                         "ask_first", "当前段还没有问过用户，先问一个具体的职责问题。", True
                     )
                 )
+            # 原文效果表述不等于用户确认；只要没有效果事实或用户回答，就仍需问一次。
             effect = effect_state(state.focus_doc)
-            if effect == 'missing' and 'effect' in supported:
-                effect = 'confirmed'
             if effect == "followup":
                 return GuardResult(
                     violation=Violation(
                         "ask_effect_followup",
-                        "用户只说明了使用情况，请再追问一次具体变化；仍没有就照实改写。",
+                        "本轮不能改写。要继续处理，先调用 ask_user（slot=effect）追问一次具体变化。",
                         True,
                     )
                 )
@@ -517,7 +604,8 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 return GuardResult(
                     violation=Violation(
                         "ask_effect",
-                        "改写前必须先问这段经历带来的实际效果，不能把“有人使用/上线”当成效果。",
+                        "改写前必须问一次这段经历的实际变化；原文里的效果数字也要用户确认，"
+                        "不能把“有人使用/上线”当成效果。",
                         True,
                     )
                 )

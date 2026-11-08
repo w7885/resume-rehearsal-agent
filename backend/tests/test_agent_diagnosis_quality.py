@@ -29,19 +29,21 @@ def answer(value, previous=0):
 
 
 class DiagnosisTests(unittest.TestCase):
-    def test_guard_rejects_reinterview_of_each_supported_original_dimension(self):
+    def test_guard_keeps_model_questions_on_supported_dimensions(self):
+        # 模型的具体追问优先于“原文已有该维度就不再问”的硬规则。
         value = doc('我负责查询模块；使用Python实现姓名模糊查询；将查询耗时从10分钟缩短到3分钟。')
         state = GuardState(session=SessionContext(session=SessionInfo(session_id='offline')),
                            focus_doc=value, anchor_text=value.raw_text)
         for slot, message in (
             ('responsibility', '查询模块中，你本人负责哪部分？'),
-            ('action', '查询功能中，你具体做了什么？'),
+            ('action', '接口开发具体做到哪一步？'),
+            ('action', '这套技术栈当时是怎么定的？'),
+            ('action', '为什么选择按姓名模糊查询这个方案？'),
             ('effect', '查询功能交付后，带来了什么变化？'),
         ):
-            with self.subTest(slot=slot):
+            with self.subTest(slot=slot, message=message):
                 result = check(AskStep(action='ask_user', message=message, slot=slot), state)
-                self.assertIsNotNone(result.violation)
-                self.assertEqual(result.violation.code, 'question_answered')
+                self.assertIsNone(result.violation, message)
 
     def test_guard_allows_missing_personal_responsibility_question(self):
         for original in ('参与项目。', '团队负责查询模块。'):
@@ -56,7 +58,7 @@ class DiagnosisTests(unittest.TestCase):
     def test_guard_skips_question_only_for_locatable_personal_supplement(self):
         quote = '我负责查询模块。'
         for kind, source, expected in (
-            ('supplement', quote, 'question_answered'),
+            ('supplement', quote, None),
             ('jd', quote, None),
             ('supplement', '这是另一段不匹配的原文。', None),
         ):
@@ -76,8 +78,9 @@ class DiagnosisTests(unittest.TestCase):
     def test_original_personal_responsibility_actions_and_effect_are_recognized(self):
         value = doc('我负责查询模块；使用Python实现姓名模糊查询；将查询耗时从10分钟缩短到3分钟。')
         self.assertEqual(supported_experience_slots(value), {'responsibility', 'action', 'effect'})
-        self.assertEqual(effect_state(value), 'confirmed')
-        self.assertIn('已确认', _effect_block(value))
+        # 原文效果只是待核对线索，用户确认前不算已确认。
+        self.assertEqual(effect_state(value), 'missing')
+        self.assertIn('未经用户确认', _effect_block(value))
         self.assertNotEqual(_fallback_question(value)[1], 'responsibility')
 
     def test_vague_or_collective_original_does_not_confirm_personal_responsibility(self):
@@ -149,8 +152,9 @@ class DiagnosisTests(unittest.TestCase):
         value = doc('我负责查询模块；实现姓名查询；将耗时缩短到3分钟。')
         value.questions.append(Question(id='refuse', slot='effect', text='能确认效果吗？', fingerprint='refuse',
                                         outcome='declined', answer_kind='refused'))
-        self.assertEqual(effect_state(value), 'confirmed')
+        self.assertEqual(effect_state(value), 'absent')
         self.assertIn('effect', supported_experience_slots(value))
+        self.assertIn('原样保留', _effect_block(value))
         self.assertNotEqual(_fallback_question(value)[1], 'effect')
 
     def test_context_explains_available_original_without_active_effect_fact(self):
@@ -159,7 +163,7 @@ class DiagnosisTests(unittest.TestCase):
         text = assemble_context(context, [value], {}, 'p1', '开发实习')
         self.assertIn('已有材料诊断', text)
         self.assertIn('responsibility、action、effect', text)
-        self.assertIn('已确认', text)
+        self.assertIn('未经用户确认', text)
 
 
 class RouterAnswerTests(unittest.TestCase):
@@ -213,6 +217,36 @@ class RouterAnswerTests(unittest.TestCase):
                 self.assertEqual(value.questions[0].answer_message_id, 'm1')
                 self.assertEqual(effect_state(value), expected_state)
                 self.assertFalse(any(e.type == 'error' for e in events))
+
+    def test_terse_feedback_answer_gets_one_more_concrete_question(self):
+        value = doc('负责学生信息管理系统。')
+        value.questions.append(Question(
+            id='q1', slot='effect', text='带来了哪些实际变化？', fingerprint='f1',
+            outcome='answered', answer_kind='answered',
+            answer_quote='实现了文章发布和查看功能'))
+        value.questions.append(Question(
+            id='q2', slot='effect', text='除了使用情况，实际带来了什么变化？', fingerprint='f2',
+            outcome='answered', answer_kind='answered', answer_quote='收到一条反馈'))
+        self.assertEqual(effect_state(value), 'followup')
+        question, slot = _fallback_question(value)
+        self.assertEqual(slot, 'effect')
+        self.assertIn('收到反馈后', question)
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='offline')),
+            focus_doc=value, anchor_text=value.raw_text,
+        )
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message=question, slot=slot), state).violation,
+            question,
+        )
+
+    def test_third_effect_answer_closes_the_followup(self):
+        value = doc('负责学生信息管理系统。')
+        for index, quote in enumerate(('实现了文章发布和查看功能', '收到一条反馈', '把查询改成了按姓名搜索'), start=1):
+            value.questions.append(Question(
+                id=f'q{index}', slot='effect', text='实际变化？', fingerprint=f'f{index}',
+                outcome='answered', answer_kind='answered', answer_quote=quote))
+        self.assertEqual(effect_state(value), 'absent')
 
     def test_second_uncertain_reply_exhausts_recall_followup(self):
         repo = policy.make_repo(direction='开发实习', direction_confirmed=True)

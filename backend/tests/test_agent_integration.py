@@ -30,7 +30,7 @@ class FakeClient:
 
     @staticmethod
     def effect_asked(user):
-        return '这段经历上线或交付后' in user
+        return '这段经历做完或交付后' in user
 
     async def complete_json(self,*,system,user,run_id='test'):
         value=json.loads(user)
@@ -42,6 +42,9 @@ class FakeClient:
         elif system.startswith('解析用户对改写'):
             prompt=value['candidatePrompts'][0]
             data={'status':'clarify','decisions':[]} if self.answer=='clarify' else {'status':'resolved','decisions':[{'promptMessageId':prompt['promptMessageId'],'suggestionId':prompt['suggestions'][0]['suggestionId'],'decision':self.answer,'feedback':value['userContent'] if self.answer=='revise' else ''}]}
+        elif system.startswith('判断这条用户消息在联网流程中的归属'):
+            # 共享 fake 默认按普通对话处理，避免联网场景下的归属判定拦截既有用例。
+            data={'decision':'normal','confidence':0.9}
         else:
             raise AssertionError('Unexpected fake JSON request')
         return SimpleNamespace(data=data,prompt_tokens=0,completion_tokens=0,cost_cents=0)
@@ -75,7 +78,7 @@ class FakeClient:
             if self.effect_asked(user):
                 data={'action':'tool','tool':'save_facts','args':{'experience_id':block['blockId'],'facts':[{'slot':'effect','statement':'老师录入时间从半小时缩短到五分钟'}]},'rationale':'记录实际效果'}
             else:
-                data={'action':'ask_user','message':'这段经历上线或交付后，带来了哪些实际变化？','slot':'effect','related_source_ids':[],'rationale':'确认实际效果'}
+                data={'action':'ask_user','message':'这段经历做完或交付后，带来了哪些实际变化？','slot':'effect','related_source_ids':[],'rationale':'确认实际效果'}
         elif self.proposed:
             data={'action':'finish','outcome':'completed'}
         else:
@@ -249,7 +252,7 @@ class AgentIntegrationTests(unittest.TestCase):
         self.assertEqual(value['messages'][-1]['assistant']['kind'],'change_question',value)
         with db.database(self.path, read_only=True) as connection:
             self.assertEqual(connection.execute('SELECT count(*) FROM source_blocks WHERE attachment_id IS NOT NULL').fetchone()[0], 2)
-            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement' AND message_id IS NOT NULL").fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement' AND message_id IS NOT NULL").fetchone()[0], 3)
         self.assertEqual(self.count('suggestion_decisions'),0)
 
     def test_material_prompt_is_not_authority_after_another_upload(self):
@@ -353,7 +356,7 @@ class AgentIntegrationTests(unittest.TestCase):
         with runtime.repo._operation(runtime.context) as (c,_):
             materials=json.loads(c.execute('SELECT materials_json FROM agent_material_prompts WHERE prompt_message_id=?',(prompt['messageId'],)).fetchone()[0])
         with patch.object(type(runtime.repo),'create_initial_draft',side_effect=OSError('construct write failure')):
-            with self.assertRaises(OSError):runtime._activate([{'materialId':materials[0]['materialId'],'role':'resume'}],materials)
+            with self.assertRaises(OSError):asyncio.run(runtime._activate([{'materialId':materials[0]['materialId'],'role':'resume'}],materials))
         value=self.conversation(session)
         self.assertEqual(value['materials'][0]['role'],'unknown')
         self.assertEqual(value['draft']['markdown'],'')

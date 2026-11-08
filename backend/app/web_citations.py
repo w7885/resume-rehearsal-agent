@@ -106,6 +106,52 @@ def cached_references(repo, context, purpose):
         return refs
 
 
+def _requirement_sentence(text):
+    for sentence in re.split(r'[。；;\n]', text or ''):
+        value = sentence.strip()
+        if len(value) >= 6:
+            return value[:60]
+    return ''
+
+
+def requirement_quotes(repo, context):
+    with repo._operation(context) as (connection, session):
+        if not session['web_enabled']:
+            return []
+        goal = goal_state(connection, session)
+        # 只取 accepted：未通过核对的网页内容不能当作岗位要求。
+        rows = connection.execute('''SELECT reference_id,evidence_json FROM external_assessments
+            WHERE session_id=? AND goal_hash=? AND web_settings_revision=? AND resume_generation=?
+            AND purpose='job_requirements' AND verdict='accepted'
+            ORDER BY assessed_at DESC,rowid DESC''',
+            (context.session_id, goal['hash'], session['web_settings_revision'],
+             session['current_resume_generation'])).fetchall()
+        result, seen = [], set()
+        for row in rows:
+            try:
+                _current_reference(connection, session, row['reference_id'])
+            except RepositoryError:
+                continue
+            try:
+                evidence = json.loads(row['evidence_json'] or '{}')
+            except (TypeError, ValueError):
+                continue
+            # 损坏或旧版行可能存成 list/str/int，不能当对象取字段。
+            if not isinstance(evidence, dict):
+                continue
+            for field in ('requirements_quote', 'duties_quote'):
+                # 逐字截取证据原文，不改写：下游只能原样引用，改写会变成伪造岗位要求。
+                quote = _requirement_sentence(evidence.get(field) or '')
+                if not quote or quote in seen:
+                    continue
+                seen.add(quote)
+                result.append({'requirementId': f'req-{len(result) + 1}',
+                               'referenceId': row['reference_id'], 'quote': quote})
+                if len(result) >= 3:
+                    return result
+        return result
+
+
 def link_suggestion(connection, session, suggestion_id, ids):
     validate_ids(connection,session,ids)
     for reference_id in ids:

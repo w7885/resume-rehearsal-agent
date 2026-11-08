@@ -26,7 +26,7 @@ def decision(target='p1', after='协助完成接口测试。', before=BEFORE):
 def effect_question(index, outcome='answered'):
     return Question(
         id=f'q{index}', slot='effect',
-        text='这段经历上线或交付后，带来了哪些实际变化？',
+        text='这段经历做完或交付后，带来了哪些实际变化？',
         fingerprint=f'f{index}', outcome=outcome,
     )
 
@@ -175,12 +175,24 @@ class EffectFallbackTests(unittest.TestCase):
         question, slot = _fallback_question(self.doc(effect='followup'))
         self.assertEqual(slot, 'effect')
         self.assertTrue(question.startswith('除了使用情况，实际带来了什么变化？'))
-        self.assertIn('没有就说没有', question)
+        self.assertIn('没有就', question)
 
     def test_fallback_after_decline_asks_one_followup(self):
         question, slot = _fallback_question(self.doc(effect='declined'))
         self.assertEqual(slot, 'effect')
         self.assertTrue(question.startswith('除了使用情况，实际带来了什么变化？'))
+
+    def test_rotated_followup_variant_passes_the_guard(self):
+        doc = self.doc(effect='followup')
+        question, slot = _fallback_question(doc)
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='test')),
+            focus_doc=doc, anchor_text=doc.raw_text,
+        )
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message=question, slot=slot), state).violation,
+            question,
+        )
 
     def test_fallback_skips_absent_effect(self):
         question, slot = _fallback_question(self.doc(effect='absent'))

@@ -6,12 +6,11 @@ import unittest
 from app.agent.context import assemble_context
 from app.agent.guard import GuardState, check
 from app.agent.memory import ExperienceDoc, Fact, NewFact, Question, merge_facts, save_experience, load_experience
-from app.agent.ports import SessionContext, SessionInfo, Message, SourceText, SourceRef, RepoError
+from app.agent.ports import SessionContext, SessionInfo, Message, SourceText, SourceRef
 from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep, SaveFactsArgs
 from app.agent.store import InMemoryStateStore
 from app.agent.tools import _literal_fact_source, _save_facts, ToolContext
-from app.agent_answer_sources import factual_answer
 from app.business_service import BusinessService
 from app.repository import Repository, RequestContext
 import test_goal_and_confirmation as integration
@@ -60,6 +59,31 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(fact.statement, statement)
         self.assertEqual(fact.source_refs[0].quote, statement)
 
+    def test_unsupported_fact_is_rejected_without_dropping_supported_ones(self):
+        answer = '少做的一步：人工配置改为自动配置，验证周期缩短。'
+        store = InMemoryStateStore()
+        save_experience(store, 's', ExperienceDoc(
+            experience_id='p1', seq=1, kind='project', raw_text='参与推荐策略验证。',
+        ), None)
+        context = SimpleNamespace(
+            session=SessionInfo(session_id='s', experience_order=['p1']),
+            messages=[Message(message_id='m', role='user', text=answer)],
+            sources=[SourceText(source_id='answer', kind='supplement', text=answer)],
+            web_context={'references': [{'referenceId': 'external-1'}]},
+        )
+        repo = SimpleNamespace(get_session_context=lambda sid: context)
+        args = SaveFactsArgs(experience_id='p1', facts=[
+            NewFact(slot='effect', statement='人工配置改为自动配置，验证周期缩短'),
+            NewFact(slot='effect', statement='效率提升 30%'),
+        ])
+        result = asyncio.run(_save_facts(args, ToolContext('s', repo, store, 'm')))
+        self.assertEqual(result['active_facts'], 1)
+        self.assertEqual(result['rejected'][0]['code'], 'no_literal_source')
+        self.assertEqual(
+            load_experience(store, 's', 'p1')[0].facts[0].statement,
+            '人工配置改为自动配置，验证周期缩短',
+        )
+
     def test_unrelated_negation_preserves_all_actions(self):
         doc = self.doc()
         merge_facts(doc, [NewFact(slot='action', statement='按姓名模糊查询'), NewFact(slot='action', statement='删除前确认')])
@@ -80,8 +104,8 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(updated.facts[1].status, 'active')
         context.messages[0].text = '我还写了查询功能。'
         bad = SaveFactsArgs(experience_id='p1', facts=[NewFact(slot='action', statement='没有查询功能', supersedes_fact_ids=['f2'])])
-        with self.assertRaises(RepoError):
-            asyncio.run(_save_facts(bad, ToolContext('s', repo, store, 'm')))
+        result = asyncio.run(_save_facts(bad, ToolContext('s', repo, store, 'm')))
+        self.assertEqual(result['rejected'][0]['code'], 'invalid_supersedes')
         self.assertEqual(load_experience(store, 's', 'p1')[0].facts[1].status, 'active')
 
     def test_active_fact_keeps_its_older_source_in_context(self):
@@ -94,11 +118,6 @@ class MemoryContractTests(unittest.TestCase):
         self.assertIn(sources[0].text, output)
         self.assertIn('原始依据：[s0，版本 1]', output)
 
-    def test_concrete_example_is_allowed_but_hypothesis_is_not(self):
-        self.assertTrue(factual_answer('程序支持查询，例如输入学号即可查看联系方式。'))
-        self.assertFalse(factual_answer('例如我提高30%效率'))
-        self.assertFalse(factual_answer('我实现查询，例如如果提升30%就写进去。'))
-
     def test_guidance_is_specific_optional_and_checked(self):
         doc = self.doc()
         state = GuardState(session=SessionContext(session=SessionInfo(session_id='s')), focus_doc=doc, anchor_text=doc.raw_text)
@@ -108,14 +127,9 @@ class MemoryContractTests(unittest.TestCase):
                 self.assertEqual(text.count('？'), 1)
                 self.assertLessEqual(len(text), 120)
                 result = check(AskStep(action='ask_user', message=text, slot=slot), state)
-                if slot == 'action':
-                    # The original already describes the implemented query and
-                    # test; a well-shaped question must still avoid re-interview.
-                    self.assertEqual(result.violation.code, 'question_answered')
-                else:
-                    self.assertIsNone(result.violation)
+                self.assertIsNone(result.violation, text)
         question = with_answer_guidance('模糊查询这部分，你做了什么？', doc, 'action')
-        self.assertIn('先说最熟悉的一件', question)
+        self.assertIn('挑一件具体的事说', question)
         doc.questions.append(Question(id='q1', slot='action', text=question, fingerprint='q'))
         repeat = AskStep(action='ask_user', message='模糊查询这部分，你做了什么？可以先选实现或测试。', slot='action')
         self.assertEqual(check(repeat, state).violation.code, 'question_repeat')
@@ -155,3 +169,29 @@ class DecisionBindingTests(unittest.TestCase):
         self.analyze(session, user, 'yes')
         self.assertEqual(self.count('suggestion_decisions'), 1)
         self.assertEqual(host.decision_calls, 0)
+
+
+class RequirementContextTests(unittest.TestCase):
+    def test_requirements_and_verbatim_rule_are_in_context(self):
+        ctx = SessionContext(
+            session=SessionInfo(session_id='s'),
+            web_context={'available': True, 'jobEvidenceStatus': 'verified_job_reference',
+                         'requirements': [{'requirementId': 'req-1', 'referenceId': 'ref-1',
+                                           'quote': '负责跨部门需求对接与排期推进'}]},
+        )
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        output = assemble_context(ctx, [doc], {}, 'p1')
+        self.assertIn('req-1', output)
+        self.assertIn('负责跨部门需求对接与排期推进', output)
+        self.assertIn('岗位要求原文只能逐字引用', output)
+
+    def test_partial_uncertain_fields_are_visible_without_declining(self):
+        ctx = SessionContext(session=SessionInfo(session_id='s'))
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        doc.questions.append(Question(
+            id='q1', slot='effect', text='带来了哪些变化？', fingerprint='f',
+            outcome='answered', answer_kind='partial',
+            uncertain_fields=['effect'], uncertain_spans=['具体效果忘了']))
+        output = assemble_context(ctx, [doc], {}, 'p1')
+        self.assertIn('未确认：effect', output)
+        self.assertNotIn('已拒绝的维度：effect', output)

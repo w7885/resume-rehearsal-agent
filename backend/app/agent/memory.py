@@ -54,9 +54,14 @@ class Question(BaseModel):
     resolution_reason: str | None = None
     # Kept separately from outcome: uncertainty allows one recall prompt, while
     # an explicit absence or refusal must stop that interview dimension.
-    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy"
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused", "partial"] = "legacy"
     answer_message_id: str | None = None
     answer_quote: str | None = None
+    uncertain_fields: list[Slot] = Field(default_factory=list)
+    uncertain_spans: list[str] = Field(default_factory=list)
+    # 岗位要求证据随问题保留，便于审计“按岗位要求引导”确有逐字依据。
+    evidence_ref: str | None = None
+    evidence_quote: str | None = None
     asked_at: str = ""
     answered_at: str | None = None
 
@@ -232,6 +237,17 @@ def supported_experience_slots(
     return slots
 
 
+TERSE_ANSWER_LENGTH = 12
+
+
+def terse_answer(question: Question) -> bool:
+    """有逐字引文且很短；历史数据没有引文、或是否定式回答时不按“太短”处理。"""
+    quote = (question.answer_quote or "").strip()
+    return (bool(quote) and question.answer_kind == "answered"
+            and len(quote) <= TERSE_ANSWER_LENGTH
+            and not re.search(r"没有|没|未|无", quote))
+
+
 def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
     stop = _last_effect_denial(doc)
     if stop is not None:
@@ -239,12 +255,11 @@ def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent
                for f in doc.facts):
             return 'confirmed'
         return 'absent'
+    # 只有事实记忆里的效果才算用户确认；原文里的效果数字只是待核对线索。
     if any(
         fact.slot == "effect" and fact.status == "active" for fact in doc.facts
     ):
         return "confirmed"
-    if 'effect' in supported_experience_slots(doc):
-        return 'confirmed'
     settled = [
         question
         for question in doc.questions
@@ -254,6 +269,10 @@ def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent
     if any(question.answer_kind in {'absent', 'refused'} for question in settled):
         return 'absent'
     if len(settled) >= 2:
+        # 第二个回答只有“收到一条反馈”这类短句时，再给一次具体化追问；
+        # 第三次仍短则收口，避免无限追问。
+        if len(settled) < 3 and terse_answer(settled[-1]):
+            return "followup"
         return "absent"
     if len(settled) == 1:
         return "followup"
@@ -424,7 +443,8 @@ def question_similarity(a: str, b: str) -> float:
 
 
 def record_question(
-    doc: ExperienceDoc, text: str, slot: Slot | None = None
+    doc: ExperienceDoc, text: str, slot: Slot | None = None, *,
+    evidence_ref: str | None = None, evidence_quote: str | None = None,
 ) -> Question:
     question = Question(
         id=f"q{len(doc.questions) + 1}",
@@ -433,6 +453,8 @@ def record_question(
         fingerprint=question_fingerprint(text),
         round=doc.round + 1,
         asked_at=now_iso(),
+        evidence_ref=evidence_ref,
+        evidence_quote=evidence_quote,
     )
     doc.questions.append(question)
     return question
@@ -444,8 +466,10 @@ def record_answer(
     message_id: str | None = None,
     *,
     declined: bool = False,
-    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused"] = "legacy",
+    answer_kind: Literal["legacy", "answered", "absent", "uncertain", "refused", "partial"] = "legacy",
     answer_quote: str | None = None,
+    uncertain_fields: list[Slot] | None = None,
+    uncertain_spans: list[str] | None = None,
 ) -> Question:
     for question in doc.questions:
         if question.id != question_id:
@@ -454,6 +478,8 @@ def record_answer(
         question.answer_kind = answer_kind
         question.answer_message_id = message_id
         question.answer_quote = answer_quote
+        question.uncertain_fields = list(uncertain_fields or [])
+        question.uncertain_spans = list(uncertain_spans or [])
         question.answered_at = now_iso()
         if declined and question.slot and question.slot != "confirm":
             if question.slot not in doc.declined:
@@ -461,6 +487,25 @@ def record_answer(
         _recompute_round(doc)
         return question
     raise KeyError(f"unknown question {question_id}")
+
+
+def requirement_reopen_allowed(doc: ExperienceDoc, slot: Slot) -> bool:
+    """已拒绝槽位能否凭岗位要求再问一次。
+
+    只有“不确定”（记不清等）和旧数据（没有质量标记）值得再引导；
+    absent/refused 是用户明确没有或不愿说，再问等于骚扰。
+    """
+    latest = next(
+        (q for q in reversed(doc.questions)
+         if q.slot == slot and q.outcome in {"answered", "declined"}),
+        None,
+    )
+    return latest is not None and latest.answer_kind in {"uncertain", "legacy"}
+
+
+def followup_count(doc: ExperienceDoc, slot: Slot) -> int:
+    """该槽第一次提问之后的追问次数；效果槽不使用。"""
+    return max(0, sum(1 for question in doc.questions if question.slot == slot) - 1)
 
 
 def record_declined(doc: ExperienceDoc, slots: list[Slot]) -> None:

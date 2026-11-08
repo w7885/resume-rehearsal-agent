@@ -49,11 +49,11 @@ class SegmentedClient(integration.FakeClient):
         # The current context can confirm an effect from the original itself;
         # a scripted client must not demand a newly saved effect fact first.
         if '[effect]' not in user and '## 实际效果\n已确认：' not in user:
-            if '这段经历上线或交付后' in user:
+            if '这段经历做完或交付后' in user:
                 return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
                     'experience_id': block.block_id,
                     'facts': [{'slot': 'effect', 'statement': '老师录入时间从半小时缩短到五分钟'}]}, 'rationale': '记录实际效果'})
-            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历做完或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
         if self.proposed:
             return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed'})
         self.proposed = True
@@ -108,6 +108,18 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(''.join(parts), body)
         self.assertFalse(any('系统甲' in p and '系统乙' in p for p in parts))
         self.assertTrue(any('系统乙\n2024年3月' in p and '服务乙' in p for p in parts))
+
+    def test_role_word_fuzeren_does_not_merge_dated_project_entries(self):
+        # “项目独立负责人”里的“负责人”是岗位角色，不是职责句，不能因此把两段项目并成一块。
+        body = ('项目经历\n'
+                '\t\t2025.11—2026.01\t植物逆境胁迫响应探究\t实验团队成员\n'
+                '－ 分组胁迫\n'
+                '\t\t2026.03—2026.05\t微生物菌株分离与抑菌活性探究\t项目独立负责人\n'
+                '－ 抑菌圈实验\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertFalse(any('分组胁迫' in p and '抑菌圈实验' in p for p in parts))
+        self.assertTrue(any('抑菌圈实验' in p and '分组胁迫' not in p for p in parts))
 
     def test_body_milestones_and_company_names_are_not_entry_headers(self):
         body = ('实习经历\n公司甲 2024.07-至今\n'
@@ -206,6 +218,28 @@ class StructureUnitTests(unittest.TestCase):
         self.assertEqual(block_kinds(parts), [None, 'project', 'project', None])
         self.assertEqual(_block_title(parts[1]), '学生信息管理系统')
         self.assertEqual(_block_title(parts[2]), '个人博客网站')
+
+    def test_trailing_dates_split_entries_and_decorated_headings(self):
+        body = ('实习经历\n字节跳动（抖音）- AI产品开发实习生 2024年7月 - 至今\n- 动作甲\n'
+                '腾讯 - 产品策划实习生 2024年3月 - 2024年6月\n- 动作乙\n'
+                '</>个人项目\nSmartDataFlow - 独立开发 2024年2月\n- 动作丙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 4)
+        self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
+        self.assertFalse(any('动作乙' in p and '动作丙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work', 'project'])
+
+    def test_date_below_entry_title_starts_the_entry_at_the_title(self):
+        body = ('实习经历\n\n字节跳动（抖音） - AI产品开发实习生\n\n2024年7月 - 至今\n- 动作甲\n'
+                '腾讯 - 产品策划实习生\n\n2024年3月 - 2024年6月\n- 动作乙\n')
+        parts = split_resume(body)
+        self.assertEqual(''.join(parts), body)
+        self.assertEqual(len(parts), 3)
+        self.assertTrue(parts[1].startswith('字节跳动'))
+        self.assertTrue(parts[2].startswith('腾讯'))
+        self.assertFalse(any('动作甲' in p and '动作乙' in p for p in parts))
+        self.assertEqual(block_kinds(parts), [None, 'work', 'work'])
 
     def test_duplicate_or_rewritten_boundary_cannot_select_a_body(self):
         for content, a, b in [('重复\n正文\n重复', '重复', '重复'), (BODY, '模型改写的开头', BODY.splitlines()[-1])]:
@@ -316,8 +350,9 @@ class ScopedChatTests(unittest.TestCase):
         self.assertEqual(host.test_visible_blocks, [projects[1]['blockId']])
         prompt = value['messages'][-1]
         self.assertEqual(prompt['assistant']['kind'], 'change_question', value)
-        self.assertFalse(any('这段经历上线或交付后' in m['content']
-                             for m in value['messages'] if m['role'] == 'assistant'))
+        # 原文效果不再自动算已确认，改写前允许且只允许问一次。
+        self.assertEqual(sum('这段经历做完或交付后' in m['content']
+                             for m in value['messages'] if m['role'] == 'assistant'), 1)
         answer = self.send(session, '采用这条改写。', request_id='accept', replyToMessageId=prompt['messageId'])
         events = self.analyze(session, answer, 'accept')
         self.assertEqual(events[-1]['payload']['outcome'], 'completed', events)

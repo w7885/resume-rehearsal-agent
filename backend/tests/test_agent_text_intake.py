@@ -80,7 +80,7 @@ class TextIntakeTests(unittest.TestCase):
             self.assertEqual(row['message_id'], user['messageId'])
             self.assertEqual(row['text'], RESUME)
             self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='resume'").fetchone()[0], 1)
-            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement'").fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT count(*) FROM source_blocks WHERE role='supplement'").fetchone()[0], 3)
         source_count = self.count('source_blocks')
         calls = len(self.host.test_calls)
         answer = next(m for m in value['messages'] if m['content'] == '将刚才那段文字作为待修改简历。')

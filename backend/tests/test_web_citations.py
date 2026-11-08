@@ -5,7 +5,7 @@ import sqlite3
 
 from app.db import database, transaction
 from app.repository import RequestContext, RepositoryError
-from app.web_citations import citation_view
+from app.web_citations import citation_view, requirement_quotes
 from fakes import seed_test_suggestion
 import test_agent_web
 
@@ -86,3 +86,25 @@ class WebCitationTests(unittest.TestCase):
                          VALUES ('old-closed',?,'historical','old','https://example.com/jobs/1','当前职位已下线','2026-10-28','matched','closed','unavailable')''',(self.sid,))
         with self.assertRaises(RepositoryError) as error:self.save()
         self.assertEqual(error.exception.code,'stale_state')
+
+
+class RequirementQuoteProjectionTests(unittest.TestCase):
+    def test_non_object_evidence_json_yields_no_quotes_instead_of_crashing(self):
+        # 损坏/旧版行可能把证据存成 list；不能当对象取字段，只跳过该行。
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class Repo:
+            @contextmanager
+            def _operation(self, context):
+                rows = [{'reference_id': 'ref-1', 'evidence_json': '[]'}]
+                connection = SimpleNamespace(
+                    execute=lambda *args: SimpleNamespace(fetchall=lambda: rows))
+                yield connection, {'session_id': 's', 'web_enabled': 1,
+                                   'web_settings_revision': 1,
+                                   'current_resume_generation': 1}
+
+        with patch('app.web_citations.goal_state', return_value={'hash': 'h'}), \
+                patch('app.web_citations._current_reference'):
+            self.assertEqual(requirement_quotes(Repo(), SimpleNamespace(session_id='s')), [])

@@ -264,7 +264,7 @@ class AgentWebTests(unittest.TestCase):
         with self.repo._operation(self.context) as (c,session):
             self.assertEqual(goal_state(c,session)['clarifiedTarget'],fields)
 
-    def test_literal_personal_fact_does_not_drop_negation_or_use_jd_hypotheses(self):
+    def test_literal_personal_fact_keeps_verbatim_and_negation_only(self):
         from app.agent.tools import _literal_fact_source
         from app.agent.ports import SourceText
         from types import SimpleNamespace
@@ -272,10 +272,30 @@ class AgentWebTests(unittest.TestCase):
         self.assertIsNotNone(_literal_fact_source(current,'熟悉Python'))
         self.assertIsNone(_literal_fact_source(current,'精通SQL'))
         self.assertIsNotNone(_literal_fact_source(current,'不精通SQL'))
+        # 假设句是否可作为事实由生成事实的 LLM 约束；这里只保证逐字补齐。
         current.sources=[SourceText(source_id='hypothesis',kind='supplement',text='如果我精通SQL，能这样写吗？')]
-        self.assertIsNone(_literal_fact_source(current,'精通SQL'))
+        self.assertEqual(_literal_fact_source(current,'精通SQL').quote, '如果我精通SQL')
         current.sources=[SourceText(source_id='jd',kind='jd',text='精通SQL')]
         self.assertIsNone(_literal_fact_source(current,'精通SQL'))
+
+    def test_requirements_are_projected_from_accepted_job_evidence(self):
+        self.prepare()
+        result = self.execute(self.lookup())
+        requirements = self.bridge.view()['requirements']
+        self.assertEqual(requirements[0]['requirementId'], 'req-1')
+        self.assertEqual(requirements[0]['referenceId'], result['references'][0]['referenceId'])
+        self.assertIn(requirements[0]['quote'], result['references'][0]['content'])
+
+    def test_requirements_disappear_after_goal_change(self):
+        self.prepare()
+        self.execute(self.lookup())
+        with database(self.path) as c, transaction(c):
+            c.execute("UPDATE sessions SET direction=? WHERE session_id=?",
+                      ('另一家公司 上海 工程实习', self.sid))
+        self.context = self.run_context()
+        self.runtime.context = self.context
+        self.bridge = AgentWebBridge(self.runtime)
+        self.assertEqual(self.bridge.view()['requirements'], [])
 
     def test_assessment_order_can_prefer_source_without_merging_mirrors(self):
         def handler(_request):

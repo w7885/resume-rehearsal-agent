@@ -129,9 +129,13 @@ class PublicSearchIntent:
             raise WebProviderError('missing_job_direction')
 
     def query(self):
+        # 裸方向/职位词会命中招聘列表页；补职责/要求关键词才能落到单个岗位详情页。
         parts = [self.company, self.role or self.direction, self.location,
                  self.employment_type, self.posting_id]
         query = ' '.join(part.strip() for part in parts if part.strip())
+        suffix = ' 招聘 岗位职责 任职要求'
+        if len(query + suffix) <= 100:
+            query += suffix
         if len(query) > 100:
             raise WebProviderError('query_too_long')
         return query

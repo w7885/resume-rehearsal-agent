@@ -319,3 +319,138 @@ class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.action, 'meta')
         self.assertEqual(result.reply, '我们按你的节奏来。')
         self.assertTrue(result.used_model)
+
+
+ACTUAL_ANSWER = ('我负责菌株筛选的判定标准，是否观察抑菌圈实验结果和记录，'
+                 '以及数据整理与报告撰写。')
+
+
+class StructuralAnswerGateTests(unittest.IsolatedAsyncioTestCase):
+    async def route(self, message, quote):
+        ctx = SessionContext(session=SessionInfo(session_id='s1'))
+        ctx.session.current_focus_id = 'blk_1'
+        return await route_message(
+            message=message, ctx=ctx, docs=_docs(), phases={}, pending=None,
+            has_pending_question=True, llm=NoCallLLM(),
+            decision=RouterOutput.model_validate({
+                'intent': 'answer', 'scope': 'experience', 'confidence': 0.9,
+                'answers_pending': True, 'answer_quote': quote,
+            }))
+
+    async def test_declarative_whether_answer_is_kept(self):
+        result = await self.route(ACTUAL_ANSWER, ACTUAL_ANSWER)
+        self.assertEqual(result.action, 'answer')
+        self.assertEqual(result.answer_quote, ACTUAL_ANSWER)
+
+    async def test_mid_sentence_quote_is_rejected(self):
+        result = await self.route('他说主导开发。', '主导开发。')
+        self.assertEqual(result.action, 'meta')
+        self.assertIsNone(result.answer_quote)
+
+
+from app.agent.memory import ExperienceDoc, record_answer, record_question
+from app.agent.router import _answer_record, _map_uncertain_fields, _quality_from_text
+
+
+LONG_ANSWER = '我负责订单模块，用 Redis 做了缓存，压测 QPS 提升 40%，但具体线上效果忘了。'
+
+
+class AnswerQualityTests(unittest.TestCase):
+    def test_long_answer_with_one_forgotten_effect_is_partial(self):
+        self.assertEqual(_quality_from_text(LONG_ANSWER), 'partial')
+
+    def test_whole_answer_quality_labels(self):
+        self.assertEqual(_quality_from_text('记不清了'), 'uncertain')
+        self.assertEqual(_quality_from_text('没有效果'), 'absent')
+        self.assertEqual(_quality_from_text('不想说'), 'refused')
+        self.assertEqual(_quality_from_text('我负责接口测试。'), 'full')
+
+    def test_short_valid_answer_is_full(self):
+        # 没有不确定分句的短回答也是有效回答，不能按长度门槛误判为 uncertain。
+        self.assertEqual(_quality_from_text('写接口'), 'full')
+
+    def test_bare_absent_answers(self):
+        for text in ('没有', '没了', '就这些'):
+            with self.subTest(text=text):
+                self.assertEqual(_quality_from_text(text), 'absent')
+
+    def test_negated_or_hypothetical_refusal_is_not_refused(self):
+        # 前缀是“不是/如果”时说的是没拒绝或假设，不能据此永久关闭槽位。
+        for text in ('不是不愿意说，只是没统计', '如果我说不想讨论呢'):
+            with self.subTest(text=text):
+                self.assertEqual(_quality_from_text(text), 'full')
+        self.assertEqual(_quality_from_text('不想说'), 'refused')
+
+    def test_uncertain_clause_with_short_content_is_full(self):
+        # 规范：不确定分句之外还有内容（哪怕很短）按 full，不能标 uncertain 关闭槽位。
+        self.assertEqual(_quality_from_text('效果忘了，做UI'), 'full')
+
+    def test_uncertain_spans_map_to_slots(self):
+        self.assertEqual(_map_uncertain_fields(['具体线上效果忘了'], None), ['effect'])
+        self.assertEqual(_map_uncertain_fields(['忘了当时用了什么工具'], None), ['tech'])
+        self.assertEqual(_map_uncertain_fields([''], 'action'), ['action'])
+
+    def test_partial_record_does_not_decline_the_asked_slot(self):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project', raw_text='参与接口测试。')
+        question = record_question(doc, '这段经历上线后带来了哪些变化？', 'effect')
+        declined, kind, fields, spans = _answer_record(
+            LONG_ANSWER, question, quality='partial', spans=['具体线上效果忘了。'])
+        self.assertFalse(declined)
+        self.assertEqual(kind, 'partial')
+        self.assertEqual(fields, ['effect'])
+        record_answer(doc, question.id, declined=declined, answer_kind=kind,
+                      uncertain_fields=fields, uncertain_spans=spans)
+        self.assertNotIn('effect', doc.declined)
+        self.assertEqual(doc.questions[-1].answer_kind, 'partial')
+        self.assertEqual(doc.questions[-1].uncertain_fields, ['effect'])
+        self.assertEqual(doc.questions[-1].uncertain_spans, ['具体线上效果忘了。'])
+
+
+class UncertainSpanNormalizeTests(unittest.TestCase):
+    def test_non_verbatim_span_is_dropped_and_quality_falls_back(self):
+        out = RouterOutput.model_validate({
+            'intent': 'answer', 'confidence': 0.9, 'answers_pending': True,
+            'answer_quote': LONG_ANSWER, 'answer_quality': 'partial',
+            'uncertain_spans': ['这句用户根本没说过'],
+        })
+        result = normalize(out, message=LONG_ANSWER, docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertIsNone(result.answer_quality)
+        self.assertEqual(result.uncertain_spans, [])
+
+    def test_verbatim_sentence_span_is_kept(self):
+        message = '我负责订单模块，用 Redis 做了缓存。压测 QPS 提升 40% 后。具体线上效果忘了。'
+        out = RouterOutput.model_validate({
+            'intent': 'answer', 'confidence': 0.9, 'answers_pending': True,
+            'answer_quote': message, 'answer_quality': 'partial',
+            'uncertain_spans': ['具体线上效果忘了。'],
+        })
+        result = normalize(out, message=message, docs=_docs(), phases={}, suggestion_ids=set())
+        self.assertEqual(result.answer_quality, 'partial')
+        self.assertEqual(result.uncertain_spans, ['具体线上效果忘了。'])
+
+
+from app.agent.prompts import (
+    build_decide_prompt, build_route_prompt, build_router_prompt, build_system_prompt,
+)
+
+
+class PromptContractTests(unittest.TestCase):
+    def test_router_prompt_defines_answer_quality(self):
+        prompt = build_router_prompt()
+        self.assertIn('answer_quality', prompt)
+        self.assertIn('uncertain_spans', prompt)
+        self.assertIn('逐字', prompt)
+
+    def test_decide_prompt_allows_verbatim_requirement_evidence(self):
+        prompt = build_decide_prompt('')
+        self.assertIn('evidence_quote', prompt)
+        self.assertIn('evidence_ref', prompt)
+        self.assertIn('每维度最多这样追问一次', prompt)
+
+    def test_prompts_restrict_answer_quote_to_first_person_facts(self):
+        self.assertIn('他人转述', build_router_prompt())
+        self.assertIn('他人转述', build_route_prompt())
+        self.assertIn('假设、转述或示例', build_decide_prompt(''))
+
+    def test_system_prompt_limits_requirement_followup(self):
+        self.assertIn('可逐字引用的岗位要求', build_system_prompt())

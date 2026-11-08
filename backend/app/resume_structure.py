@@ -23,14 +23,31 @@ ENTRY_DATE = re.compile(
     r'(?:\d{4}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)',
     re.I,
 )
+# Image/PDF extracts often put the period after the title: "公司 - 岗位 2024.07 - 至今".
+_TRAILING_ENTRY_DATE = re.compile(
+    r'(?:19|20)\d{2}\s*[.年/-]\s*\d{1,2}\s*月?\s*(?:[—–~～-]|至)\s*'
+    r'(?:(?:19|20)\d{2}\s*[.年/-]\s*\d{1,2}\s*月?|\d{1,2}\s*月|至今|现在|今|present)\s*$',
+    re.I,
+)
+
+
+def entry_dated(label):
+    return bool(ENTRY_DATE.match(label) or _TRAILING_ENTRY_DATE.search(label))
+
+
 _MONTH = r'\d{4}\s*[.年/-]\s*\d{1,2}\s*月?'
 _PERIOD = re.compile(_MONTH + r'(?:\s*(?:[—–~～-]|至)\s*(?:' + _MONTH + r'|至今|现在|今|present))?', re.I)
-_BULLET = re.compile(r'^\s*(?:[-+*]\s+|[•▸●▪▶])')
+_BULLET = re.compile(r'^\s*(?:[-+*－]\s+|[•▸●▪▶])')
 _PROSE = re.compile(r'[。；;！!？?，,]|负责|使用|参与|主导|完成|提升|降低|实现|上线|截至|截止|例如|比如')
 
 
+def _entry_prose(text):
+    """岗位角色词“负责人”不是职责句，不参与 prose 判定。"""
+    return _PROSE.search((text or '').replace('负责人', ''))
+
+
 def _entry_title(text):
-    return bool(text and len(text) <= 110 and not _PROSE.search(text)
+    return bool(text and len(text) <= 110 and not _entry_prose(text)
                 and not section_kind(text)[0] and not PROJECT.fullmatch(text))
 
 
@@ -44,7 +61,7 @@ def dated_entry_header(line):
         return False
     before = label[:match.start()].strip(' \t｜|:：—-')
     after = label[match.end():].strip(' \t｜|:：—-')
-    return bool(_entry_title(before or after) and not _PROSE.search(label))
+    return bool(_entry_title(before or after) and not _entry_prose(label))
 
 
 def experience_boundaries(text):
@@ -70,7 +87,7 @@ def experience_boundaries(text):
         if PROJECT.fullmatch(label) or inline_kind(label):
             in_experience = True
             continue
-        if not in_experience or _BULLET.match(line) or _PROSE.search(label):
+        if not in_experience or _BULLET.match(line) or _entry_prose(label):
             continue
         match = _PERIOD.search(label)
         if match is not None and not label[:match.start()].strip(' \t｜|:：—-'):
@@ -91,7 +108,13 @@ def experience_boundaries(text):
             elif dated_entry_header(line):
                 result.add(index)
         elif dated_entry_header(line):
-            result.add(index)
+            previous = index - 1
+            while previous >= 0 and not lines[previous].strip():
+                previous -= 1
+            # 章节标题后紧跟的“名称 + 单个日期”是标题的补充，不拆出只有标题的空块。
+            single_month = not re.search(r'[—–~～-]|至', match.group(0))
+            if not (single_month and previous >= 0 and section_kind(heading(lines[previous]))[0]):
+                result.add(index)
     return result
 
 
@@ -182,7 +205,8 @@ def heading(line):
     if label.startswith('**') and label.endswith('**'):
         label = label[2:-2].strip()
     # NFKC folds Kangxi radicals (⼈⽬) and full-width punctuation back to normal text.
-    return _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
+    label = _ICONS.sub('', unicodedata.normalize('NFKC', label)).strip()
+    return re.sub(r'^</>\s*', '', label)
 
 
 def section_kind(label):
@@ -240,7 +264,7 @@ def block_kinds(markdowns):
         if section is not None:
             kinds.append(None if section == 'frozen' else section)
             continue
-        if (ENTRY_DATE.match(label) or (
+        if (entry_dated(label) or (
             re.match(r'^\s{0,3}#{1,6}\s+', first) and _NAMED_ENTRY.search(label)
         )) and len(lines) > 1:
             seen = True
@@ -295,10 +319,15 @@ def section_kinds(markdowns):
     return result
 
 
-def split_resume(text):
-    """Keep each heading with its content; preserve every byte-equivalent character."""
+def split_resume(text, boundaries=None):
+    """Keep each heading with its content; preserve every byte-equivalent character.
+
+    ``boundaries`` 是额外的新段起始行号（只来自模型返回的行号，不来自模型文本）。
+    """
     starts, offset, fence, in_experience = [0], 0, None, False
     entries = experience_boundaries(text)
+    if boundaries:
+        entries |= set(boundaries)
     for line_index, line in enumerate(text.splitlines(keepends=True)):
         token = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
         if token:
@@ -322,10 +351,10 @@ def split_resume(text):
     return [text[a:b] for a, b in zip(starts, starts[1:]) if text[a:b].strip()]
 
 
-def structure_blocks(blocks):
+def structure_blocks(blocks, boundaries=None):
     """Map split/grouped draft blocks back to exact per-source substring quotes."""
     whole = join_markdown(blocks)
-    parts = split_resume(whole)
+    parts = split_resume(whole, boundaries=boundaries)
     if len(parts) <= 1:
         return blocks
     originals, offset = [], 0

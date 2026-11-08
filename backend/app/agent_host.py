@@ -334,6 +334,7 @@ class Runtime:
         self.advance_after_skip = False
         self.revision_target = None
         self.web_bridge = None
+        self.web_ownership = None
         self._reminded_this_run = False
 
     def _emit(self, kind, payload, connection=None):
@@ -400,6 +401,9 @@ class Runtime:
         data = result.data if hasattr(result,'data') else result
         if not isinstance(data,dict):
             raise RepositoryError('invalid_input','分析返回格式无效。')
+        # 模型偶尔把 response_format 的 type 回显进 JSON；各调用方的 schema 都用不到该字段。
+        if isinstance(data.get('type'),str):
+            data = {key: item for key, item in data.items() if key != 'type'}
         return data
 
     def _pending(self):
@@ -426,9 +430,37 @@ class Runtime:
             return '图片原件已保存，可打开预览；' + reason + '你可以粘贴简历和岗位描述的文字，或上传 DOCX／文字型 PDF 继续。'
         return '请先上传可读的简历，或说明希望修改的经历。'
 
-    def _activate(self, selected, candidates, *, reference_ids=()):
+    async def _resume_boundaries(self, selected, candidates):
+        """LLM 只补行号；PDF/Word/文本都走同一份提取后的纯文本。
+
+        按 ``_activate`` 将要拼进草稿的顺序取原文，行号才能直接复用。
+        """
+        allowed = {item['materialId']: item for item in candidates}
+        texts = []
+        with self.repo._operation(self.context) as (connection, _):
+            for item in selected:
+                if not isinstance(item, dict) or item.get('role') != 'resume':
+                    continue
+                saved = allowed.get(item.get('materialId'))
+                if saved is None:
+                    continue
+                for source in saved['sources']:
+                    row = connection.execute(
+                        'SELECT text FROM source_blocks WHERE session_id=? AND source_id=?'
+                        ' ORDER BY source_revision DESC LIMIT 1',
+                        (self.sid, source['source_id'])).fetchone()
+                    if row is not None:
+                        texts.append(row['text'])
+        if not texts:
+            return None
+        from app.agent_segmentation import refine
+        from app.draft_actions import join_markdown
+        return await refine(self, join_markdown([{'markdown': text} for text in texts]))
+
+    async def _activate(self, selected, candidates, *, reference_ids=()):
         if not isinstance(selected,list) or not selected or len(selected)>10:
             raise RepositoryError('invalid_input','附件用途结果无效。')
+        boundaries = await self._resume_boundaries(selected, candidates)
         allowed={item['materialId']:item for item in candidates}
         seen=set()
         with self.repo._operation(self.context,write=True) as (connection,session):
@@ -459,7 +491,7 @@ class Runtime:
             if initial:
                 current=bound.get_session(RequestContext(self.sid))
                 from app.resume_structure import structure_blocks
-                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial))
+                bound.create_initial_draft(RequestContext(self.sid,current['stateRevision']),structure_blocks(initial,boundaries=boundaries))
             bound._touch(connection,self.sid)
             current=bound.get_session(RequestContext(self.sid))
             connection.execute('INSERT INTO agent_turn_effects VALUES (?,?,?,?,?) ON CONFLICT (user_message_id) DO UPDATE SET session_id=excluded.session_id,state_revision=excluded.state_revision,draft_revision=excluded.draft_revision,resume_generation=excluded.resume_generation',(self.sid,self.user_id,current['stateRevision'],current['draftRevision'],current['currentResumeGeneration']))
@@ -486,6 +518,10 @@ class Runtime:
         active_prompts=[p for p in turn['candidatePrompts'] if p['state']=='reply_saved' and (not turn['replyToMessageId'] or p['promptMessageId']==turn['replyToMessageId'])]
         candidates=[p for p in active_prompts if p['suggestions']]
         if not candidates:
+            return False
+        # 先尊重外层意图：用户问用法/要求切段/要求澄清/要求整体改写时，先处理这句话；
+        # 只有 answer/correct 才可能需要解析“采用、拒绝或调整”（skip 仍走 KEEP_NEXT 既有路径）。
+        if out is not None and out.intent in {'meta', 'chitchat', 'focus', 'clarify', 'global_edit'}:
             return False
         from app.agent_edit_scope import resolve_scope
         allowed = resolve_scope(self.repo, self.context)
@@ -569,7 +605,7 @@ class Runtime:
     async def _analyze_next(self, turn, out=None):
         from app.agent_goal import sync
         from app.agent_progress import CONTINUE, KEEP_NEXT, announce, plain, plan, record, label, completion
-        from app.agent.memory import load_session, save_session
+        from app.agent.memory import _block_title, load_session, save_session
         from app.resume_structure import SECTION_TYPES
         if not getattr(self, 'control_event', False):
             sync(self)
@@ -583,8 +619,16 @@ class Runtime:
         if not progress['blocks']:
             self._reply('当前简历没有可改写的段落；基本信息、教育、获奖按原文保留。可以上传简历，或粘贴项目／工作经历、技能、自我评价等内容。', 'question')
             return 'completed'
-        if progress['pending'] and (out is None or out.intent not in {'meta', 'chitchat'}):
+        # 有待确认建议时，只拦会生成新建议的意图；meta/focus/clarify 先响应用户这句话。
+        if progress['pending'] and (out is None or out.intent in {'answer', 'correct', 'global_edit', 'skip'}):
             self._reply('当前有待确认的改写，请先采用、拒绝或说明调整要求。', 'change_question', [p['suggestionId'] for p in progress['pending']])
+            return 'completed'
+        # 有待确认建议时，focus 只确认目标段名，不真正切段，避免“待确认建议跨段”。
+        if progress['pending'] and out is not None and out.intent == 'focus':
+            block = next((b for b in progress['blocks'] if b['blockId'] == out.target_experience_id), None)
+            name = _block_title(block['markdown']) if block else '目标段'
+            self._reply(f'你指的是「{name}」这一段；当前有待确认的改写，请先采用、拒绝或说明调整要求。',
+                        'change_question', [p['suggestionId'] for p in progress['pending']])
             return 'completed'
         keep_next = command in KEEP_NEXT
         if keep_next and progress['waiting']:
@@ -690,6 +734,8 @@ class Runtime:
                 section = event.payload
                 section_external_ids = event.payload.get('external_reference_ids', [])
             elif event.type == 'error':
+                # 内层错误事件目前被丢弃，只剩通用提示；记录原始 code/message 便于定位。
+                logger.error('agent error event: %s', event.payload)
                 if not saved:
                     raise RepositoryError('agent_failed', '下一步分析未完成，已保存的改写不会回滚。')
             elif event.type == 'run_finished':
@@ -863,8 +909,8 @@ class Runtime:
                 self.finish('done', 'completed')
                 return
             from app.agent_social import handle as handle_social
-            from app.web_intake_host import owns_turn as owns_web_turn
-            web_owned = owns_web_turn(self, turn)
+            from app.web_ownership import resolve_ownership
+            web_owned = await resolve_ownership(self, turn)
             if not web_owned and handle_social(self, turn):
                 self.finish('done', 'waiting_user' if self.waiting else 'completed')
                 return
@@ -899,6 +945,8 @@ class Runtime:
         except asyncio.CancelledError:
             self.finish('interrupted',self.cancel_reason or 'cancelled',check=False)
         except Exception as error:
+            # 现有实现只回通用提示，不记录原因；补一条日志便于定位（不影响用户可见文案）。
+            logger.exception('agent run failed: %s', getattr(error, 'code', type(error).__name__))
             try:
                 if isinstance(error, RepositoryError) and error.code == 'edit_scope_ambiguous':
                     self._reply(error.message, 'question')

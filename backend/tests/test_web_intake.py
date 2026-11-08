@@ -151,3 +151,17 @@ class WebIntakeTests(unittest.TestCase):
         self.assertEqual(new['searchCount'], 1)
         self.assertEqual(new['episodeId'], value['episodeId'])
         self.assertNotEqual(new['resumeGeneration'], value['resumeGeneration'])
+
+
+class WebDeclineTests(unittest.TestCase):
+    def test_short_declines_are_recognized(self):
+        for text in ('不查', '不查了', '不搜', '不用搜', '不用查', '这次不查了',
+                     '先按通用吧', '通用修改', '不需要联网。', '跳过联网'):
+            with self.subTest(text=text):
+                self.assertTrue(intake.is_web_decline(text))
+
+    def test_content_answers_are_not_declines(self):
+        for text in ('不查户口，但要联网看岗位', '我负责接口测试',
+                     '先不查相关资料我再想想'):
+            with self.subTest(text=text):
+                self.assertFalse(intake.is_web_decline(text))

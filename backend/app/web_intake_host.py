@@ -60,6 +60,27 @@ def owns_turn(runtime, turn):
     return False
 
 
+# 已知招聘站的搜索/列表页路径；未知站点放行，避免误杀其它来源的详情页。
+# ponytail: 站点路径会变，命中新形态时补这里，别改成白名单。
+_LIST_PAGE_PATH = re.compile(
+    r'(?i)/(?:s|sou|w|zhaopin|company-jobs|city-[a-z0-9-]+|zp[a-z0-9]+|interns)(?:/|$|\?)')
+
+
+def _list_page_url(url):
+    return bool(_LIST_PAGE_PATH.search(url))
+
+
+def _usable_candidate(item, sources):
+    """Drop unclear or list-page candidates instead of failing the whole batch."""
+    ref = sources.get(item['referenceId'])
+    if ref is None or _list_page_url(ref['url']):
+        return False
+    text = ref['title'] + '\n' + ref['content']
+    return (len(item['company'].strip()) >= 2 and len(item['role'].strip()) >= 2
+            and all(not item[name] or item[name] in text
+                    for name in ('company', 'role', 'location', 'employmentType')))
+
+
 class Intake:
     def __init__(self, runtime):
         self.r = runtime
@@ -129,6 +150,9 @@ class Intake:
                             '可补充条件或JD正文，也可回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
         items = await self.candidates(refs)
+        # 列表页的岗位行常缺公司名，模型也可能拼出原文没有的标签；逐条丢弃，不让一条坏候选作废整批。
+        sources = {ref['referenceId']: ref for ref in refs}
+        items = [item for item in items if _usable_candidate(item, sources)]
         if not items:
             return self.ask('未取得公司和岗位可对应的候选。可补充岗位名称、JD正文，或回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
@@ -148,7 +172,7 @@ class Intake:
             '只输出JSON对象，唯一字段assessments数组，每个引用恰好一项。字段为reference_id、match'
             '(matched/mismatch/unconfirmed)、company_quote、role_quote、location_quote、type_quote、'
             'posting_id_quote、duties_quote、requirements_quote、content_quote、jd_conflict。'
-            'quote逐字来自该引用，不拼接岗位；职责或要求至少一项具体正文6字符，缺失项空字符串。'
+            'quote逐字来自该引用，不拼接岗位；岗位职责和任职要求各取至少6字符具体正文，缺失项空字符串。'
             '类型未知不猜测，JD冲突则jd_conflict=true。',
             {'target': target.__dict__, 'userJD': self.bridge.state()[0]['jd'][:6000],
              'references': [{'reference_id': ref['referenceId'], 'title': ref['title'],
@@ -246,7 +270,13 @@ class Intake:
         if not enabled or not self.service.settings.available:
             return 'unchanged'
         text = turn['userMessage']['content'].strip()
-        if re.search(r'按通用|通用修改|先不查|不需要联网|无需搜索', text):
+        # 归属判定由 Task 3 写入 runtime；turn 重取可能丢失 webOwnership，故读运行时权威值。
+        ownership = getattr(self.r, 'web_ownership', None) or {}
+        decision = ownership.get('decision')
+        if decision in {'edit_experience', 'normal'}:
+            return 'unchanged'
+        # 与 target 提示共用同一归一化，避免“不查了”这类短拒绝只在一处被识别
+        if decision == 'decline' or web_intake.is_web_decline(text):
             self.service._episode(self.r.context, 'no-public-target')
             self.update(phase='deferred', outcomeCode='user_deferred')
             with self.r.repo._operation(self.r.context, write=True) as (c, s):
@@ -257,7 +287,7 @@ class Intake:
         if old and (old['intentHash'] != goal['baseHash'] or old['permissionRevision'] != revision):
             self.service._episode(self.r.context, 'changed-intent')
             old = self.state()
-        explicit_change = bool(len(text) <= 200 and '\n' not in text and re.match(
+        explicit_change = decision == 'web_request' or bool(len(text) <= 200 and '\n' not in text and re.match(
             r'^(?:我(?:这次|现在)?(?:想|准备|打算|要)?(?:投|应聘|申请)|(?:换|改成|改为|目标|求职方向)[：:\s])', text))
         retry = bool(re.fullmatch(r'(?:重新搜索|重试联网|开始搜索)[。！!]*', text))
         if old and old['phase'] == 'deferred' and not retry and not explicit_change:
@@ -326,11 +356,17 @@ class Intake:
             if previous and previous['status'] != 'pending':
                 outcome = await self.direct({'bindingId': old['linkBindingId'], 'url': old['linkUrl']}, previous=previous)
                 return 'resumed_ready' if outcome == 'ready' else outcome
+        # 只有归属判定明确交给候选选择才消费输入；其余输入回普通路由并保留候选状态。
+        if decision == 'select_candidate' and not old:
+            return 'unchanged'
         if old and old['phase'] == 'awaiting_selection' and not explicit_change:
+            if decision != 'select_candidate':
+                return 'unchanged'
             try:
                 with self.r.repo._operation(self.r.context, write=True) as (c, s):
                     state = web_candidates.select(c, s, episode_id=old['episodeId'],
-                        expected_revision=old['revision'], user_message_id=self.r.user_id)
+                        expected_revision=old['revision'], user_message_id=self.r.user_id,
+                        choice_index=ownership.get('index'))
             except RepositoryError as error:
                 if error.code != 'ambiguous_selection':
                     raise
@@ -382,12 +418,20 @@ class Intake:
         reply = text if (explicit_change or not goal['direction'] or (old and old.get('inputPromptId'))) else ''
         if old is None:
             self.service._episode(self.r.context, 'initial-intake')
-        value = await self.r._json(
-            '解析联网搜索线索。只用用户明确的公开求职意向，不猜公司、不从简历推断方向。'
-            '输出JSON对象company、role、direction、location、employment_type、posting_id，未知均空字符串。'
-            '全部非空值逐字来自输入，招聘类型保持用户原文；只有公司时direction必须为空。',
-            {'goal': '' if explicit_change else goal['direction'], 'userJD': '' if explicit_change else goal['jd'][:6000], 'targetReply': reply})
-        hints = Hints.model_validate(value)
+        # 用户在回答“你想找哪类岗位？”时，短回答原文就是方向；不依赖模型字段，
+        # 避免模型偶尔返回全空对象导致同一问题被反复重问。
+        answered_direction = bool(old and old['phase'] == 'needs_direction' and old.get('inputPromptId')
+            and len(text) <= 60 and '\n' not in text and not re.search(r'[？?]', text))
+        if answered_direction:
+            hints = Hints(direction=text)
+        else:
+            value = await self.r._json(
+                '解析联网搜索线索。只用用户明确的公开求职意向，不猜公司、不从简历推断方向。'
+                '输出JSON对象company、role、direction、location、employment_type、posting_id，未知均空字符串。'
+                '只给岗位名称或方向时必须填入role或direction。'
+                '全部非空值逐字来自输入，招聘类型保持用户原文；只有公司时direction必须为空。',
+                {'goal': '' if explicit_change else goal['direction'], 'userJD': '' if explicit_change else goal['jd'][:6000], 'targetReply': reply})
+            hints = Hints.model_validate(value)
         proof = reply if explicit_change else goal['direction'] + '\n' + goal['jd'][:6000] + '\n' + reply
         if any(value and value not in proof for value in hints.model_dump().values()):
             raise WebProviderError('unanchored_public_intent')
