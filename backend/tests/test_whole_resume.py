@@ -46,7 +46,7 @@ class SectionClient(proactive.ProactiveClient):
                 return SimpleNamespace(data={'action': 'ask_user', 'message': '查询脚本中，你本人负责哪部分？', 'slot': 'responsibility'})
             effect = effect_state(doc)
             if effect in {'missing', 'followup'}:
-                message = '这段经历上线或交付后，带来了哪些实际变化？' if effect == 'missing' else '除了使用情况，实际带来了什么变化？'
+                message = '这段经历做完或交付后，带来了哪些实际变化？' if effect == 'missing' else '除了使用情况，实际带来了什么变化？'
                 return SimpleNamespace(data={'action': 'ask_user', 'message': message, 'slot': 'effect'})
             after = block['markdown'].replace('参与', '协助')
         elif doc.kind == 'summary' and host.summary_mode != 'use-project':

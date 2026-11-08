@@ -3,6 +3,7 @@ import unittest
 from app.agent.guard import GuardState, check
 from app.agent.loop import _fallback_question
 from app.agent.memory import ExperienceDoc, Fact, Question, record_question
+from app.agent.questions import detail_slot
 from app.agent.ports import SessionContext, SessionInfo
 from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep
@@ -64,6 +65,37 @@ class QuestionWordingTests(unittest.TestCase):
         question, slot = _fallback_question(doc)
         self.assertEqual(slot, 'tech')
         self.assertIn('实际用到了什么工具或方法', question)
+
+    def tech_doc(self, raw_text='学生信息管理系统，负责课程作业。'):
+        doc = ExperienceDoc(experience_id='p1', seq=1, kind='project',
+                            title='学生信息管理系统', raw_text=raw_text)
+        doc.questions.append(Question(
+            id='q1', slot='responsibility', text='你负责哪部分？', fingerprint='f1',
+            outcome='answered', answer_kind='answered', answer_quote='设计'))
+        doc.questions.append(Question(
+            id='q2', slot='tech', text='用了什么工具？', fingerprint='f2',
+            outcome='answered', answer_kind='answered', answer_quote='使用 Python'))
+        return doc
+
+    def test_short_tech_answer_asks_one_concrete_action(self):
+        doc = self.tech_doc()
+        question, slot = _fallback_question(doc)
+        self.assertEqual(slot, 'action')
+        self.assertIn('Python', question)
+        self.assertIn('哪一步', question)
+        state = GuardState(
+            session=SessionContext(session=SessionInfo(session_id='test')),
+            focus_doc=doc, anchor_text=doc.raw_text,
+        )
+        self.assertIsNone(
+            check(AskStep(action='ask_user', message=question, slot=slot), state).violation,
+            question,
+        )
+
+    def test_action_already_in_resume_is_not_asked_again(self):
+        doc = self.tech_doc('使用 Python 实现学生信息查询功能。')
+        self.assertIsNone(detail_slot(doc))
+        self.assertEqual(_fallback_question(doc)[1], 'effect')
 
     def test_detail_question_once_answered_unblocks_effect(self):
         doc = self.terse_responsibility_doc()

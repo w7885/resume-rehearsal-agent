@@ -238,6 +238,17 @@ def supported_experience_slots(
     return slots
 
 
+TERSE_ANSWER_LENGTH = 12
+
+
+def terse_answer(question: Question) -> bool:
+    """有逐字引文且很短；历史数据没有引文、或是否定式回答时不按“太短”处理。"""
+    quote = (question.answer_quote or "").strip()
+    return (bool(quote) and question.answer_kind == "answered"
+            and len(quote) <= TERSE_ANSWER_LENGTH
+            and not re.search(r"没有|没|未|无", quote))
+
+
 def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent", "missing"]:
     stop = _last_effect_denial(doc)
     if stop is not None:
@@ -260,6 +271,10 @@ def effect_state(doc: ExperienceDoc) -> Literal["confirmed", "followup", "absent
     if any(question.answer_kind in {'absent', 'refused'} for question in settled):
         return 'absent'
     if len(settled) >= 2:
+        # 第二个回答只有“收到一条反馈”这类短句时，再给一次具体化追问；
+        # 第三次仍短则收口，避免无限追问。
+        if len(settled) < 3 and terse_answer(settled[-1]):
+            return "followup"
         return "absent"
     if len(settled) == 1:
         return "followup"

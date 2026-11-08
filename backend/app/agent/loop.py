@@ -16,6 +16,7 @@ from app.agent.guard import (
     GuardState,
     call_signature,
     check,
+    verified_evidence,
 )
 from app.agent.llm import LLMError
 from app.agent.memory import (
@@ -44,8 +45,11 @@ from app.agent.schemas import (
 )
 from app.agent.store import AgentStateStore
 from app.agent.questions import (
+    _EFFECT_DETAIL,
+    detail_question,
+    detail_slot,
     guided_question,
-    needs_detail,
+    needs_effect_detail,
     next_guide_variant,
     requirement_question,
     with_answer_guidance,
@@ -57,7 +61,7 @@ _PHRASES = {
     "responsibility": "这段经历中，你本人负责哪部分",
     "context": "这段经历要解决的业务问题或目标是什么",
     "action": "这段经历中，你具体做了哪些步骤",
-    "effect": "这段经历上线或交付后，带来了哪些实际变化",
+    "effect": "这段经历做完或交付后，带来了哪些实际变化",
     "evidence": "有没有材料能支持这段经历的描述",
     "tech": "这段经历用到了哪些工具、方法或资源",
 }
@@ -148,12 +152,13 @@ def _fallback_question(doc: ExperienceDoc) -> tuple[str | None, str | None]:
         if any(q.outcome in {'answered', 'declined'} and q.slot in {'details', 'strength', 'preference'} for q in doc.questions):
             return None, None
         return text, slot
-    if needs_detail(doc):
-        return guided_question(
-            doc, 'tech', variant=next_guide_variant(doc, 'tech'),
-        ), 'tech'
+    slot = detail_slot(doc)
+    if slot:
+        return detail_question(doc, slot), slot
     effect = effect_state(doc)
     if effect == "followup":
+        if needs_effect_detail(doc):
+            return _EFFECT_DETAIL, "effect"
         return guided_question(
             doc, 'effect', effect_followup=True,
             variant=next_guide_variant(doc, 'effect'),
@@ -564,6 +569,12 @@ async def run_loop(
                     return limited(error.code, error.message)
             load_ref_sources(decision)
             result = check(decision, guard_state())
+            # 未逐字核验的证据标注按普通问句处理，不写入问答记录。
+            if (result.violation is None and isinstance(decision, AskStep)
+                    and (decision.evidence_ref or decision.evidence_quote)):
+                ref, quote = verified_evidence(decision, guard_state())
+                decision = decision.model_copy(
+                    update={'evidence_ref': ref, 'evidence_quote': quote})
             # 带岗位要求原文的问题已有自己的“最接近的一件/没有也可以”提示，
             # 再叠通用回答提示会重复且可能超出字数上限。
             if (result.violation is None and isinstance(decision, AskStep)
@@ -579,6 +590,12 @@ async def run_loop(
                 "warning",
                 code=result.violation.code,
                 message=result.violation.message,
+                # 被拒的动作原文只用于诊断，便于回答“模型到底想做什么”。
+                attempted={
+                    'action': getattr(decision, 'action', ''),
+                    'slot': getattr(decision, 'slot', None),
+                    'message': (getattr(decision, 'message', '') or '')[:120],
+                },
                 **({'anchor_check': _anchor_diagnostic(decision, guard_state())}
                    if result.violation.code == 'stale_anchor' and isinstance(decision, ToolStep) else {}),
             )

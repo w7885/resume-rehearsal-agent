@@ -26,7 +26,7 @@ def decision(target='p1', after='协助完成接口测试。', before=BEFORE):
 def effect_question(index, outcome='answered'):
     return Question(
         id=f'q{index}', slot='effect',
-        text='这段经历上线或交付后，带来了哪些实际变化？',
+        text='这段经历做完或交付后，带来了哪些实际变化？',
         fingerprint=f'f{index}', outcome=outcome,
     )
 

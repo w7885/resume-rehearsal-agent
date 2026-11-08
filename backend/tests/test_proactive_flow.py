@@ -49,8 +49,8 @@ class ProactiveClient(integration.FakeClient):
             if '工具或方法' in kwargs['user'] and '[tech]' not in kwargs['user']:
                 return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
                     'experience_id': block_id, 'facts': [{'slot': 'tech', 'statement': '使用 Python 和 SQLite'}]}})
-            if '这段经历上线或交付后' not in kwargs['user']:
-                return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+            if '这段经历做完或交付后' not in kwargs['user']:
+                return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历做完或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
             if '没上线也可以' not in kwargs['user']:
                 return SimpleNamespace(data={'action': 'ask_user', 'message': '没上线也可以，这件事有没有让流程或结果发生变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认定性变化'})
             if not self.proposed:
@@ -66,10 +66,10 @@ class ProactiveClient(integration.FakeClient):
         ctx = self.runtime.repo.get_session_context(self.runtime.context)
         block = next(b for b in ctx['draft']['blocks'] if b['blockId'] == block_id)
         if '[effect]' not in kwargs['user']:
-            if '这段经历上线或交付后' in kwargs['user']:
+            if '这段经历做完或交付后' in kwargs['user']:
                 return SimpleNamespace(data={'action': 'tool', 'tool': 'save_facts', 'args': {
                     'experience_id': block_id, 'facts': [{'slot': 'effect', 'statement': '老师录入时间从半小时缩短到五分钟'}]}, 'rationale': '记录实际效果'})
-            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历上线或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
+            return SimpleNamespace(data={'action': 'ask_user', 'message': '这段经历做完或交付后，带来了哪些实际变化？', 'slot': 'effect', 'related_source_ids': [], 'rationale': '确认实际效果'})
         if self.proposed:
             return SimpleNamespace(data={'action': 'finish', 'outcome': 'completed', 'summary': '建议已生成。'})
         if mode == 'nochange':

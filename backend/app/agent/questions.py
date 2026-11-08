@@ -1,6 +1,8 @@
 """One focused question plus optional, non-presupposing answer guidance."""
 import re
 
+from app.agent.memory import supported_experience_slots, terse_answer
+
 MAX_QUESTION_LENGTH = 120
 _SLOT_ORDER = ("responsibility", "action", "effect", "context", "evidence", "tech")
 
@@ -10,7 +12,7 @@ _SLOT_LABELS = {
     'effect': '实际变化',
     'context': '背景',
     'evidence': '核对材料',
-    'tech': '技术或工具',
+    'tech': '方法或工具',
 }
 
 
@@ -20,8 +22,8 @@ def requirement_question(quote, slot):
 
 _GUIDES = {
     "responsibility": (
-        "可从设计、实现或测试中选一项说起；没参与的不用补充。",
-        "说一件你亲手做过的就好，比如设计、实现或测试；没参与的可以直接说没参与。",
+        "挑一项你实际参与过的工作说起；没参与的不用补充。",
+        "说一件你亲手做过的就好；没参与的可以直接说没参与。",
     ),
     "action": (
         "可按“遇到的情况→采取的做法”讲，先说最熟悉的一件。",
@@ -36,8 +38,8 @@ _GUIDES = {
         "说一项能看见的变化就行，比如少一步、来去更快或收到反馈；没变化照实说。",
     ),
     "evidence": (
-        "可说代码、文档或测试记录中的一项；没有也可以。",
-        "有代码、文档或测试记录任一项就说一项，没有也没关系。",
+        "可说文档、记录或作品等任一项；没有也可以。",
+        "有文档、记录或作品等任一项就说一项，没有也没关系。",
     ),
     "tech": (
         "先说最关键的一种，没用过的不用补充。",
@@ -50,22 +52,71 @@ _EFFECT_FOLLOWUP_GUIDES = (
     "可说少做的一步或一条实际反馈；没有就说没有。",
     "举一个具体变化，比如少做一步或收到一条反馈；没有就照实说。",
 )
-_DETAIL_SLOTS = ("tech", "action", "details")
+_EFFECT_DETAIL = ("收到反馈后，你具体改了什么？"
+                  "比如改了哪一步或删掉了什么；没有改动也可以照实说。")
+_TECH_DETAIL_GUIDE = "说清它对应哪项工作或环节，不用展开细节。"
+
+
+def _last_settled(doc):
+    return next((q for q in reversed(doc.questions)
+                 if q.outcome in {"answered", "declined"}), None)
+
+
+def detail_slot(doc):
+    """短回答后只补问一次更具体的维度；原简历已写明的动作不再追问。"""
+    last = _last_settled(doc)
+    if last is None or last.outcome != "answered":
+        return None
+    if last.slot == "responsibility":
+        # 职责回答放宽到 30 字：概括性的职责仍值得问一次技术/方法。
+        if not last.answer_quote or len(last.answer_quote.strip()) > 30:
+            return None
+        if any(q.slot in ("tech", "action", "details")
+               and q.outcome in {"answered", "declined"} for q in doc.questions):
+            return None
+        if any(f.slot in {"tech", "action"} and f.status == "active"
+               and f.origin == "answer" for f in doc.facts):
+            return None
+        return "tech"
+    if last.slot == "tech" and terse_answer(last):
+        if any(q.slot == "action" and q.outcome in {"answered", "declined"}
+               for q in doc.questions):
+            return None
+        if "action" in supported_experience_slots(doc):
+            return None
+        return "action"
+    return None
 
 
 def needs_detail(doc):
-    """A terse responsibility answer should be expanded before asking effect."""
-    answered = [q for q in doc.questions if q.outcome in {"answered", "declined"}]
-    last = answered[-1] if answered else None
-    if last is None or last.slot != "responsibility" or last.outcome != "answered":
+    return detail_slot(doc) is not None
+
+
+def _tech_name(text):
+    value = re.sub(r'^(?:我)?(?:使用|用了|用|采用|通过|借助|基于)\s*',
+                   '', (text or '').strip())
+    return value.strip('，。；; ')
+
+
+def detail_question(doc, slot):
+    last = _last_settled(doc)
+    if slot == "action" and last is not None:
+        tech = _tech_name(last.answer_quote)
+        if tech:
+            text = f'你实际用{tech}做了哪一步？' + _TECH_DETAIL_GUIDE
+            if len(text) <= MAX_QUESTION_LENGTH:
+                return text
+    return guided_question(doc, slot, variant=next_guide_variant(doc, slot))
+
+
+def needs_effect_detail(doc):
+    """反馈类短答缺具体变化时，再问一次“改了什么”。"""
+    settled = [q for q in doc.questions if q.slot == "effect"
+               and q.outcome in {"answered", "declined"}]
+    if not settled or len(settled) > 2:
         return False
-    if not last.answer_quote or len(last.answer_quote.strip()) > 30:
-        return False
-    if any(q.slot in _DETAIL_SLOTS and q.outcome in {"answered", "declined"}
-           for q in doc.questions):
-        return False
-    return not any(f.slot in {"tech", "action"} and f.status == "active"
-                   and f.origin == "answer" for f in doc.facts)
+    last = settled[-1]
+    return terse_answer(last) and "反馈" in (last.answer_quote or "")
 
 
 def next_guide_variant(doc, slot):
@@ -83,8 +134,9 @@ def _anchor(doc):
     for word in ('姓名模糊查询', '模糊查询', '接口测试', '文章发布', '学生信息', '个人博客', '反馈整理'):
         if word in text:
             return word
-    if doc.title.strip() and doc.title.strip() in doc.raw_text and re.search(r'项目|系统|平台|网站|活动|建模', doc.title):
-        return f'「{doc.title.strip()[:28]}」'
+    title = re.split(r'[\t\n]', doc.title.strip())[0].strip()
+    if title and len(title) <= 28 and re.search(r'项目|系统|平台|网站|活动|建模|实验|研究|课题', title):
+        return f'「{title}」'
     return '这段经历'
 
 
@@ -96,7 +148,7 @@ def guided_question(doc, slot, *, effect_followup=False, variant=0):
         'responsibility': f'关于{anchor}，你本人负责哪部分？',
         'action': f'在{anchor}中，你亲手处理了哪个小任务？',
         'context': f'做{anchor}之前，最想解决哪个具体问题？',
-        'effect': '这段经历上线或交付后，带来了哪些实际变化？',
+        'effect': '这段经历做完或交付后，带来了哪些实际变化？',
         'evidence': f'关于{anchor}，你保留了什么可供核对的材料？',
         'tech': f'完成{anchor}时，你实际用到了什么工具或方法？',
     }[slot]

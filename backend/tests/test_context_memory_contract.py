@@ -108,12 +108,7 @@ class MemoryContractTests(unittest.TestCase):
                 self.assertEqual(text.count('？'), 1)
                 self.assertLessEqual(len(text), 120)
                 result = check(AskStep(action='ask_user', message=text, slot=slot), state)
-                if slot == 'action':
-                    # The original already describes the implemented query and
-                    # test; a well-shaped question must still avoid re-interview.
-                    self.assertEqual(result.violation.code, 'question_answered')
-                else:
-                    self.assertIsNone(result.violation)
+                self.assertIsNone(result.violation, text)
         question = with_answer_guidance('模糊查询这部分，你做了什么？', doc, 'action')
         self.assertIn('挑一件具体的事说', question)
         doc.questions.append(Question(id='q1', slot='action', text=question, fingerprint='q'))

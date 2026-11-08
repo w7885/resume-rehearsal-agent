@@ -37,12 +37,17 @@ def entry_dated(label):
 
 _MONTH = r'\d{4}\s*[.年/-]\s*\d{1,2}\s*月?'
 _PERIOD = re.compile(_MONTH + r'(?:\s*(?:[—–~～-]|至)\s*(?:' + _MONTH + r'|至今|现在|今|present))?', re.I)
-_BULLET = re.compile(r'^\s*(?:[-+*]\s+|[•▸●▪▶])')
+_BULLET = re.compile(r'^\s*(?:[-+*－]\s+|[•▸●▪▶])')
 _PROSE = re.compile(r'[。；;！!？?，,]|负责|使用|参与|主导|完成|提升|降低|实现|上线|截至|截止|例如|比如')
 
 
+def _entry_prose(text):
+    """岗位角色词“负责人”不是职责句，不参与 prose 判定。"""
+    return _PROSE.search((text or '').replace('负责人', ''))
+
+
 def _entry_title(text):
-    return bool(text and len(text) <= 110 and not _PROSE.search(text)
+    return bool(text and len(text) <= 110 and not _entry_prose(text)
                 and not section_kind(text)[0] and not PROJECT.fullmatch(text))
 
 
@@ -56,7 +61,7 @@ def dated_entry_header(line):
         return False
     before = label[:match.start()].strip(' \t｜|:：—-')
     after = label[match.end():].strip(' \t｜|:：—-')
-    return bool(_entry_title(before or after) and not _PROSE.search(label))
+    return bool(_entry_title(before or after) and not _entry_prose(label))
 
 
 def experience_boundaries(text):
@@ -82,7 +87,7 @@ def experience_boundaries(text):
         if PROJECT.fullmatch(label) or inline_kind(label):
             in_experience = True
             continue
-        if not in_experience or _BULLET.match(line) or _PROSE.search(label):
+        if not in_experience or _BULLET.match(line) or _entry_prose(label):
             continue
         match = _PERIOD.search(label)
         if match is not None and not label[:match.start()].strip(' \t｜|:：—-'):

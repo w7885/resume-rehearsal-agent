@@ -303,8 +303,9 @@ class AgentWebBridge:
             # New intake policy: a snippet can discover a candidate, never
             # qualify it. body_verified is supplied only by the stored-request
             # check in intake_body_verdict, never by a model response.
+            # 职责与要求都要有：列表/聚合页常能凑出一句职责，缺任职要求即非单个岗位详情页。
             quotes = [proof.duties_quote, proof.requirements_quote]
-            if not ref.get('_body_verified') or not any(
+            if not ref.get('_body_verified') or not all(
                     len(quote.strip()) >= 6 and quote in ref['content'] for quote in quotes):
                 return 'needs_body'
         elif len(proof.duties_quote.strip())<6 or len(proof.requirements_quote.strip())<6:

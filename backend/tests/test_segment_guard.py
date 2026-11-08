@@ -125,22 +125,28 @@ class RequirementEvidenceGuardTests(unittest.TestCase):
                                slot='responsibility'), evidence_state())
         self.assertEqual(result.violation.code, 'question_declined')
 
-    def test_unknown_reference_or_non_verbatim_quote_is_rejected(self):
-        for ask in (evidence_ask(evidence_ref='req-9'),
-                    evidence_ask(evidence_quote='负责跨部门沟通')):
+    def test_unverified_evidence_becomes_a_plain_question(self):
+        # 只是借了岗位领域词、并非逐字引用时，按普通问句放行。
+        for ask in (evidence_ask(evidence_ref='req-9', slot='action'),
+                    evidence_ask(evidence_quote='负责跨部门沟通', slot='action'),
+                    evidence_ask(evidence_quote=None, slot='action')):
             with self.subTest(ask=ask):
-                result = check(ask, evidence_state())
-                self.assertEqual(result.violation.code, 'question_evidence_unverified')
-                self.assertTrue(result.violation.retryable)
+                self.assertIsNone(check(ask, evidence_state(declined=False)).violation)
 
-    def test_only_one_evidence_field_is_invalid(self):
-        result = check(evidence_ask(evidence_quote=None), evidence_state())
-        self.assertEqual(result.violation.code, 'question_evidence_invalid')
+    def test_unverified_evidence_cannot_reopen_declined_slot(self):
+        result = check(evidence_ask(evidence_ref='req-9'), evidence_state())
+        self.assertEqual(result.violation.code, 'question_declined')
 
     def test_section_slots_cannot_carry_requirement_evidence(self):
-        result = check(evidence_ask(slot='strength'), evidence_state())
-        self.assertEqual(result.violation.code, 'question_evidence_invalid')
-        self.assertFalse(result.violation.retryable)
+        self.assertIsNone(check(evidence_ask(slot='strength'),
+                                evidence_state(declined=False)).violation)
+
+    def test_unverified_quote_does_not_exempt_numbers(self):
+        ask = evidence_ask(evidence_quote='3年跨部门经验',
+                           message='岗位要求提到「3年跨部门经验」，你有这类经历吗？',
+                           slot='action')
+        self.assertEqual(check(ask, evidence_state(declined=False)).violation.code,
+                         'question_new_number')
 
     def test_evidence_quote_numbers_pass_the_number_check(self):
         state = evidence_state()

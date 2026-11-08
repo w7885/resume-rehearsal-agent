@@ -30,7 +30,7 @@ class FakeClient:
 
     @staticmethod
     def effect_asked(user):
-        return '这段经历上线或交付后' in user
+        return '这段经历做完或交付后' in user
 
     async def complete_json(self,*,system,user,run_id='test'):
         value=json.loads(user)
@@ -78,7 +78,7 @@ class FakeClient:
             if self.effect_asked(user):
                 data={'action':'tool','tool':'save_facts','args':{'experience_id':block['blockId'],'facts':[{'slot':'effect','statement':'老师录入时间从半小时缩短到五分钟'}]},'rationale':'记录实际效果'}
             else:
-                data={'action':'ask_user','message':'这段经历上线或交付后，带来了哪些实际变化？','slot':'effect','related_source_ids':[],'rationale':'确认实际效果'}
+                data={'action':'ask_user','message':'这段经历做完或交付后，带来了哪些实际变化？','slot':'effect','related_source_ids':[],'rationale':'确认实际效果'}
         elif self.proposed:
             data={'action':'finish','outcome':'completed'}
         else:

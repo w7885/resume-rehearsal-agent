@@ -48,7 +48,7 @@ class IntakeServiceTests(unittest.TestCase):
         self.setup_input()
         result = self.discover()
         self.assertEqual(result['status'], 'partial')
-        self.assertEqual(self.sent[0]['Query'], '工程实习')
+        self.assertEqual(self.sent[0]['Query'], '工程实习 招聘 岗位职责 任职要求')
         with self.assertRaises(WebProviderError) as error:
             self.discover('invented', PublicSearchIntent(company='不存在公司', role='工程实习'))
         self.assertEqual(error.exception.code, 'unanchored_public_intent')

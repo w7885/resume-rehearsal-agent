@@ -175,7 +175,7 @@ class CandidateTests(unittest.TestCase):
                 candidates.offer(c, s, episode_id=state['episodeId'],
                     expected_revision=state['revision'], candidates=[{**self.candidate, 'referenceId': 'other-session-ref'}])
 
-    def body(self, *, selected=True, text='构造公司 工程实习\n岗位职责：负责接口开发和测试。'):
+    def body(self, *, selected=True, text='构造公司 工程实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。'):
         state = self.prompted()
         if selected:
             self.choose(state)
@@ -189,14 +189,22 @@ class CandidateTests(unittest.TestCase):
         self.bridge = AgentWebBridge(runtime)
         self.body_id = ref['referenceId']
         return Evidence(reference_id=self.body_id, match='matched', company_quote='构造公司',
-                        role_quote='工程实习', duties_quote='负责接口开发和测试')
+                        role_quote='工程实习', duties_quote='负责接口开发和测试',
+                        requirements_quote='熟悉Python')
 
-    def test_selected_body_with_only_duties_is_usable_but_not_published(self):
+    def test_selected_body_with_duties_and_requirements_is_usable_but_not_published(self):
         proof = self.body()
         verdict = self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'), self.body_id, proof)
         self.assertEqual(verdict, 'accepted')
         with database(self.path) as c:
             self.assertEqual(c.execute('select count(*) from external_assessments').fetchone()[0], 0)
+
+    def test_body_with_only_duties_is_not_qualified(self):
+        # 列表/聚合页常能凑出一句职责，缺任职要求说明不是单个岗位详情页。
+        proof = self.body()
+        proof.requirements_quote = ''
+        self.assertEqual(self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'),
+            self.body_id, proof), 'needs_body')
 
     def test_body_without_user_selection_remains_unconfirmed(self):
         proof = self.body(selected=False)

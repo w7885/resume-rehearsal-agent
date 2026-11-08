@@ -193,6 +193,46 @@ class IntakeHostTests(unittest.TestCase):
         with database(self.path) as c:
             self.assertEqual(len(web_intake.load(c, session['sessionId'])['candidates']), 1)
 
+    def test_list_and_aggregate_pages_are_not_offered_as_candidates(self):
+        from app.web_intake_host import _list_page_url
+        for url in ('https://m.liepin.com/s/82f59e87ee8339d7ff62799a89f31fb4/pn6/',
+                    'https://m.liepin.com/zpxiaoshougang/',
+                    'https://m.58.com/w/ppezw1020/',
+                    'https://www.zhaopin.com/sou/jl636/kwHM2LS0JK0Q6IEL2O/p1',
+                    'https://m.zhipin.com/zhaopin/cf9516b9b794444003B50tW4EA~~/',
+                    'https://www.shixiseng.com/interns?keyword=x'):
+            self.assertTrue(_list_page_url(url), url)
+        for url in ('https://m.zhaopin.com/jobs/CC560902920J40775926606.htm',
+                    'https://msearch.51job.com/jobs/wuxi-xsq/174019992.html',
+                    'https://www.zhipin.com/job_detail/a99cf9190b2671a81Hx52tW_F1BT.html',
+                    'https://zhaopin.meituan.com/m/position/detail?jobUnionId=1',
+                    'https://www.shixiseng.com/intern/inn_abc123',
+                    'https://example.com/jobs/1'):
+            self.assertFalse(_list_page_url(url), url)
+
+    def test_unclear_list_row_does_not_abort_the_candidate_batch(self):
+        # 列表页的岗位行常缺公司名；模型偶尔仍会列出，不能让一条坏候选作废整批。
+        class MixedClient(IntakeClient):
+            async def complete_json(self, *, system, user, run_id='test'):
+                if system.startswith('提取公开岗位候选'):
+                    ref = json.loads(user)['references'][0]
+                    return SimpleNamespace(data={'candidates': [
+                        {'referenceId': ref['referenceId'], 'company': '', 'role': '销售代表',
+                         'location': '广州', 'employmentType': ''},
+                        {'referenceId': ref['referenceId'], 'company': '构造公司', 'role': '工程实习',
+                         'location': '广州', 'employmentType': '实习'}]})
+                return await super().complete_json(system=system, user=user, run_id=run_id)
+        session = self.ready()
+        self.host.client_factory = lambda runtime, budget: MixedClient(runtime)
+        self.user_turn(session, '请按目标岗位整理技能。', 'explore')
+        value = self.conversation(session)
+        self.assertIn('候选', value['messages'][-1]['content'])
+        self.assertNotIn('本次联网读取或核对未完成', value['messages'][-1]['content'])
+        with database(self.path) as c:
+            state = web_intake.load(c, session['sessionId'])
+        self.assertEqual(len(state['candidates']), 1)
+        self.assertEqual(state['candidates'][0]['company'], '构造公司')
+
     def test_candidate_extraction_tolerates_echoed_type_field(self):
         class EchoTypeClient(IntakeClient):
             async def complete_json(self, *, system, user, run_id='test'):

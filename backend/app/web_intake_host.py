@@ -60,6 +60,27 @@ def owns_turn(runtime, turn):
     return False
 
 
+# 已知招聘站的搜索/列表页路径；未知站点放行，避免误杀其它来源的详情页。
+# ponytail: 站点路径会变，命中新形态时补这里，别改成白名单。
+_LIST_PAGE_PATH = re.compile(
+    r'(?i)/(?:s|sou|w|zhaopin|company-jobs|city-[a-z0-9-]+|zp[a-z0-9]+|interns)(?:/|$|\?)')
+
+
+def _list_page_url(url):
+    return bool(_LIST_PAGE_PATH.search(url))
+
+
+def _usable_candidate(item, sources):
+    """Drop unclear or list-page candidates instead of failing the whole batch."""
+    ref = sources.get(item['referenceId'])
+    if ref is None or _list_page_url(ref['url']):
+        return False
+    text = ref['title'] + '\n' + ref['content']
+    return (len(item['company'].strip()) >= 2 and len(item['role'].strip()) >= 2
+            and all(not item[name] or item[name] in text
+                    for name in ('company', 'role', 'location', 'employmentType')))
+
+
 class Intake:
     def __init__(self, runtime):
         self.r = runtime
@@ -129,6 +150,9 @@ class Intake:
                             '可补充条件或JD正文，也可回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
         items = await self.candidates(refs)
+        # 列表页的岗位行常缺公司名，模型也可能拼出原文没有的标签；逐条丢弃，不让一条坏候选作废整批。
+        sources = {ref['referenceId']: ref for ref in refs}
+        items = [item for item in items if _usable_candidate(item, sources)]
         if not items:
             return self.ask('未取得公司和岗位可对应的候选。可补充岗位名称、JD正文，或回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
@@ -148,7 +172,7 @@ class Intake:
             '只输出JSON对象，唯一字段assessments数组，每个引用恰好一项。字段为reference_id、match'
             '(matched/mismatch/unconfirmed)、company_quote、role_quote、location_quote、type_quote、'
             'posting_id_quote、duties_quote、requirements_quote、content_quote、jd_conflict。'
-            'quote逐字来自该引用，不拼接岗位；职责或要求至少一项具体正文6字符，缺失项空字符串。'
+            'quote逐字来自该引用，不拼接岗位；岗位职责和任职要求各取至少6字符具体正文，缺失项空字符串。'
             '类型未知不猜测，JD冲突则jd_conflict=true。',
             {'target': target.__dict__, 'userJD': self.bridge.state()[0]['jd'][:6000],
              'references': [{'reference_id': ref['referenceId'], 'title': ref['title'],

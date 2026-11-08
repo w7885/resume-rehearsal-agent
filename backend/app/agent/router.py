@@ -185,6 +185,24 @@ def _load_docs(
     return docs
 
 
+def _foreign_segment(quote, focus_doc, docs):
+    """回答逐字命中另一段原文时，不记到当前段，避免跨经历串答。"""
+    value = re.sub(r'\s+', '', quote or '')
+    # 短词（如“使用Python”）可能两段都适用，只拦较完整的句子。
+    if focus_doc is None or len(value) < 10:
+        return None
+    focus_text = re.sub(r'\s+', '', (focus_doc.title or '') + focus_doc.raw_text)
+    if value in focus_text:
+        return None
+    for doc in docs:
+        if doc.experience_id == focus_doc.experience_id:
+            continue
+        text = re.sub(r'\s+', '', (doc.title or '') + doc.raw_text)
+        if value in text:
+            return doc
+    return None
+
+
 def _phases(ctx: SessionContext, docs: list[ExperienceDoc]) -> dict[str, Phase]:
     suggestions = {s.suggestion_id: s for s in ctx.suggestions}
     return {
@@ -499,6 +517,13 @@ async def _execute(
     if action == 'refuse' and decision.scope == 'whole_resume':
         sink.emit('notice', code=action, text='已暂停本轮，不再追问；已有消息与当前稿保留。')
         close('cancelled', action=action)
+        return
+
+    foreign = _foreign_segment(decision.answer_quote, focus_doc, docs)
+    if foreign is not None:
+        sink.emit('notice', code='answer_other_segment',
+                  text=context_reply(focus_doc, f'这句内容更像属于「{foreign.title}」这一段。'))
+        close('waiting_user', action=action)
         return
 
     if focus_doc is not None and decision.answer_quote and message_id:

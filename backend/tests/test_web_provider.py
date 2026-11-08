@@ -40,12 +40,20 @@ class PublicQueryTests(unittest.TestCase):
         self.assertEqual(target.key, PublicTarget('SAP','工程实习','上海','实习','REF2624S').key)
         self.assertNotEqual(target.key, PublicTarget('SAP','工程实习','广州','实习','REF2624S').key)
 
-    def test_direction_only_discovery_query_adds_recruitment_keyword(self):
-        # 只给“销售”这类方向时，裸词会搜到行业文章；补“招聘”才能落到岗位页。
-        self.assertEqual(PublicSearchIntent(direction='销售').query(), '销售 招聘')
+    def test_discovery_query_biases_toward_detail_pages(self):
+        # 只用方向/职位词会命中招聘列表页；补职责/要求关键词才能落到单个岗位详情页。
+        suffix = ' 招聘 岗位职责 任职要求'
+        self.assertEqual(PublicSearchIntent(direction='销售').query(), '销售' + suffix)
         self.assertEqual(PublicSearchIntent(company='构造公司', direction='销售').query(),
-                         '构造公司 销售 招聘')
-        self.assertEqual(PublicSearchIntent(role='工程实习').query(), '工程实习')
+                         '构造公司 销售' + suffix)
+        self.assertEqual(PublicSearchIntent(role='工程实习').query(), '工程实习' + suffix)
+
+    def test_overlong_discovery_query_drops_suffix_before_failing(self):
+        # 字段接近上限时先放弃关键词，而不是让整次搜索失败。
+        query = PublicSearchIntent(company='甲' * 45, role='乙' * 45).query()
+        self.assertEqual(query, '甲' * 45 + ' ' + '乙' * 45)
+        with self.assertRaises(WebProviderError):
+            PublicSearchIntent(company='公' * 60, role='岗' * 80).query()
 
     def test_contact_information_multiline_and_overlong_queries_rejected(self):
         for company in ('用户@example.com','联系电话13800138000','第一行\n第二行','https://example.com'):

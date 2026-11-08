@@ -22,7 +22,7 @@ from app.agent.schemas import (
     ToolStep,
 )
 from app.agent.tools import TOOL_SPECS, parse_args
-from app.agent.questions import MAX_QUESTION_LENGTH, needs_detail
+from app.agent.questions import MAX_QUESTION_LENGTH, needs_detail, needs_effect_detail
 from app.agent.section_policy import EXPERIENCE_KINDS
 from app.agent.claim_text import claim_comparison_text
 
@@ -291,6 +291,20 @@ def _no_information(before: str, after: str) -> bool:
             and len((after or '').strip()) > len((before or '').strip()))
 
 
+def verified_evidence(step, state: GuardState) -> tuple[str, str] | tuple[None, None]:
+    """只认逐字来自当前联网参考的岗位要求引用，其余标注视为普通问句。"""
+    if not (step.evidence_ref and step.evidence_quote
+            and step.slot in _EVIDENCE_SLOTS):
+        return None, None
+    requirements = (state.session.web_context or {}).get('requirements') or []
+    match = next((item for item in requirements
+                  if item.get('requirementId') == step.evidence_ref), None)
+    quote = step.evidence_quote.strip()
+    if match is not None and len(quote) >= 4 and quote in (match.get('quote') or ''):
+        return step.evidence_ref, step.evidence_quote
+    return None, None
+
+
 def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     text = step.message.strip()
     marks = text.count("？") + text.count("?")
@@ -315,24 +329,10 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
     if any(word.lower() in text.lower() for word in _UNANSWERABLE):
         return Violation("question_unanswerable", "不能要求用户查后台数据")
 
-    # 证据校验必须在 declined 放行之前：没有可信证据就不能打开已拒绝槽位。
-    evidence = None
-    if step.evidence_ref or step.evidence_quote:
-        if not (step.evidence_ref and step.evidence_quote):
-            return Violation("question_evidence_invalid",
-                             "引用岗位要求时须同时给出编号和原文", True)
-        if step.slot not in _EVIDENCE_SLOTS:
-            return Violation("question_evidence_invalid",
-                             "该问题不属于可按岗位要求引导的经历维度", False)
-        requirements = (state.session.web_context or {}).get('requirements') or []
-        match = next((item for item in requirements
-                      if item.get('requirementId') == step.evidence_ref), None)
-        quote = step.evidence_quote.strip()
-        if (match is None or len(quote) < 4
-                or quote not in (match.get('quote') or '')):
-            return Violation("question_evidence_unverified",
-                             "岗位要求引用须逐字来自当前联网参考", True)
-        evidence = (step.evidence_ref, step.evidence_quote)
+    # 证据标注只是可选增强：非逐字引用或残缺标注按普通问句处理，
+    # 但不获得“重开已拒绝槽位”和数字豁免。
+    ref, verified_quote = verified_evidence(step, state)
+    evidence = (ref, verified_quote) if ref else None
 
     if state.focus_doc is not None:
         if needs_detail(state.focus_doc) and step.slot in {
@@ -364,10 +364,6 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
         if not evidence and any(question_similarity(q.text, text) >= 0.6 for q in recent):
             return Violation("question_repeat", "最近已经问过类似问题")
         if step.slot is not None:
-            supported = supported_experience_slots(state.focus_doc,
-                source_texts=state.source_texts, source_kinds=state.source_kinds)
-            if step.slot in supported and step.slot in {'responsibility', 'action', 'effect'}:
-                return Violation('question_answered', '个人材料已明确支持该维度，不要重复询问。', True)
             if step.slot == 'effect' and effect_state(state.focus_doc) == 'absent':
                 return Violation('question_declined', '效果已明确没有、拒答或达到追问上限，按已有事实处理。', True)
             if step.slot == "confirm":
@@ -378,9 +374,9 @@ def _question_violation(step: AskStep, state: GuardState) -> Violation | None:
             return Violation("question_cross_segment", "不能提及其他经历")
 
     compact = re.sub(r"\s+", "", _evidence_text(state))
-    # 岗位要求原文里的数字是引用的要求，不是个人事实，不能按“新数字”拦截。
-    if step.evidence_quote:
-        compact += re.sub(r"\s+", "", step.evidence_quote)
+    # 只有逐字核验过的岗位要求原文才豁免数字检查。
+    if verified_quote:
+        compact += re.sub(r"\s+", "", verified_quote)
     for number in _NUMBER.findall(text):
         if number not in compact:
             return Violation("question_new_number", "问题里不能出现事实中没有的数字")
@@ -491,7 +487,7 @@ def check(decision: StepDecision, state: GuardState) -> GuardResult:
                 for question in state.focus_doc.questions
                 if question.slot == "effect"
             )
-            if effect_questions >= 2:
+            if effect_questions >= 2 and not needs_effect_detail(state.focus_doc):
                 return GuardResult(
                     violation=Violation(
                         "effect_exhausted", EFFECT_EXHAUSTED_TEXT, True
