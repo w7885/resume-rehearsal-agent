@@ -429,7 +429,9 @@ class UncertainSpanNormalizeTests(unittest.TestCase):
         self.assertEqual(result.uncertain_spans, ['具体线上效果忘了。'])
 
 
-from app.agent.prompts import build_decide_prompt, build_router_prompt, build_system_prompt
+from app.agent.prompts import (
+    build_decide_prompt, build_route_prompt, build_router_prompt, build_system_prompt,
+)
 
 
 class PromptContractTests(unittest.TestCase):
@@ -444,6 +446,11 @@ class PromptContractTests(unittest.TestCase):
         self.assertIn('evidence_quote', prompt)
         self.assertIn('evidence_ref', prompt)
         self.assertIn('每维度最多这样追问一次', prompt)
+
+    def test_prompts_restrict_answer_quote_to_first_person_facts(self):
+        self.assertIn('他人转述', build_router_prompt())
+        self.assertIn('他人转述', build_route_prompt())
+        self.assertIn('假设、转述或示例', build_decide_prompt(''))
 
     def test_system_prompt_limits_requirement_followup(self):
         self.assertIn('可逐字引用的岗位要求', build_system_prompt())

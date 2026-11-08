@@ -222,22 +222,21 @@ async def _get_experience_memory(
 
 def _literal_fact_source(current, statement):
     statement=statement.strip().strip('。；;')
-    uncertain=re.compile(r'如果|假如|假设|是否|能否|可否|计划|打算|希望|想写|备考|不确定|记不清|可能|[?？]')
     negative=re.compile(r'没有|并非|不是|不具备|不掌握|不熟悉|不精通|不了解|不擅长|不会|没用过|没做过|尚未|暂无|未(?:曾|使用|取得|获得|具有|持有|拥有|掌握|熟悉|精通|参与|负责|完成|上线)')
     if not statement:return None
     for source in current.sources:
         if source.kind not in {'resume','supplement'}:continue
         for clause in re.split(r'[\n，,。；;！!]|但是|不过|然而|但',source.text):
             clause=clause.strip()
-            if statement not in clause or uncertain.search(clause):continue
+            if statement not in clause:continue
             if negative.search(clause) and not negative.search(statement):continue
             return SourceRef(source_id=source.source_id,source_revision=source.source_revision,quote=clause)
         # Models can combine adjacent clauses from the same user sentence into
         # one fact. Accept that exact span without crossing a sentence boundary
-        # or admitting omitted uncertainty/negation.
+        # or admitting omitted negation.
         for sentence in re.split(r'[\n。；;！!]',source.text):
             sentence=sentence.strip()
-            if statement not in sentence or uncertain.search(sentence):continue
+            if statement not in sentence:continue
             if negative.search(sentence) and not negative.search(statement):continue
             return SourceRef(source_id=source.source_id,source_revision=source.source_revision,quote=statement)
     return None

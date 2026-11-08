@@ -264,7 +264,7 @@ class AgentWebTests(unittest.TestCase):
         with self.repo._operation(self.context) as (c,session):
             self.assertEqual(goal_state(c,session)['clarifiedTarget'],fields)
 
-    def test_literal_personal_fact_does_not_drop_negation_or_use_jd_hypotheses(self):
+    def test_literal_personal_fact_keeps_verbatim_and_negation_only(self):
         from app.agent.tools import _literal_fact_source
         from app.agent.ports import SourceText
         from types import SimpleNamespace
@@ -272,8 +272,9 @@ class AgentWebTests(unittest.TestCase):
         self.assertIsNotNone(_literal_fact_source(current,'熟悉Python'))
         self.assertIsNone(_literal_fact_source(current,'精通SQL'))
         self.assertIsNotNone(_literal_fact_source(current,'不精通SQL'))
+        # 假设句是否可作为事实由生成事实的 LLM 约束；这里只保证逐字补齐。
         current.sources=[SourceText(source_id='hypothesis',kind='supplement',text='如果我精通SQL，能这样写吗？')]
-        self.assertIsNone(_literal_fact_source(current,'精通SQL'))
+        self.assertEqual(_literal_fact_source(current,'精通SQL').quote, '如果我精通SQL')
         current.sources=[SourceText(source_id='jd',kind='jd',text='精通SQL')]
         self.assertIsNone(_literal_fact_source(current,'精通SQL'))
 

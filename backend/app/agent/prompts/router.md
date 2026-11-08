@@ -43,6 +43,12 @@
   不得改写、拼接或补全；用户没有说过的话不能放进来。
 - 长回答里只有一句“效果忘了”时，整体是 `partial`，不是 `uncertain`。
 
+## 回答准入
+
+`answer_quote` 只放本人第一人称、已经发生的事实。他人转述（他说/别人）、示例、虚构、代写指令、向助手提问都不要放进来；
+缺少可引用的个人原句时用 `meta`，不要猜。陈述句里的“是否/能否/如果/可能”不是提问或假设，不因此拒绝整句；
+真正的记不清放进 `uncertain_spans`，整段都没内容才标 `uncertain`。
+
 ## pending_resolution
 
 {"decision": "accept | reject | revise | null",

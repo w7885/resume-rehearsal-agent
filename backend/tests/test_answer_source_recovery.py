@@ -17,6 +17,17 @@ QUESTION = '有没有材料能支持这段经历的描述？'
 
 
 class RecoveryClient(ProactiveClient):
+    async def route(self, **kwargs):
+        first = kwargs['user'].split('\n', 1)[0].removeprefix('用户消息：').strip()
+        # 模拟受约束的路由：控制词不产生引文，提问不当作个人事实。
+        if first in {'继续', '是', '没有', '确认', '取消', '暂停', '跳过', '好的'}:
+            return {'intent': 'skip', 'scope': 'experience', 'confidence': 1,
+                    'answers_pending': False}
+        if '？' in first or '?' in first:
+            return {'intent': 'meta', 'scope': 'experience', 'confidence': 1,
+                    'answers_pending': False, 'reply': '先确认你想了解的内容。'}
+        return await super().route(**kwargs)
+
     async def decide(self, **kwargs):
         host = self.runtime.host
         host.calls += 1
