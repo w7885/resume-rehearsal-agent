@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from app import db
 from app.agent.memory import load_experience
-from app.agent_answer_sources import factual_answer
 from app.agent_state import GuardedStateStore
 from app.repository import Repository, RequestContext
 from test_proactive_flow import ProactiveClient
@@ -138,12 +137,3 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.count('source_blocks'), before)
         self.assertTrue(any(m['content'] == EVIDENCE for m in self.conversation(session)['messages']))
         self.assertEqual(self.pending(session), [])
-
-
-class AnswerAdmissionTests(unittest.TestCase):
-    def test_control_hypothetical_and_other_person_text_stays_chat_only(self):
-        for text in ('继续', '是', '没有', '如果效率提升30%', '他说主导开发', '请帮我写成负责人', '直接改写吧', '好像用了sqlite3'):
-            with self.subTest(text=text):
-                self.assertFalse(factual_answer(text))
-        self.assertTrue(factual_answer(ANSWER))
-        self.assertTrue(factual_answer('没有使用框架，我用sqlite3保存数据。'))

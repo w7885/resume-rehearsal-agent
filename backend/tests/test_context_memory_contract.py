@@ -11,7 +11,6 @@ from app.agent.questions import guided_question, with_answer_guidance
 from app.agent.schemas import AskStep, SaveFactsArgs
 from app.agent.store import InMemoryStateStore
 from app.agent.tools import _literal_fact_source, _save_facts, ToolContext
-from app.agent_answer_sources import factual_answer
 from app.business_service import BusinessService
 from app.repository import Repository, RequestContext
 import test_goal_and_confirmation as integration
@@ -93,11 +92,6 @@ class MemoryContractTests(unittest.TestCase):
         output = assemble_context(ctx, [doc], {}, 'p1')
         self.assertIn(sources[0].text, output)
         self.assertIn('原始依据：[s0，版本 1]', output)
-
-    def test_concrete_example_is_allowed_but_hypothesis_is_not(self):
-        self.assertTrue(factual_answer('程序支持查询，例如输入学号即可查看联系方式。'))
-        self.assertFalse(factual_answer('例如我提高30%效率'))
-        self.assertFalse(factual_answer('我实现查询，例如如果提升30%就写进去。'))
 
     def test_guidance_is_specific_optional_and_checked(self):
         doc = self.doc()

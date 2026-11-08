@@ -1,32 +1,10 @@
 """A-owned bridge from answered interview turns to scoped, quotable sources."""
 from dataclasses import replace
 import json
-import re
 
 from app.agent.ports import SourceRef
 from app.agent_state import GuardedStateStore
 from app.repository import Repository, RequestContext
-
-
-_NONFACT = re.compile(
-    r'如果|假如|假设|比如|例如|是否|能否|能不能|可以.{0,15}[吗么？?]|[？?]|'
-    r'他说|她说|别人|他人|示例|虚构|编造|帮我写|写成|改成|忽略.{0,8}(?:规则|指令)|'
-    r'不确定|不清楚|记不清|好像|可能|应该吧|大概吧|'
-    r'直接改|别问|不用问|^(?:请|帮我|替我|给我).{0,20}(?:改|写|润色|优化)|'
-    r'^(?:太(?:冗余|啰嗦|口语|随意|长)|精简(?:些|一点)|更正式)'
-)
-_CONTROL = {'是', '是的', '有', '有的', '没有', '可以', '确认', '采用', '继续', '跳过', '取消', '暂停'}
-
-
-def factual_answer(text):
-    """Conservative admission; rejected/mixed answers remain saved as chat."""
-    checked = text
-    if re.search(r'比如|例如', text):
-        head = re.split(r'比如|例如', text, maxsplit=1)[0]
-        if not re.search(r'我(?:负责|使用|实现|完成|新增)|(?:程序|系统|项目|功能).{0,10}(?:支持|实现|提供)|实际变化|变化.{0,10}省|以前我们', head):
-            return False
-        checked = re.sub(r'比如|例如', '', text)
-    return bool(text.strip()) and text.strip().rstrip('。！!') not in _CONTROL and not _NONFACT.search(checked)
 
 
 def bind_answers(adapter, session_id, doc):
@@ -61,8 +39,6 @@ def bind_answers(adapter, session_id, doc):
                     continue
             else:
                 quote = row['content']
-            if not factual_answer(quote):
-                continue
             # Never resurrect a source that was later corrected/retired by a user.
             sources = connection.execute('SELECT * FROM source_blocks WHERE session_id=? AND message_id=? ORDER BY rowid DESC', (session_id, message_id)).fetchall()
             if sources:

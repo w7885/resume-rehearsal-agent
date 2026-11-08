@@ -321,6 +321,33 @@ class RouteMessageInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.used_model)
 
 
+ACTUAL_ANSWER = ('我负责菌株筛选的判定标准，是否观察抑菌圈实验结果和记录，'
+                 '以及数据整理与报告撰写。')
+
+
+class StructuralAnswerGateTests(unittest.IsolatedAsyncioTestCase):
+    async def route(self, message, quote):
+        ctx = SessionContext(session=SessionInfo(session_id='s1'))
+        ctx.session.current_focus_id = 'blk_1'
+        return await route_message(
+            message=message, ctx=ctx, docs=_docs(), phases={}, pending=None,
+            has_pending_question=True, llm=NoCallLLM(),
+            decision=RouterOutput.model_validate({
+                'intent': 'answer', 'scope': 'experience', 'confidence': 0.9,
+                'answers_pending': True, 'answer_quote': quote,
+            }))
+
+    async def test_declarative_whether_answer_is_kept(self):
+        result = await self.route(ACTUAL_ANSWER, ACTUAL_ANSWER)
+        self.assertEqual(result.action, 'answer')
+        self.assertEqual(result.answer_quote, ACTUAL_ANSWER)
+
+    async def test_mid_sentence_quote_is_rejected(self):
+        result = await self.route('他说主导开发。', '主导开发。')
+        self.assertEqual(result.action, 'meta')
+        self.assertIsNone(result.answer_quote)
+
+
 from app.agent.memory import ExperienceDoc, record_answer, record_question
 from app.agent.router import _answer_record, _map_uncertain_fields, _quality_from_text
 

@@ -172,13 +172,14 @@ class DialogueControlTests(unittest.TestCase):
         self.assertEqual(session.goal, '')
         self.assertFalse(any(kind == 'decide' for kind, _ in llm.calls))
 
-    def test_fragment_validation_keeps_negation_hypotheses_and_sentence_boundaries(self):
+    def test_fragment_validation_keeps_negation_and_sentence_boundaries(self):
         for text, quote in [('我不熟悉Python。', '熟悉Python。'),
                             ('如果我负责测试，完成接口验证。', '完成接口验证。'),
-                            ('假设是这样？我熟悉Python。', '我熟悉Python。'),
                             ('我负责接口测试。', '负责接口测试。')]:
             with self.subTest(text=text, quote=quote):
                 self.assertIsNone(factual_quote(text, quote))
+        # 跨句引用只受句界约束；前一句是否假设由路由判断，不再用词表猜。
+        self.assertEqual(factual_quote('假设是这样？我熟悉Python。', '我熟悉Python。'), '我熟悉Python。')
         quote = '我负责接口测试。'
         self.assertEqual(factual_quote(quote + '为什么要问？', quote), quote)
 
