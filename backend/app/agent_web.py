@@ -60,13 +60,22 @@ def _plain(text):
     return re.sub(r'[\W_]+', '', text).casefold()
 
 
-def _same(expected, quote):
-    left, right = _plain(expected), _plain(quote)
-    aliases = {'广州':'guangzhou', '上海':'shanghai', '北京':'beijing',
-               '实习':'intern', '实习生':'intern', 'internship':'intern',
-               '校招':'campus', '校园招聘':'campus', '正式招聘':'fulltime', '全职':'fulltime'}
-    left, right = aliases.get(left,left), aliases.get(right,right)
-    return bool(len(left)>=2 and len(right)>=2 and left in right)
+_ALIASES = {'广州':'guangzhou', '上海':'shanghai', '北京':'beijing',
+            '实习生':'intern', '实习':'intern', 'internship':'intern',
+            '校招':'campus', '校园招聘':'campus', '正式招聘':'fulltime', '全职':'fulltime'}
+
+
+def _canonical(text):
+    text = _plain(text)
+    for source in sorted(_ALIASES, key=len, reverse=True):
+        text = text.replace(source, _ALIASES[source])
+    return text
+
+
+def _supports(expected, evidence):
+    """字段只需被逐字证据支持，不要求证据与字段同名或落在同一 quote。"""
+    left, right = _canonical(expected), _canonical(evidence)
+    return len(left) >= 2 and left in right
 
 
 def sufficient_jd(text):
@@ -270,7 +279,7 @@ class AgentWebBridge:
             self.pending_target=True
             return 'clarify'
 
-    def _verdict(self, target, ref, proof, purpose, *, partial_body=False):
+    def _verdict(self, target, ref, proof, purpose, *, partial_body=False, company_via_selection=False):
         if ref['hiringStatus'] in ('closed','conflict'):
             return ref['hiringStatus']
         if proof.match != 'matched':
@@ -281,15 +290,17 @@ class AgentWebBridge:
         quotes = [v for k,v in proof.model_dump().items() if k.endswith('_quote') and v]
         if any(q not in text for q in quotes):
             return 'unconfirmed'
-        if not _same(target.company,proof.company_quote):
+        evidence = '\n'.join(quotes)
+        # 搜索服务常抽不到详情页里的公司名；用户选中的候选已绑定同一 URL 与公司。
+        if not company_via_selection and not _supports(target.company, evidence):
             return 'mismatch'
         if purpose != 'job_requirements':
             return 'accepted' if len(proof.content_quote.strip())>=10 else 'needs_body'
-        if not _same(target.role,proof.role_quote):
+        if not _supports(target.role, evidence):
             return 'mismatch'
-        if target.location and not _same(target.location,proof.location_quote):
+        if target.location and not _supports(target.location, evidence):
             return 'mismatch'
-        if (target.employment_type or not partial_body) and not _same(target.employment_type,proof.type_quote):
+        if (target.employment_type or not partial_body) and not _supports(target.employment_type, evidence):
             return 'mismatch'
         kind_patterns = {'实习': r'实习|\bintern(?:ship)?\b', '校园招聘': r'校招|校园招聘|\bcampus\b',
                          '正式招聘': r'正式|全职|\bfull[ -]?time\b|\bpermanent\b'}
@@ -334,6 +345,7 @@ class AgentWebBridge:
                 (session['session_id'], row['request_id'])).fetchone()
             import json
             payload = json.loads(request['input_json'])
+            selected = None
             if payload.get('sourceKind') != 'user_jd':
                 selected = next((item for item in state['candidates']
                                  if item['candidateId'] == state['selectedCandidateId']), None)
@@ -352,7 +364,8 @@ class AgentWebBridge:
             if has_status_conflict(connection, session['session_id'], '', row):
                 return 'conflict'
             ref = {**public_reference(row), '_body_verified': True}
-            return self._verdict(target, ref, proof, 'job_requirements', partial_body=True)
+            return self._verdict(target, ref, proof, 'job_requirements',
+                                 partial_body=True, company_via_selection=selected is not None)
 
     async def _assess(self, goal, revision, target, refs, purpose):
         self.ensure(goal['hash'],revision)

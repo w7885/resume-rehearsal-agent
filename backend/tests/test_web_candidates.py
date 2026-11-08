@@ -199,6 +199,28 @@ class CandidateTests(unittest.TestCase):
         with database(self.path) as c:
             self.assertEqual(c.execute('select count(*) from external_assessments').fetchone()[0], 0)
 
+    def test_selected_body_without_company_name_uses_candidate_binding(self):
+        # 详情页正文可能抽不到公司名；选中候选已绑定同一 URL 与公司。
+        proof = self.body(text='工程实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote = ''
+        self.assertEqual(self.bridge.intake_body_verdict(PublicTarget('构造公司', '工程实习'),
+            self.body_id, proof), 'accepted')
+
+    def test_single_line_quote_satisfies_location_and_type_together(self):
+        # 详情页常把“城市 类型”写在同一行；整行引用不能因别名替换而失配。
+        proof = self.body(text='工程实习\n上海 实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote, proof.location_quote, proof.type_quote = '', '上海 实习', '上海 实习'
+        self.assertEqual(self.bridge.intake_body_verdict(
+            PublicTarget('构造公司', '工程实习', '上海', '实习'), self.body_id, proof), 'accepted')
+
+    def test_field_evidence_may_come_from_a_different_quote(self):
+        # 字段只需逐字证据支持，不要求模型把证据放进与字段同名的 quote。
+        proof = self.body(text='工程实习\n上海 实习\n岗位职责：负责接口开发和测试。\n任职要求：熟悉Python。')
+        proof.company_quote = proof.location_quote = proof.type_quote = ''
+        proof.content_quote = '上海 实习'
+        self.assertEqual(self.bridge.intake_body_verdict(
+            PublicTarget('构造公司', '工程实习', '上海', '实习'), self.body_id, proof), 'accepted')
+
     def test_body_with_only_duties_is_not_qualified(self):
         # 列表/聚合页常能凑出一句职责，缺任职要求说明不是单个岗位详情页。
         proof = self.body()
