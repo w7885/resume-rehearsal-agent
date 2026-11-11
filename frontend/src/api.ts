@@ -48,7 +48,7 @@ function isDetail(value: unknown): value is Detail {
     (record.issues as unknown[]).every(i => object(i) && typeof i.issueId === 'string' && typeof i.summary === 'string' && typeof i.status === 'string' && typeof i.isCurrent === 'boolean' && references(i.sourceRefs)) &&
     (record.events as unknown[]).every(e => object(e) && typeof e.runId === 'string' && integer(e.sequence) && typeof e.type === 'string' && typeof e.mode === 'string' && object(e.payload) && (e.payload.message === undefined || typeof e.payload.message === 'string'));
 }
-async function http<T>(url: string, method: string, body?: unknown, check?: (v: unknown) => boolean, raw?: Blob, signal?: AbortSignal): Promise<T> {
+async function http<T>(url: string, method: string, body?: unknown, check?: (v: unknown) => boolean, raw?: Blob, signal?: AbortSignal, retryStorageRead = true, initialRead = false): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
@@ -57,7 +57,9 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
     if (response.status === 404 && (url.endsWith('/web-settings') || url.endsWith('/web-continuation'))) throw new ApiError('当前后端不支持该联网功能。', 'not_found');
     const envelope: unknown = await response.json().catch(() => {
-      if (response.status >= 500) throw new ApiError('后端暂时无法响应，保存结果未确认。请保留输入，恢复连接后重试。', 'service_unavailable');
+      if (response.status >= 500) throw new ApiError(method === 'GET'
+        ? '后端暂时无法响应，请稍后重试读取；已有输入仍保留。'
+        : '后端暂时无法响应，保存结果未确认。请保留输入，恢复连接后重试。', 'service_unavailable');
       throw new ApiError('服务返回格式异常；请保留输入，按原操作重试。', 'invalid_response');
     });
     if (!object(envelope) || typeof envelope.ok !== 'boolean') throw new ApiError('服务结果无法识别，请保留输入后重试。', 'invalid_response');
@@ -68,8 +70,20 @@ async function http<T>(url: string, method: string, body?: unknown, check?: (v: 
     if (!('data' in envelope) || (check && !check(envelope.data))) throw new ApiError('服务返回的数据不完整，请保留输入后重试。', 'invalid_response');
     return envelope.data as T;
   } catch (error) {
-    if (error instanceof ApiError) throw error;
-    throw new ApiError('无法确认保存结果。请检查服务连接，保留输入后重试；同一次操作不会重复保存。');
+    const failure = error instanceof ApiError ? error : new ApiError(method === 'GET'
+      ? controller.signal.aborted && !signal?.aborted
+        ? '读取服务响应超时，已有输入仍保留。请稍后重试。'
+        : '暂时无法连接服务以读取数据，已有输入仍保留。请稍后重试。'
+      : '无法确认保存结果。请检查服务连接，保留输入后重试；同一次操作不会重复保存。');
+    // History initialization gets one network/Auth recovery. Conversation
+    // network recovery remains owned by ConversationReadback (three GETs max).
+    // Never replay a write or a cancelled/version/permission failure.
+    if (method === 'GET' && retryStorageRead && !signal?.aborted &&
+        (failure.code === 'storage_failed' || (url === '/api/sessions' || initialRead) &&
+          ['network_error', 'service_unavailable', 'auth_unavailable'].includes(failure.code))) {
+      return http<T>(url, method, body, check, raw, signal, false, initialRead);
+    }
+    throw failure;
   } finally { clearTimeout(timeout); }
 }
 const path = (sid: string) => `/api/sessions/${encodeURIComponent(sid)}`;
@@ -92,11 +106,11 @@ export function uploadMaterial(sid: string, payload: { requestId: string; expect
 export type SessionDeleteWrite = { requestId: string; expectedStateRevision: number; confirmed: true };
 export type SessionRenameWrite = { requestId: string; expectedStateRevision: number; title: string };
 /** Read-only method discovery; no session data is created or modified. */
-export async function readRenameSupport(): Promise<boolean> {
+export async function readRenameSupport(signal?: AbortSignal): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await apiFetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: controller.signal });
+    const response = await apiFetch(`${path('__capability__')}/title`, { method: 'OPTIONS', cache: 'no-store', signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal });
     if (response.status === 204) return true;
     return (response.ok || response.status === 405) && (response.headers.get('Allow') ?? '').split(',').some(method => method.trim() === 'PATCH');
   } catch { return false; }
@@ -163,9 +177,11 @@ function isConversation(value: unknown): value is Conversation {
     Array.isArray(record.materials) && record.materials.every(isChatMaterial) && object(record.capabilities) &&
     typeof record.capabilities.agentAvailable === 'boolean' && typeof record.capabilities.decisionExecutionAvailable === 'boolean';
 }
-export const listChatSessions = () => http<ChatSession[]>('/api/sessions', 'GET', undefined, v => Array.isArray(v) && v.every(isChatSession));
+export const listChatSessions = (signal?: AbortSignal) => http<ChatSession[]>('/api/sessions', 'GET', undefined, v => Array.isArray(v) && v.every(isChatSession), undefined, signal);
 export const createChatSession = (payload: { requestId: string }) => http<ChatSession>('/api/chat/sessions', 'POST', payload, isChatSession);
 export const readConversation = (sid: string, signal?: AbortSignal) => http<Conversation>(`${path(sid)}/conversation`, 'GET', undefined, isConversation, undefined, signal);
+// Only startup owns this bounded recovery; run readback keeps its existing cap.
+export const readInitialConversation = (sid: string, signal: AbortSignal) => http<Conversation>(`${path(sid)}/conversation`, 'GET', undefined, isConversation, undefined, signal, true, true);
 export type ChatMessageWrite = { requestId: string; expectedStateRevision: number; content: string; attachmentIds: string[];replyToMessageId?:string };
 export const saveChatMessage = (sid: string, payload: ChatMessageWrite) => http<ChatMessageResult>(`${path(sid)}/chat/messages`, 'POST', payload,
   v => object(v) && isChatSession(v.session) && isChatMessage(v.message) && integer(v.stateRevision) && integer(v.draftRevision));

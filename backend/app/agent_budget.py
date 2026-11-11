@@ -37,7 +37,8 @@ class ProjectBudget:
     def status(self):
         with database(self.path) as connection, transaction(connection):
             account = self._account(connection)
-            reserved = connection.execute("SELECT coalesce(sum(reserved_cents),0) FROM model_budget_reservations WHERE status='reserved'").fetchone()[0]
+            # PostgreSQL SUM(bigint) is Decimal; the public cents contract is int.
+            reserved = int(connection.execute("SELECT coalesce(sum(reserved_cents),0) FROM model_budget_reservations WHERE status='reserved'").fetchone()[0])
             return {'limitCents': account['limit_cents'], 'spentCents': account['spent_cents'],
                     'reservedCents': reserved, 'remainingCents': max(0, account['limit_cents'] - account['spent_cents'] - reserved)}
 
