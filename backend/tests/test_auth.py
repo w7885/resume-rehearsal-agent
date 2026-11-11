@@ -21,6 +21,32 @@ SETTINGS = RemoteSettings('https://synthetic.supabase.co', 'synthetic-public-key
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_read_cleanup_failure_returns_safe_503_with_exact_cors_origin(self):
+        from contextlib import contextmanager
+        from unittest.mock import Mock
+        from app.postgres import Connection
+        import psycopg
+        sid = self.create()
+        repo = self.app.state.business_service.repository
+        scope = repo._connection_scope
+
+        @contextmanager
+        def failed_cleanup(*, write=False):
+            with scope(write=write) as connection:
+                yield connection
+                if not write:
+                    raw = Mock()
+                    raw.rollback.side_effect = psycopg.OperationalError('private-cleanup-details')
+                    Connection(raw).rollback()
+
+        with patch.object(repo, '_connection_scope', failed_cleanup):
+            result = self.request('GET', f'/api/sessions/{sid}/conversation')
+        self.assertEqual(result['status'], 503)
+        self.assertEqual(result['json']['error']['code'], 'storage_failed')
+        self.assertEqual(result['headers'][b'access-control-allow-origin'], SETTINGS.origins[0].encode())
+        self.assertNotIn(b'private-cleanup', result['body'])
+        self.assertEqual(self.request('GET', f'/api/sessions/{sid}/conversation')['status'], 200)
+
     def database_path(self, root):
         return root / 'auth.sqlite'
 
@@ -127,12 +153,111 @@ class AuthenticationTests(unittest.TestCase):
         response = self.request('OPTIONS','/api/sessions',token=None,headers={
             'access-control-request-method':'POST','access-control-request-headers':'authorization,content-type'})
         self.assertEqual(response['status'],200)
-        self.assertEqual(response['headers'][b'access-control-allow-origin'],b'https://app.example.com')
+        self.assertEqual(response['headers'][b'access-control-allow-origin'], SETTINGS.origins[0].encode())
         response = self.request('POST','/api/chat/sessions',body=b'x',headers={'content-length':str(2**30)})
         self.assertEqual(response['status'],413)
 
 
+class DevelopmentAuthenticationTests(AuthenticationTests):
+    """Run the existing ownership and failure suite through loopback Auth/CORS."""
+    def setUp(self):
+        local = replace(SETTINGS, public_host='127.0.0.1:3001',
+                        origins=('http://127.0.0.1:5173',))
+        settings = patch(__name__ + '.SETTINGS', local)
+        settings.start()
+        self.addCleanup(settings.stop)
+        super().setUp()
+
+    def request(self, method, path, **kwargs):
+        kwargs['headers'] = {'host': '127.0.0.1:3001', 'origin': 'http://127.0.0.1:5173',
+                             **kwargs.get('headers', {})}
+        return super().request(method, path, **kwargs)
+
+
 class RemoteConfigurationTests(unittest.TestCase):
+    def test_shared_transport_revalidates_tokens_and_is_owned_by_lifespan(self):
+        from app.auth import RemoteAccessGuard, verify_user
+        import httpx
+        from unittest.mock import Mock
+        async def exercise():
+            client = Mock()
+            client.get = AsyncMock(side_effect=[
+                httpx.Response(200, json={'id': USER_A, 'email': 'a@example.com', 'email_confirmed_at': 'confirmed'}),
+                httpx.Response(401),
+            ])
+            with patch('app.auth.auth_client') as factory:
+                self.assertEqual(await verify_user(SETTINGS, 'first', client=client), USER_A)
+                self.assertIsNone(await verify_user(SETTINGS, 'revoked', client=client))
+                factory.assert_not_called()
+            self.assertEqual(client.get.await_count, 2)
+            self.assertEqual(client.get.await_args_list[1].kwargs['headers']['Authorization'], 'Bearer revoked')
+            async def app(scope, receive, send):
+                self.assertIs(guard.client, client)
+                if scope['type'] == 'lifespan':
+                    with patch('app.auth.verify_user', new=AsyncMock(return_value=USER_A)) as verify:
+                        async def send_message(message):
+                            pass
+                        request = {'type': 'http', 'path': '/api/sessions', 'method': 'GET',
+                                   'headers': [(b'host', b'api.example.com'), (b'authorization', b'Bearer token')]}
+                        await guard(request, None, send_message)
+                        await guard(request, None, send_message)
+                        self.assertEqual(verify.await_count, 2)
+                        verify.assert_awaited_with(SETTINGS, 'token', client=client)
+                        self.assertIsNone(current_user.get())
+                else:
+                    self.assertEqual(current_user.get(), USER_A)
+                    await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            guard = RemoteAccessGuard(app, SETTINGS)
+            with patch('app.auth.auth_client') as factory:
+                factory.return_value.__aenter__.return_value = client
+                await guard({'type': 'lifespan'}, None, None)
+                factory.return_value.__aexit__.assert_awaited_once()
+            self.assertIsNone(guard.client)
+        asyncio.run(exercise())
+
+    def test_auth_uses_proxy_environment_only_in_explicit_development(self):
+        from app.auth import verify_user
+        import httpx
+        identity = {'id': USER_A, 'email': 'a@example.com',
+                    'email_confirmed_at': '2026-11-10T00:00:00Z'}
+        with asyncio.Runner() as runner:
+            for mode in ('development', 'remote', 'local', None):
+                env = {'APP_MODE': mode} if mode else {}
+                with self.subTest(mode=mode), patch.dict(os.environ, env, clear=True), \
+                        patch('app.auth.httpx.AsyncClient') as client:
+                    get = client.return_value.__aenter__.return_value.get
+                    get.return_value = httpx.Response(200, json=identity)
+                    self.assertEqual(runner.run(verify_user(SETTINGS, 'synthetic-token')), USER_A)
+                    client.assert_called_once_with(timeout=8, trust_env=mode == 'development',
+                                                   follow_redirects=False)
+                    get.assert_awaited_once_with('https://synthetic.supabase.co/auth/v1/user',
+                        headers={'apikey': SETTINGS.publishable_key,
+                                 'Authorization': 'Bearer synthetic-token'})
+
+    def test_development_requires_local_addresses_and_production_keeps_https(self):
+        env = {'APP_MODE': 'development', 'SUPABASE_URL': 'https://synthetic.supabase.co',
+               'SUPABASE_PUBLISHABLE_KEY': 'synthetic-public', 'AUTH_ACCESS_MODE': 'open',
+               'PUBLIC_API_URL': 'http://127.0.0.1:3001',
+               'ALLOWED_ORIGINS': 'http://127.0.0.1:5173',
+               'DATABASE_URL': 'postgresql://synthetic@localhost/dev?sslmode=require'}
+        with patch.dict(os.environ, env, clear=True):
+            settings = RemoteSettings.from_environment()
+            self.assertEqual(settings.public_host, '127.0.0.1:3001')
+            self.assertEqual(settings.origins, ('http://127.0.0.1:5173',))
+        for change in [
+            {'APP_MODE': 'remote'}, {'RENDER': 'true'}, {'VERCEL': '1'},
+            {'PUBLIC_API_URL': 'http://0.0.0.0:3001'},
+            {'PUBLIC_API_URL': 'http://127.0.0.1.evil.test:3001'},
+            {'ALLOWED_ORIGINS': 'http://example.com:5173'},
+            {'ALLOWED_ORIGINS': '*'}, {'DATABASE_URL': ''},
+            {'DATABASE_URL': 'postgresql://synthetic@localhost/dev'},
+            {'SUPABASE_URL': 'http://synthetic.supabase.co'},
+            {'SUPABASE_PUBLISHABLE_KEY': ''},
+        ]:
+            with self.subTest(change=change), patch.dict(os.environ, {**env, **change}, clear=True):
+                with self.assertRaises(RuntimeError):
+                    RemoteSettings.from_environment()
+
     def test_open_mode_is_explicit_and_keeps_required_security_configuration(self):
         env = {'APP_MODE':'remote', 'SUPABASE_URL':'https://synthetic.supabase.co',
                'PUBLIC_API_URL':'https://api.example.com', 'ALLOWED_ORIGINS':'https://app.example.com',

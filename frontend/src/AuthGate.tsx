@@ -10,7 +10,8 @@ const publicKey = env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '';
 let configurationError = false;
 const openRegistration = env.VITE_AUTH_ACCESS_MODE === 'open';
 if (env.VITE_AUTH_ACCESS_MODE && !['open', 'invited'].includes(env.VITE_AUTH_ACCESS_MODE)) configurationError = true;
-try { configureTransport(env.VITE_API_BASE_URL ?? '', () => {}); }
+// Vite replaces DEV with false in production builds; HTTP is only for loopback development.
+try { configureTransport(env.VITE_API_BASE_URL ?? '', () => {}, import.meta.env.DEV); }
 catch { configurationError = true; }
 if (remote && (!env.VITE_API_BASE_URL || !publicKey || !/^https:\/\/[^/]+$/.test(supabase))) configurationError = true;
 let account: AccountAuth | undefined;

@@ -148,7 +148,7 @@ class DeepSeekClient:
     def _payload(
         self, system: str, user: str, max_tokens: int
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "model": self.settings.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -158,6 +158,11 @@ class DeepSeekClient:
             "temperature": self.settings.temperature,
             "max_tokens": max_tokens,
         }
+        # V4 defaults to high-effort thinking when omitted. Interactive routing
+        # and editing use explicit non-thinking mode; legacy models stay intact.
+        if self.settings.model in {'deepseek-flash', 'deepseek-v4-pro'}:
+            payload['thinking'] = {'type': 'disabled'}
+        return payload
 
     async def _post(self, payload: dict[str, Any]) -> httpx.Response:
         headers = {

@@ -4,8 +4,14 @@ let expiresAt = 0;
 let onExpired = () => {};
 let base = '';
 
-export function configureTransport(apiBase: string, expired: () => void) {
-  if (apiBase && (new URL(apiBase).protocol !== 'https:' || new URL(apiBase).pathname !== '/')) throw new Error('后端地址配置无效。');
+export function configureTransport(apiBase: string, expired: () => void, allowLocalDevelopment = false) {
+  if (apiBase) {
+    const url = new URL(apiBase);
+    const local = allowLocalDevelopment && url.protocol === 'http:' &&
+      ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && Boolean(url.port);
+    if ((!local && url.protocol !== 'https:') || !url.hostname || url.username || url.password ||
+        url.pathname !== '/' || url.search || url.hash) throw new Error('后端地址配置无效。');
+  }
   base = apiBase.replace(/\/$/, ''); onExpired = expired;
 }
 export function setAccessToken(value: string, seconds: number) {

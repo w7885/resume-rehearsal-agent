@@ -57,9 +57,9 @@ async def transcribe_image(media_type: str, raw: bytes, *, budget=None, run_id='
             {"type": "text", "text": PROMPT},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
         ]}],
-        # The default high effort spends the whole token budget on reasoning
-        # and returns empty content, so transcription always asks for low.
-        "effort": "low",
+        # Transcription needs visible text, not a long reasoning pass. Use the
+        # documented switch: the old `effort` field did not select this mode.
+        "thinking": {"type": "disabled"},
         "temperature": 0,
         "max_tokens": MAX_TOKENS,
     }

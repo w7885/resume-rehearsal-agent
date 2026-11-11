@@ -41,6 +41,7 @@ function MessageText({ content, role }: { content: string; role: 'user' | 'assis
 
 export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [historyError, setHistoryError] = useState('');
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const active = useRef<Conversation | null>(null);
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
@@ -131,7 +132,14 @@ export default function ChatPage() {
     active.current = value; setConversation(value); setUrl(value?.session.sessionId ?? null);
     if (value) void web.load(value.session.sessionId);
   };
-  const refreshList = async () => { setSessions(await api.listChatSessions()); };
+  const refreshList = async () => { setSessions(await api.listChatSessions()); setHistoryError(''); };
+  const retryHistory = async () => {
+    if (loading || locked.current) return;
+    setLoading(true);
+    try { await refreshList(); }
+    catch (failure) { setHistoryError(errorText(failure)); }
+    finally { if (mounted.current) setLoading(false); }
+  };
   const syncAfterAnalysis = async (sid: string) => {
     readback.current?.cancel();
     const operation = new ConversationReadback(); readback.current = operation;
@@ -198,16 +206,24 @@ export default function ChatPage() {
   }, []);
   useEffect(() => {
     let live = true;
-    void api.readRenameSupport().then(available => { if (live) setRenameAvailable(available); });
+    const controller = new AbortController();
+    void api.readRenameSupport(controller.signal).then(available => { if (live) setRenameAvailable(available); });
     void (async () => {
+      const sid = new URLSearchParams(window.location.search).get('session');
       try {
-        const list = await api.listChatSessions(); if (!live) return; setSessions(list);
-        const sid = new URLSearchParams(window.location.search).get('session');
-        if (sid) { const value = await api.readConversation(sid); if (live) { install(value); scrollToEnd(); } }
+        try {
+          const list = await api.listChatSessions(controller.signal); if (!live) return;
+          setSessions(list); setHistoryError('');
+        } catch (failure) {
+          if (!live) return;
+          setHistoryError(errorText(failure));
+        }
+        // A history outage must not prevent restoring the explicit current URL.
+        if (sid) { const value = await api.readInitialConversation(sid, controller.signal); if (live) { install(value); scrollToEnd(); } }
       } catch (failure) { if (live) { setError(errorText(failure)); if (failure instanceof api.ApiError && failure.code === 'session_not_found') setUrl(null); } }
       finally { if (live) setLoading(false); }
     })();
-    return () => { live = false; };
+    return () => { live = false; controller.abort(); };
   }, []);
   useEffect(() => {
     const refresh = () => { const sid = active.current?.session.sessionId; if (sid) void web.load(sid); };
@@ -545,6 +561,9 @@ export default function ChatPage() {
       <div className="cp-brand"><span className="cp-logo">历</span><strong>历历在练</strong><button className="cp-icon cp-mobile-close" aria-label="关闭会话列表" onClick={() => setHistoryOpen(false)}><Icon name="close" /></button></div>
       <button className="cp-new" disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget} onClick={() => { void navigate(null); }}><Icon name="plus" size={18} />新对话</button>
       <div className="cp-history-label">已保存的会话</div>
+      {loading && sessions.length === 0 && <p role="status">正在读取历史会话…</p>}
+      {historyError && <div role="alert"><p>历史会话暂未读回，不代表已删除。请检查连接后重新读取。</p>
+        <button type="button" disabled={loading} onClick={() => { void retryHistory(); }}>重新读取历史</button></div>}
       <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>

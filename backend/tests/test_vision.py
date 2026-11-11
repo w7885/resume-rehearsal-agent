@@ -81,7 +81,7 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
     def render(self, value=None):
         return patch('app.vision.render_page', return_value=value or {'status': 'ready', 'image': 'cG5n'})
 
-    async def test_sends_low_effort_image_and_returns_text(self):
+    async def test_sends_nonthinking_image_and_returns_text(self):
         transcript = '张小明\n教育背景：某大学 计算机科学与技术\n项目经历：负责需求整理与接口联调'
         with self.render(), self.client([FakeResponse(200, transcript)]):
             text = await self.transcribe('image/png', b'raw')
@@ -89,7 +89,8 @@ class VisionTests(unittest.IsolatedAsyncioTestCase):
         url, kwargs = FakeClient.calls[0]
         self.assertEqual(url, 'https://example.test/chat/completions')
         self.assertEqual(kwargs['json']['model'], 'deepseek-flash')
-        self.assertEqual(kwargs['json']['effort'], 'low')
+        self.assertEqual(kwargs['json']['thinking'], {'type': 'disabled'})
+        self.assertNotIn('effort', kwargs['json'])
         self.assertEqual(kwargs['json']['max_tokens'], 16000)
         self.assertEqual(kwargs['headers']['Authorization'], 'Bearer test-key')
         self.assertTrue(kwargs['json']['messages'][0]['content'][1]['image_url']['url']

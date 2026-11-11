@@ -5,11 +5,51 @@ lock, preserving SQLite's single-writer contract (including project budgets).
 """
 from contextlib import contextmanager
 from pathlib import Path
+import atexit
+import os
+from queue import LifoQueue, Empty, Full
 import re
 import sqlite3
+from threading import Lock
 
 
 WRITE_LOCK = 721493106311
+_POOL_LOCK = Lock()
+_IDLE_POOLS = {}
+_MAX_POOL_TARGETS = 8
+_MAX_IDLE_PER_TARGET = 4
+
+
+def _idle_pool(target, read_only):
+    # Pool only transports, never data, identities, snapshots or transactions.
+    # Read-only and writable sessions are separate; URLs are never logged.
+    key = (os.getpid(), target, read_only)
+    with _POOL_LOCK:
+        if key not in _IDLE_POOLS:
+            if len(_IDLE_POOLS) >= _MAX_POOL_TARGETS:
+                return None
+            _IDLE_POOLS[key] = LifoQueue(_MAX_IDLE_PER_TARGET)
+        return _IDLE_POOLS[key]
+
+
+def close_idle_connections():
+    with _POOL_LOCK:
+        pools = list(_IDLE_POOLS.values())
+        _IDLE_POOLS.clear()
+    for pool in pools:
+        while True:
+            try:
+                pool.get_nowait().close()
+            except Empty:
+                break
+
+
+atexit.register(close_idle_connections)
+
+
+def _idle(raw):
+    from psycopg.pq import TransactionStatus
+    return not raw.closed and not raw.broken and raw.info.transaction_status == TransactionStatus.IDLE
 
 
 def is_postgres(target):
@@ -111,27 +151,61 @@ class Connection:
             raise sqlite3.OperationalError('PostgreSQL commit failed; no success confirmed.') from None
 
     def rollback(self):
-        self.raw.rollback()
+        import psycopg
+        try:
+            self.raw.rollback()
+        except psycopg.Error:
+            # Read scopes also roll back on exit. A lost connection here must
+            # follow the same sanitized storage-error path as execute/commit.
+            raise sqlite3.OperationalError('PostgreSQL rollback failed; no success confirmed.') from None
 
 
 @contextmanager
 def connect(target, *, read_only=False):
+    pool = _idle_pool(target, read_only)
+    raw = None
+    if pool is not None:
+        while raw is None:
+            try:
+                candidate = pool.get_nowait()
+            except Empty:
+                break
+            try:
+                if not _idle(candidate):
+                    candidate.close()
+                    continue
+                # Check only before business work. A dead idle transport can be
+                # replaced here without replaying any SQL write or model call.
+                candidate.execute('SELECT 1').fetchone()
+                raw = candidate
+            except Exception:
+                candidate.close()
     try:
         import psycopg
-        raw = psycopg.connect(target, autocommit=True, row_factory=_row_factory,
-                             connect_timeout=10, prepare_threshold=None)
+        if raw is None:
+            raw = psycopg.connect(target, autocommit=True, row_factory=_row_factory,
+                                 connect_timeout=10, prepare_threshold=None)
+            connection = Connection(raw)
+            connection.execute('SET search_path = resume_app, pg_catalog')
+            connection.execute("SET statement_timeout = '30s'")
+            connection.execute("SET lock_timeout = '5s'")
+            if read_only:
+                connection.execute('SET default_transaction_read_only = on')
     except Exception:
+        if raw is not None:
+            raw.close()
         raise sqlite3.OperationalError('PostgreSQL connection unavailable; check private configuration.') from None
     connection = Connection(raw)
     try:
-        connection.execute('SET search_path = resume_app, pg_catalog')
-        connection.execute("SET statement_timeout = '30s'")
-        connection.execute("SET lock_timeout = '5s'")
-        if read_only:
-            connection.execute('SET default_transaction_read_only = on')
         yield connection
     finally:
-        raw.close()
+        if pool is not None and _idle(raw):
+            try:
+                pool.put_nowait(raw)
+            except Full:
+                raw.close()
+        else:
+            raw.close()
 
 
 @contextmanager
