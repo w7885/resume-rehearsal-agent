@@ -3,11 +3,14 @@ import hashlib
 import json
 from pathlib import Path
 
-from app.db import MIGRATIONS, SCHEMA_VERSION, SchemaError, transaction
+from app.db import MIGRATIONS, SchemaError, transaction
 
 
 SCHEMA = 'resume_app'
 BASELINE = Path(__file__).with_name('migrations') / 'postgres_015.sql'
+# Versions 1–16 are shared with SQLite. Subsequent changes have their own
+# PostgreSQL sequence so a local-only migration cannot reuse a cloud version.
+POSTGRES_MIGRATIONS = (*MIGRATIONS[:16], (17, BASELINE.with_name('postgres_017_account_profiles.sql')))
 
 
 def _tables(connection):
@@ -49,8 +52,9 @@ def check(connection, *, allow_pending=False):
     if 'schema_version' not in tables or 'app_schema_contract' not in tables:
         raise SchemaError('Missing PostgreSQL schema contract; no repair performed.')
     versions = [row[0] for row in connection.execute('SELECT version FROM schema_version ORDER BY version')]
-    expected = [version for version, _ in MIGRATIONS]
-    if versions != expected and not (allow_pending and versions == expected[:15]):
+    expected = [version for version, _ in POSTGRES_MIGRATIONS]
+    if versions != expected and not (allow_pending and 15 <= len(versions) < len(expected)
+                                     and versions == expected[:len(versions)]):
         raise SchemaError('Unsupported PostgreSQL migration history; no downgrade or repair performed.')
     row = connection.execute('SELECT baseline_hash,structure_hash FROM app_schema_contract WHERE singleton=1').fetchone()
     if row is None or row[0] != hashlib.sha256(BASELINE.read_bytes()).hexdigest() or row[1] != _signature(connection):
@@ -67,7 +71,7 @@ def initialize(connection):
         if not tables:
             # Raw SQL is trusted, bundled DDL; no dynamic values or credentials.
             connection.execute(BASELINE.read_text(encoding='utf-8'))
-            for version, _ in MIGRATIONS[:15]:
+            for version, _ in POSTGRES_MIGRATIONS[:15]:
                 connection.execute('INSERT INTO schema_version(version) VALUES (?)', (version,))
             connection.execute('''CREATE TABLE app_schema_contract (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -81,7 +85,7 @@ def initialize(connection):
             raise SchemaError('Unversioned nonempty PostgreSQL schema; refusing to overwrite it.')
         check(connection, allow_pending=True)
         applied = connection.execute('SELECT max(version) FROM schema_version').fetchone()[0]
-        for version, migration in MIGRATIONS[15:]:
+        for version, migration in POSTGRES_MIGRATIONS[15:]:
             if version > applied:
                 connection.execute(migration.read_text(encoding='utf-8'))
                 connection.execute('INSERT INTO schema_version(version) VALUES (?)', (version,))

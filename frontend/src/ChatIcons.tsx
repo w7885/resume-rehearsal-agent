@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron' | 'more' | 'trash' | 'mic' | 'stop' | 'globe';
+type IconName = 'plus' | 'chat' | 'panel' | 'attach' | 'send' | 'close' | 'download' | 'copy' | 'edit' | 'menu' | 'chevron' | 'more' | 'trash' | 'mic' | 'stop' | 'globe' | 'settings';
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z" /></>,
@@ -14,6 +14,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     copy: <><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></>,
     edit: <><path d="m15 4 5 5M4 20l4-1L21 6a2 2 0 0 0-5-5L3 14l-1 6Z" /></>,
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+    settings: <><path d="M4 7h5m4 0h7M4 17h9m4 0h3" /><circle cx="11" cy="7" r="2" /><circle cx="15" cy="17" r="2" /></>,
     chevron: <path d="m9 5 7 7-7 7" />,
     more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
     trash: <><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" /></>,

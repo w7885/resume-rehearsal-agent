@@ -11,7 +11,15 @@ import httpx
 
 
 current_user = ContextVar('current_user', default=None)
+current_identity = ContextVar('current_identity', default=None)
 LOGGER = logging.getLogger('uvicorn.error')
+
+
+@dataclass(frozen=True, repr=False)
+class VerifiedIdentity:
+    id: str
+    email: str
+    email_verified: bool
 
 
 @dataclass(frozen=True, repr=False)
@@ -77,8 +85,10 @@ async def verify_user(settings, token, *, client=None):
     # Per-request headers prevent identities leaking across pooled connections.
     response = await client.get(settings.supabase_url + '/auth/v1/user',
                                 headers={'apikey': settings.publishable_key, 'Authorization': 'Bearer ' + token})
-    if response.status_code != 200:
+    if response.status_code in {400, 401, 403}:
         return None
+    if response.status_code != 200:
+        raise ValueError('Unexpected authentication service response.')
     try:
         user = response.json()
         identity = str(UUID(user['id']))
@@ -87,7 +97,7 @@ async def verify_user(settings, token, *, client=None):
                 or user.get('is_anonymous') is True
                 or (settings.access_mode != 'open' and email.lower() not in settings.emails)):
             return None
-        return identity
+        return VerifiedIdentity(identity, email, True)
     except (ValueError, TypeError, KeyError, AttributeError):
         return None
 
@@ -126,7 +136,8 @@ class RemoteAccessGuard:
             return await error_response('auth_unavailable', '暂时无法核对登录，请稍后重试。', 503)(scope, receive, send)
         if not user:
             return await error_response('unauthorized', '登录已失效或账号尚未获准使用。', 401)(scope, receive, send)
-        marker = current_user.set(user)
+        marker = current_user.set(user.id)
+        identity_marker = current_identity.set(user)
         auth_ms = round((perf_counter() - started) * 1000)
         status = None
         async def timed_send(message):
@@ -137,6 +148,7 @@ class RemoteAccessGuard:
         try:
             return await self.app(scope, receive, timed_send)
         finally:
+            current_identity.reset(identity_marker)
             current_user.reset(marker)
             LOGGER.info('remote_request auth_ms=%d total_ms=%d status=%s',
                         auth_ms, (perf_counter() - started) * 1000, status)

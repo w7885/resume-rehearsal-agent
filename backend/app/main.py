@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
     path = app.state.database_path or os.environ.get('DATABASE_URL') or DEFAULT_DATABASE_PATH
     with database(path) as connection:
         initialize_database(connection)
+    app.state.active_database_path = path
     app.state.business_service = BusinessService(Repository(path))
     from app.agent_host import AgentHost
     app.state.agent_host = AgentHost(app.state.business_service, app.state.agent_client_factory)
@@ -40,6 +41,8 @@ def create_app(database_path=None, *, agent_client_factory=None):
     application.state.agent_client_factory = agent_client_factory
     application.add_middleware(LocalRequestGuard, remote=remote is not None)
     if remote:
+        from app.account_profile import router as profile_router
+        application.include_router(profile_router)
         from starlette.middleware.cors import CORSMiddleware
         application.add_middleware(RemoteAccessGuard, settings=remote)
         application.add_middleware(CORSMiddleware, allow_origins=list(remote.origins),
