@@ -39,7 +39,7 @@ function MessageText({ content, role }: { content: string; role: 'user' | 'assis
       : <span key={part}>{segment.text}</span>)}</p>)}</div>;
 }
 
-export default function ChatPage() {
+export default function ChatPage({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [historyError, setHistoryError] = useState('');
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -567,7 +567,11 @@ export default function ChatPage() {
       <div className="cp-live-history-list">{sessions.map(session => <SessionHistoryRow key={session.sessionId} session={session} selected={conversation?.session.sessionId === session.sessionId} disabled={webUnsettled || loading || sending || !!pending || !!deleteTarget || !!renameTarget || editor.snapshot.status === 'saving'} renameAvailable={renameAvailable} onOpen={() => { void navigate(session.sessionId); }} onDelete={() => { void openDelete(session); }} onRename={() => { void openRename(session); }} />)}</div>
       {!loading && !sessions.length && <p className="cp-live-history-empty">发送第一条消息后，<br />会话会保存在这里。</p>}
       <div className="cp-sidebar-note"><span className="cp-note-line" /><p>把真实经历<br />讲得更清楚。</p></div>
-      <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>{workspaceCopy.history}</small></span></footer>
+      {onOpenSettings ? <footer className="cp-profile cp-settings-footer">
+        <button type="button" className="cp-settings-entry" aria-haspopup="dialog" onClick={onOpenSettings}>
+          <Icon name="settings" size={18} />设置
+        </button>
+      </footer> : <footer className="cp-profile"><span className="cp-profile-icon">我</span><span>我的空间<small>{workspaceCopy.history}</small></span></footer>}
     </aside>
 
     {viewport > 680 && <PanelResizer kind="history" label="调整会话列表宽度" current={historyWidth} min={historyLimits.min} max={historyLimits.max} onResize={width => resizePanel('history', width)} onActiveChange={setPanelResizing} />}

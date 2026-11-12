@@ -5,7 +5,7 @@ import os
 from unittest.mock import AsyncMock, patch
 import unittest
 
-from app.auth import RemoteSettings, current_user
+from app.auth import RemoteSettings, VerifiedIdentity, current_identity, current_user
 from app.business_service import BusinessService
 from app.db import database, initialize_database, transaction
 from app.main import create_app
@@ -16,6 +16,8 @@ from test_db import temporary_directory
 
 USER_A = '11111111-1111-4111-8111-111111111111'
 USER_B = '22222222-2222-4222-8222-222222222222'
+IDENTITY_A = VerifiedIdentity(USER_A, 'a@example.com', True)
+IDENTITY_B = VerifiedIdentity(USER_B, 'b@example.com', True)
 SETTINGS = RemoteSettings('https://synthetic.supabase.co', 'synthetic-public-key', 'api.example.com',
                           ('https://app.example.com',), frozenset({'a@example.com', 'b@example.com'}))
 
@@ -62,8 +64,8 @@ class AuthenticationTests(unittest.TestCase):
         self.lifecycle = self.app.router.lifespan_context(self.app)
         self.runner.run(self.lifecycle.__aenter__())
         self.addCleanup(lambda: self.runner.run(self.lifecycle.__aexit__(None, None, None)))
-        async def verify(settings, token):
-            return {'token-a': USER_A, 'token-b': USER_B}.get(token)
+        async def verify(settings, token, **kwargs):
+            return {'token-a': IDENTITY_A, 'token-b': IDENTITY_B}.get(token)
         mocked = patch('app.auth.verify_user', side_effect=verify)
         self.verify = mocked.start()
         self.addCleanup(mocked.stop)
@@ -88,6 +90,31 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(response['status'], 503)
         self.assertNotIn(b'private diagnostic', response['body'])
         self.assertEqual(self.request('GET', '/api/health', token=None)['status'], 200)
+
+    def test_profile_reads_only_verified_identity_and_rejects_extra_fields(self):
+        with database(self.path) as connection:
+            # Use a portable table for request-level tests. The PostgreSQL
+            # suite exercises the actual cloud migration and UUID column.
+            if getattr(connection, 'dialect', None) != 'postgresql':
+                connection.execute('CREATE TABLE account_profiles(user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL)')
+        self.assertEqual(self.request('GET', '/api/me', token=None)['status'], 401)
+        old = self.create()
+        initial = self.request('GET', '/api/me')
+        self.assertEqual(initial['json'], {'id': USER_A, 'email': 'a@example.com', 'emailVerified': True, 'displayName': ''})
+        self.assertEqual(initial['headers'][b'cache-control'], b'no-store')
+        for data in ({}, {'displayName': None}, {'displayName': 1}, {'displayName': '改', 'id': USER_B},
+                     {'displayName': '简' * 31}, {'displayName': 'a\x00b'}):
+            with self.subTest(data=data):
+                self.assertEqual(self.request('PATCH', '/api/me', data=data)['status'], 422)
+        saved = self.request('PATCH', '/api/me', data={'displayName': '  ' + '简' * 30 + '  '})
+        self.assertEqual(saved['json']['displayName'], '简' * 30)
+        self.assertEqual(saved['headers'][b'cache-control'], b'no-store')
+        self.assertEqual(self.request('GET', '/api/me')['json'], saved['json'])
+        self.assertEqual(self.request('PATCH', '/api/me', token='token-b', data={'displayName': '测试乙'})['status'], 200)
+        self.assertEqual(self.request('PATCH', '/api/me', data={'displayName': ' '})['json']['displayName'], '')
+        self.assertEqual(self.request('GET', '/api/me', token='token-b')['json']['displayName'], '测试乙')
+        self.assertEqual(self.request('GET', '/api/sessions/' + old)['status'], 200)
+        self.assertEqual(self.request('GET', '/api/sessions/' + old, token='token-b')['status'], 404)
 
     def test_user_lists_and_create_replays_are_isolated(self):
         a, b = self.create(), self.create('token-b')
@@ -186,7 +213,7 @@ class RemoteConfigurationTests(unittest.TestCase):
                 httpx.Response(401),
             ])
             with patch('app.auth.auth_client') as factory:
-                self.assertEqual(await verify_user(SETTINGS, 'first', client=client), USER_A)
+                self.assertEqual(await verify_user(SETTINGS, 'first', client=client), IDENTITY_A)
                 self.assertIsNone(await verify_user(SETTINGS, 'revoked', client=client))
                 factory.assert_not_called()
             self.assertEqual(client.get.await_count, 2)
@@ -194,7 +221,7 @@ class RemoteConfigurationTests(unittest.TestCase):
             async def app(scope, receive, send):
                 self.assertIs(guard.client, client)
                 if scope['type'] == 'lifespan':
-                    with patch('app.auth.verify_user', new=AsyncMock(return_value=USER_A)) as verify:
+                    with patch('app.auth.verify_user', new=AsyncMock(return_value=IDENTITY_A)) as verify:
                         async def send_message(message):
                             pass
                         request = {'type': 'http', 'path': '/api/sessions', 'method': 'GET',
@@ -204,8 +231,10 @@ class RemoteConfigurationTests(unittest.TestCase):
                         self.assertEqual(verify.await_count, 2)
                         verify.assert_awaited_with(SETTINGS, 'token', client=client)
                         self.assertIsNone(current_user.get())
+                        self.assertIsNone(current_identity.get())
                 else:
                     self.assertEqual(current_user.get(), USER_A)
+                    self.assertEqual(current_identity.get(), IDENTITY_A)
                     await send({'type': 'http.response.start', 'status': 200, 'headers': []})
             guard = RemoteAccessGuard(app, SETTINGS)
             with patch('app.auth.auth_client') as factory:
@@ -227,7 +256,7 @@ class RemoteConfigurationTests(unittest.TestCase):
                         patch('app.auth.httpx.AsyncClient') as client:
                     get = client.return_value.__aenter__.return_value.get
                     get.return_value = httpx.Response(200, json=identity)
-                    self.assertEqual(runner.run(verify_user(SETTINGS, 'synthetic-token')), USER_A)
+                    self.assertEqual(runner.run(verify_user(SETTINGS, 'synthetic-token')), IDENTITY_A)
                     client.assert_called_once_with(timeout=8, trust_env=mode == 'development',
                                                    follow_redirects=False)
                     get.assert_awaited_once_with('https://synthetic.supabase.co/auth/v1/user',
@@ -277,7 +306,7 @@ class RemoteConfigurationTests(unittest.TestCase):
         import httpx
         user = {'id':USER_A, 'email':'new@example.com', 'email_confirmed_at':'2026-11-07T00:00:00Z'}
         with asyncio.Runner() as runner:
-            for changes, mode, expected in [({}, 'open', USER_A), ({}, 'invited', None),
+            for changes, mode, expected in [({}, 'open', VerifiedIdentity(USER_A, 'new@example.com', True)), ({}, 'invited', None),
                     ({'email_confirmed_at':None}, 'open', None), ({'email':''}, 'open', None),
                     ({'is_anonymous':True}, 'open', None), ({'id':'forged'}, 'open', None)]:
                 response = httpx.Response(200, json={**user, **changes})

@@ -1,4 +1,4 @@
-/** Supabase public Auth endpoints only; passwords and tokens are never persisted. */
+/** Supabase public Auth endpoints. Only the short-lived access token can restore the workspace. */
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export type Recovery = { token: string; expiresAt: number };
 export function consumeAuthCallback(href: string, replace: (url: string) => void, now = Date.now()): { recovery?: Recovery; notice: string } {
@@ -45,6 +45,7 @@ export class AccountAuth {
     if (!response.ok) {
       const code = record(result) ? result.code ?? result.error_code : '';
       if (response.status === 429) throw new Error('请求过于频繁，请稍后再试。');
+      if (response.status >= 500) throw new Error('账号服务暂时不可用，请稍后重试。');
       if (code === 'email_not_confirmed') throw new Error('请先打开验证邮件确认邮箱，再登录。');
       if (code === 'email_address_not_authorized' || code === 'over_email_send_rate_limit') throw new Error('验证邮件暂时无法发送，请稍后重试或联系维护者。');
       if (path.startsWith('token')) throw new Error('邮箱或密码不正确，请核对后重试。');
@@ -56,7 +57,7 @@ export class AccountAuth {
   }
   async login(email: string, password: string) {
     const value = await this.request('token?grant_type=password', { email:email.trim(), password });
-    if (typeof value.access_token !== 'string' || !value.access_token || typeof value.expires_in !== 'number' || !Number.isFinite(value.expires_in) || value.expires_in <= 0) throw new Error('登录状态无法确认，请重试。');
+    if (typeof value.access_token !== 'string' || !value.access_token || value.access_token.length > 16377 || typeof value.expires_in !== 'number' || !Number.isSafeInteger(value.expires_in) || value.expires_in <= 0 || value.expires_in > Number.MAX_SAFE_INTEGER / 1000) throw new Error('登录状态无法确认，请重试。');
     return { token:value.access_token, seconds:value.expires_in };
   }
   async signup(email: string, password: string, confirmation: string) {

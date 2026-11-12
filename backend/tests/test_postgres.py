@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 import sqlite3
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from app import db
@@ -112,6 +113,40 @@ class PostgresProtectionTests(unittest.TestCase):
     def setUp(self):
         self.path = isolated_database()
 
+    def test_account_profile_upgrade_preserves_existing_owner_and_supports_uuid_upsert(self):
+        from app import postgres_schema
+        from app.main import create_app
+        from test_api import request_asgi
+        from test_auth import IDENTITY_A, IDENTITY_B, SETTINGS, USER_A
+
+        # isolated_database() restricts this to a disposable local test DB.
+        with db.database(self.path) as c:
+            c.execute('DROP SCHEMA resume_app CASCADE')
+            with patch.object(postgres_schema, 'POSTGRES_MIGRATIONS', postgres_schema.POSTGRES_MIGRATIONS[:16]):
+                self.assertEqual(db.initialize_database(c)['schemaVersion'], 16)
+            c.execute("INSERT INTO sessions(session_id,direction,owner_user_id) VALUES ('legacy','old',?)", (USER_A,))
+            self.assertEqual(db.initialize_database(c)['schemaVersion'], 17)
+            self.assertEqual(db.initialize_database(c)['schemaVersion'], 17)
+            self.assertEqual(c.execute("SELECT owner_user_id FROM sessions WHERE session_id='legacy'").fetchone()[0], USER_A)
+
+        async def exercise():
+            with patch('app.auth.RemoteSettings.from_environment', return_value=SETTINGS):
+                app = create_app(self.path)
+            async with app.router.lifespan_context(app):
+                async def request(method, *, identity=IDENTITY_A, data=None):
+                    with patch('app.auth.verify_user', return_value=identity):
+                        response = await request_asgi(app, method, '/api/me', headers={
+                            'host': SETTINGS.public_host, 'authorization': 'Bearer synthetic',
+                        }, data=data)
+                    self.assertEqual(response['status'], 200, response)
+                    return response['json']
+                self.assertEqual((await request('GET'))['displayName'], '')
+                await request('PATCH', data={'displayName': '第一次'})
+                await request('PATCH', data={'displayName': '第二次'})
+                self.assertEqual((await request('GET'))['displayName'], '第二次')
+                self.assertEqual((await request('GET', identity=IDENTITY_B))['displayName'], '')
+        asyncio.run(exercise())
+
     def test_budget_concurrency_and_idempotent_unknown_settlement(self):
         def reserve(index):
             return ProjectBudget(self.path, 'run', 100).reserve_request('cost-'+str(index), 60)
@@ -146,7 +181,8 @@ class PostgresProtectionTests(unittest.TestCase):
             with self.assertRaises(db.SchemaError), db.transaction(c):
                 c.execute('ALTER TABLE source_blocks DISABLE TRIGGER sources_immutable')
                 db.check_database(c)
-            self.assertEqual(db.check_database(c)['schemaVersion'], db.SCHEMA_VERSION)
+            from app.postgres_schema import POSTGRES_MIGRATIONS
+            self.assertEqual(db.check_database(c)['schemaVersion'], POSTGRES_MIGRATIONS[-1][0])
 
     def test_deferred_fk_failure_rolls_back_all_writes(self):
         with db.database(self.path) as c:
