@@ -30,6 +30,10 @@ class RemoteSettings:
     origins: tuple[str, ...]
     emails: frozenset[str]
     access_mode: str = 'invited'
+    admin_ids: frozenset[str] = frozenset()
+
+    def is_admin(self, identity: VerifiedIdentity) -> bool:
+        return identity.id in self.admin_ids
 
     @classmethod
     def from_environment(cls):
@@ -65,7 +69,12 @@ class RemoteSettings:
         if not (https_origin(url) and app_origin(public.geturl()) and origins and all(app_origin(value) for value in origins)
                 and key and (emails or access_mode == 'open') and database.scheme in {'postgres', 'postgresql'} and secure):
             raise RuntimeError('Remote configuration incomplete; use private platform environment settings.')
-        return cls(url, key, public.netloc, origins, emails, access_mode)
+        try:
+            admin_ids = frozenset(str(UUID(value.strip()))
+                                  for value in os.getenv('ADMIN_USER_IDS', '').split(',') if value.strip())
+        except ValueError:
+            raise RuntimeError('ADMIN_USER_IDS must contain valid account UUIDs.') from None
+        return cls(url, key, public.netloc, origins, emails, access_mode, admin_ids)
 
 
 def auth_client():
@@ -136,6 +145,9 @@ class RemoteAccessGuard:
             return await error_response('auth_unavailable', '暂时无法核对登录，请稍后重试。', 503)(scope, receive, send)
         if not user:
             return await error_response('unauthorized', '登录已失效或账号尚未获准使用。', 401)(scope, receive, send)
+        path = scope['path']
+        if (path == '/api/admin' or path.startswith('/api/admin/')) and not self.settings.is_admin(user):
+            return await error_response('admin_required', '此账号无管理员权限。', 403)(scope, receive, send)
         marker = current_user.set(user.id)
         identity_marker = current_identity.set(user)
         auth_ms = round((perf_counter() - started) * 1000)

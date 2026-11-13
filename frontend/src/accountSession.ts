@@ -1,5 +1,5 @@
 export type AccessSession = { token: string; expiresAt: number };
-export type AccountProfile = { id: string; email: string; emailVerified: boolean; displayName: string };
+export type AccountProfile = { id: string; email: string; emailVerified: boolean; displayName: string; isAdmin: boolean };
 
 const storageKey = 'lilizaillian.account.access.v1';
 
@@ -29,5 +29,5 @@ export async function readProfile(response: Response): Promise<AccountProfile> {
     typeof profile.emailVerified !== 'boolean' || typeof profile.displayName !== 'string') {
     throw new Error('工作台返回的账号资料无效，请稍后重试。');
   }
-  return profile;
+  return { ...profile, isAdmin: profile.isAdmin === true };
 }

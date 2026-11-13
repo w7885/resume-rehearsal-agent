@@ -42,7 +42,18 @@ def create_app(database_path=None, *, agent_client_factory=None):
     application.add_middleware(LocalRequestGuard, remote=remote is not None)
     if remote:
         from app.account_profile import router as profile_router
+        from app.admin import router as admin_router
+        from app.feedback import router as feedback_router
+        from starlette.responses import Response
+        application.state.remote_settings = remote
         application.include_router(profile_router)
+        application.include_router(admin_router)
+        application.include_router(feedback_router)
+
+        @application.get('/api/admin/access', status_code=204)
+        def admin_access():
+            return Response(status_code=204, headers={'Cache-Control': 'no-store'})
+
         from starlette.middleware.cors import CORSMiddleware
         application.add_middleware(RemoteAccessGuard, settings=remote)
         application.add_middleware(CORSMiddleware, allow_origins=list(remote.origins),

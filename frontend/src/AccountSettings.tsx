@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AccountAuth } from './accountAuth';
 import { readProfile, type AccountProfile } from './accountSession';
 import { apiFetch } from './authTransport';
+import FeedbackForm from './FeedbackForm';
 
 type Props = {
   profile: AccountProfile;
@@ -9,14 +10,17 @@ type Props = {
   onClose: () => void;
   onSignOut: () => void;
   onUpdate: (profile: AccountProfile) => void;
+  onOpenAdmin: () => void;
 };
 
-export default function AccountSettings({ profile, account, onClose, onSignOut, onUpdate }: Props) {
+export default function AccountSettings({ profile, account, onClose, onSignOut, onUpdate, onOpenAdmin }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const lock = useRef(false);
   const [load, setLoad] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackPending, setFeedbackPending] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; error?: boolean } | null>(null);
   useEffect(() => {
     if (!dialog.current?.open) dialog.current?.showModal();
@@ -55,11 +59,13 @@ export default function AccountSettings({ profile, account, onClose, onSignOut, 
   }
 
   return <dialog ref={dialog} className="auth-card account-settings" aria-labelledby="account-settings-title"
-    onClose={onClose} onCancel={event => { if (lock.current) event.preventDefault(); }}>
+    onClose={onClose} onCancel={event => { if (lock.current || feedbackPending) event.preventDefault(); }}>
     <header>
-      <h2 id="account-settings-title">设置</h2>
-      <button type="button" disabled={pending} onClick={() => dialog.current?.close()}>关闭</button>
+      <h2 id="account-settings-title">{feedbackOpen ? '提交反馈' : '设置'}</h2>
+      <button type="button" disabled={pending || feedbackPending}
+        onClick={() => feedbackOpen ? setFeedbackOpen(false) : dialog.current?.close()}>{feedbackOpen ? '返回设置' : '关闭'}</button>
     </header>
+    {feedbackOpen ? <FeedbackForm onBusy={setFeedbackPending} /> : <>
     {load === 'loading' && <p role="status">正在读取账号资料…</p>}
     {load === 'failed' && <div className="auth-actions">
       <p className="auth-error" role="alert">暂时无法读取账号资料。</p>
@@ -75,7 +81,10 @@ export default function AccountSettings({ profile, account, onClose, onSignOut, 
         {pending ? '正在发送…' : '发送改密邮件'}
       </button>
       <button type="button" disabled={pending} onClick={onSignOut}>退出登录</button>
+      <button type="button" disabled={pending} onClick={() => setFeedbackOpen(true)}>提交反馈</button>
+      {profile.isAdmin && <button type="button" disabled={pending} onClick={onOpenAdmin}>管理后台</button>}
     </div>
     {feedback && <p className={feedback.error ? 'auth-error' : 'auth-notice'} role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
+    </>}
   </dialog>;
 }

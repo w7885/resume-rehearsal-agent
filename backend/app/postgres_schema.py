@@ -10,7 +10,11 @@ SCHEMA = 'resume_app'
 BASELINE = Path(__file__).with_name('migrations') / 'postgres_015.sql'
 # Versions 1–16 are shared with SQLite. Subsequent changes have their own
 # PostgreSQL sequence so a local-only migration cannot reuse a cloud version.
-POSTGRES_MIGRATIONS = (*MIGRATIONS[:16], (17, BASELINE.with_name('postgres_017_account_profiles.sql')))
+POSTGRES_MIGRATIONS = (
+    *MIGRATIONS[:16],
+    (17, BASELINE.with_name('postgres_017_account_profiles.sql')),
+    (18, BASELINE.with_name('postgres_018_feedback.sql')),
+)
 
 
 def _tables(connection):
