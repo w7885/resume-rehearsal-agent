@@ -81,6 +81,22 @@ def _usable_candidate(item, sources):
                     for name in ('company', 'role', 'location', 'employmentType')))
 
 
+_DISCOVERY_FAILURES = {
+    'provider_network_error': '本次搜索网络连接失败，尚未取得岗位候选。',
+    'provider_timeout': '本次搜索服务响应超时，尚未取得岗位候选。',
+    'budget_exhausted': '本次搜索受预算限制，尚未取得岗位候选。',
+    'web_unavailable': '本次搜索服务未配置或未启用，尚未取得岗位候选。',
+    'provider_rate_limited': '本次搜索服务请求受限，尚未取得岗位候选。',
+    'provider_http_error': '本次搜索服务未完成请求，尚未取得岗位候选。',
+    'web_failed': '本次搜索服务未完成请求，尚未取得岗位候选。',
+}
+
+
+def _discovery_failure_message(code):
+    return (_DISCOVERY_FAILURES.get(code, _DISCOVERY_FAILURES['web_failed'])
+            + '不能据此判断没有合适岗位。可补充JD正文、回复“重试联网”或“通用修改”。')
+
+
 class Intake:
     def __init__(self, runtime):
         self.r = runtime
@@ -146,7 +162,7 @@ class Intake:
 
     async def offer(self, refs):
         if not refs:
-            return self.ask('本次搜索未取得可核对的候选，不能据此判断没有合适岗位。'
+            return self.ask('搜索已完成。本次搜索未取得可核对的候选，不能据此判断没有合适岗位。'
                             '可补充条件或JD正文，也可回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
         items = await self.candidates(refs)
@@ -154,7 +170,8 @@ class Intake:
         sources = {ref['referenceId']: ref for ref in refs}
         items = [item for item in items if _usable_candidate(item, sources)]
         if not items:
-            return self.ask('未取得公司和岗位可对应的候选。可补充岗位名称、JD正文，或回复“通用修改”。',
+            return self.ask('搜索已完成，但返回的页面未能核对为具体岗位。'
+                            '可补充岗位名称或地点、提供JD正文，或回复“通用修改”。',
                             phase='needs_material', outcomeCode='no_candidate')
         with self.r.repo._operation(self.r.context, write=True) as (c, s):
             state = web_intake.load(c, s['session_id'])
@@ -412,9 +429,12 @@ class Intake:
                 return 'resumed_ready' if outcome == 'ready' else outcome
             return self.ask('已保留所选岗位，但没有可用正文。可粘贴JD或回复“通用修改”。',
                             phase='needs_material', outcomeCode='body_unavailable')
-        if old and old['phase'] in {'failed', 'needs_material'} and not explicit_change and not re.search(r'重新搜索|重试联网', text):
+        if old and old['phase'] in {'failed', 'needs_material'} and not explicit_change and not retry:
+            code = old.get('outcomeCode')
+            if old['phase'] == 'failed' and not old.get('linkBindingId') and code in _DISCOVERY_FAILURES:
+                return self.ask(_discovery_failure_message(code), phase='failed', outcomeCode=code)
             return self.ask('当前岗位资料尚不足。可粘贴JD正文、提供准确链接，或回复“通用修改”。',
-                            phase='needs_material', outcomeCode=old.get('outcomeCode'))
+                            phase='needs_material', outcomeCode=code)
         reply = text if (explicit_change or not goal['direction'] or (old and old.get('inputPromptId'))) else ''
         if old is None:
             self.service._episode(self.r.context, 'initial-intake')
@@ -457,14 +477,7 @@ class Intake:
             request_id=self.key('discovery'), web_settings_revision=revision)
         if result.get('status') not in {'partial', 'empty', 'succeeded'}:
             code = result.get('code', 'web_failed')
-            message = {
-                'provider_network_error': '本次搜索网络连接失败，尚未取得岗位候选。',
-                'provider_timeout': '本次搜索服务响应超时，尚未取得岗位候选。',
-                'budget_exhausted': '本次搜索受预算限制，尚未取得岗位候选。',
-                'web_unavailable': '本次搜索服务未配置或未启用，尚未取得岗位候选。',
-                'provider_rate_limited': '本次搜索服务请求受限，尚未取得岗位候选。',
-            }.get(code, '本次搜索服务未完成请求，尚未取得岗位候选。')
-            return self.ask(message + '不能据此判断没有合适岗位。可补充JD正文、回复“重试联网”或“通用修改”。',
+            return self.ask(_discovery_failure_message(code),
                             phase='failed', outcomeCode=code)
         return await self.offer(result.get('references', []))
 

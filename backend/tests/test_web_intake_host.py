@@ -21,7 +21,7 @@ class IntakeClient(legacy.WebAwareClient):
             proof = value.get('goal', '') + value.get('targetReply', '')
             return SimpleNamespace(data={'company': '构造公司' if '构造公司' in proof else '',
                 'role': '工程实习' if '工程实习' in proof else '', 'direction': '',
-                'location': '广州' if '广州' in proof else '',
+                'location': '广州' if '广州' in proof else '深圳' if '深圳' in proof else '',
                 'employment_type': '实习' if '实习' in proof else '', 'posting_id': ''})
         if system.startswith('提取公开岗位候选'):
             return SimpleNamespace(data={'candidates': [
@@ -42,7 +42,7 @@ class IntakeHostTests(unittest.TestCase):
     conversation = integration.AgentIntegrationTests.conversation
     count = integration.AgentIntegrationTests.count
 
-    def ready(self, *, direction='构造公司 广州 工程实习 实习', with_jd=False):
+    def ready(self, *, direction='构造公司 广州 工程实习 实习', with_jd=False, search_override=None):
         session = self.chat()
         self.material(session, text='技能：熟悉Python。', role='resume')
         if with_jd:
@@ -63,6 +63,10 @@ class IntakeHostTests(unittest.TestCase):
         from test_web_provider import public_resolver
         def provider(request):
             self.sent.append(json.loads(request.content))
+            if search_override and request.url.path.endswith('/global_search'):
+                result = search_override(request)
+                if result is not None:
+                    return httpx.Response(200, json=result)
             result = fetch_response(url=json.loads(request.content)['Url'], text=TEXT) if request.url.path.endswith('/fetch') else search_response(TEXT)
             return httpx.Response(200, json=result)
         settings = WebSettings('synthetic-key', True, True)
@@ -107,6 +111,63 @@ class IntakeHostTests(unittest.TestCase):
         self.assertFalse(any('现在进入' in m['content'] for m in value['messages']))
         self.assertEqual(self.count('suggestions'), 0)
         self.assertEqual(len(self.sent), 1)
+
+    def test_timeout_followup_keeps_retry_guidance_and_explicit_retry_reuses_query(self):
+        attempts = []
+
+        def timeout_once(request):
+            attempts.append(request)
+            if len(attempts) == 1:
+                raise httpx.ReadTimeout('synthetic', request=request)
+
+        session = self.ready(search_override=timeout_once)
+        self.user_turn(session, '请按目标岗位整理技能。', 'timeout')
+        prompt = self.conversation(session)['messages'][-1]
+        self.assertIn('响应超时', prompt['content'])
+        self.user_turn(session, '我在项目里写过接口。', 'more', prompt['messageId'])
+        content = self.conversation(session)['messages'][-1]['content']
+        self.assertIn('响应超时', content)
+        self.assertIn('重试联网', content)
+        self.assertEqual(len(self.sent), 1)
+        self.user_turn(session, '重试联网', 'retry')
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.sent[0]['Query'], '构造公司 工程实习 广州 实习 招聘 岗位职责 任职要求')
+        self.assertEqual(self.sent[0]['Query'], self.sent[1]['Query'])
+        prompt = self.conversation(session)['messages'][-1]
+        self.assertIn('来源：https://example.com/jobs/1', prompt['content'])
+        self.assertEqual(self.count('suggestions'), 0)
+        before = self.conversation(session)['draft']['markdown']
+        self.user_turn(session, '1', 'select', prompt['messageId'])
+        self.assertEqual(self.sent[2]['Url'], 'https://example.com/jobs/1')
+        self.assertEqual(self.conversation(session)['draft']['markdown'], before)
+
+    def test_list_only_search_explains_that_results_were_filtered(self):
+        session = self.ready(search_override=lambda _: search_response(TEXT, 'https://example.com/zhaopin/'))
+        self.user_turn(session, '请按目标岗位整理技能。', 'list-only')
+        content = self.conversation(session)['messages'][-1]['content']
+        self.assertIn('搜索已完成', content)
+        self.assertIn('返回的页面未能核对为具体岗位', content)
+        self.assertNotIn('候选编号', content)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_retry_after_changed_goal_does_not_reuse_previous_city(self):
+        def no_shenzhen_candidates(request):
+            if '深圳' in json.loads(request.content)['Query']:
+                return {'ResponseMetadata': {}, 'Result': {'TotalDocCount': 0}}
+
+        session = self.ready(search_override=no_shenzhen_candidates)
+        self.user_turn(session, '请按目标岗位整理技能。', 'guangzhou')
+        self.assertIn('候选编号', self.conversation(session)['messages'][-1]['content'])
+        self.user_turn(session, '目标：构造公司 深圳 工程实习 实习', 'shenzhen')
+        self.assertIn('未取得可核对的候选', self.conversation(session)['messages'][-1]['content'])
+        with database(self.path) as c:
+            self.assertEqual(web_intake.load(c, session['sessionId'])['candidates'], [])
+        self.user_turn(session, '重试联网', 'retry-shenzhen')
+        self.assertEqual(len(self.sent), 3)
+        self.assertIn('广州', self.sent[0]['Query'])
+        self.assertIn('深圳', self.sent[1]['Query'])
+        self.assertNotIn('广州', self.sent[1]['Query'])
+        self.assertEqual(self.sent[1]['Query'], self.sent[2]['Query'])
 
     def test_choice_fetches_body_and_reaches_separate_citations(self):
         session = self.ready()
