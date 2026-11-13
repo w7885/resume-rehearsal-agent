@@ -19,7 +19,8 @@ USER_B = '22222222-2222-4222-8222-222222222222'
 IDENTITY_A = VerifiedIdentity(USER_A, 'a@example.com', True)
 IDENTITY_B = VerifiedIdentity(USER_B, 'b@example.com', True)
 SETTINGS = RemoteSettings('https://synthetic.supabase.co', 'synthetic-public-key', 'api.example.com',
-                          ('https://app.example.com',), frozenset({'a@example.com', 'b@example.com'}))
+                          ('https://app.example.com',), frozenset({'a@example.com', 'b@example.com'}),
+                          admin_ids=frozenset({USER_A}))
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -91,6 +92,23 @@ class AuthenticationTests(unittest.TestCase):
         self.assertNotIn(b'private diagnostic', response['body'])
         self.assertEqual(self.request('GET', '/api/health', token=None)['status'], 200)
 
+    def test_admin_access_requires_verified_admin_and_does_not_block_regular_workspace(self):
+        path = '/api/admin/access'
+        self.assertEqual(self.request('GET', path, token=None)['status'], 401)
+        self.assertEqual(self.request('GET', path, token='invalid')['status'], 401)
+        self.assertEqual(self.request('GET', path, token='token-b')['json']['error']['code'], 'admin_required')
+        self.assertEqual(self.request('GET', path, token='token-b')['status'], 403)
+        self.assertEqual(self.request('GET', '/api/admin/overview', token='token-b')['status'], 403)
+        self.assertEqual(self.request('GET', '/api/sessions', token='token-b')['status'], 200)
+        allowed = self.request('GET', path)
+        self.assertEqual(allowed['status'], 204)
+        self.assertEqual(allowed['headers'][b'cache-control'], b'no-store')
+        with patch.object(RemoteSettings, 'is_admin', return_value=False):
+            self.assertEqual(self.request('GET', path)['status'], 403)
+            self.assertEqual(self.request('GET', '/api/sessions')['status'], 200)
+        with patch('app.auth.verify_user', side_effect=RuntimeError('offline')):
+            self.assertEqual(self.request('GET', path)['status'], 503)
+
     def test_profile_reads_only_verified_identity_and_rejects_extra_fields(self):
         with database(self.path) as connection:
             # Use a portable table for request-level tests. The PostgreSQL
@@ -100,7 +118,9 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/me', token=None)['status'], 401)
         old = self.create()
         initial = self.request('GET', '/api/me')
-        self.assertEqual(initial['json'], {'id': USER_A, 'email': 'a@example.com', 'emailVerified': True, 'displayName': ''})
+        self.assertEqual(initial['json'], {'id': USER_A, 'email': 'a@example.com', 'emailVerified': True,
+                                           'displayName': '', 'isAdmin': True})
+        self.assertIs(self.request('GET', '/api/me', token='token-b')['json']['isAdmin'], False)
         self.assertEqual(initial['headers'][b'cache-control'], b'no-store')
         for data in ({}, {'displayName': None}, {'displayName': 1}, {'displayName': '改', 'id': USER_B},
                      {'displayName': '简' * 31}, {'displayName': 'a\x00b'}):
@@ -273,6 +293,12 @@ class RemoteConfigurationTests(unittest.TestCase):
             settings = RemoteSettings.from_environment()
             self.assertEqual(settings.public_host, '127.0.0.1:3001')
             self.assertEqual(settings.origins, ('http://127.0.0.1:5173',))
+            self.assertFalse(settings.is_admin(IDENTITY_A))
+        with patch.dict(os.environ, {**env, 'ADMIN_USER_IDS': f' {USER_A}, {USER_A} '}, clear=True):
+            settings = RemoteSettings.from_environment()
+            self.assertEqual(settings.admin_ids, frozenset({USER_A}))
+            self.assertTrue(settings.is_admin(IDENTITY_A))
+            self.assertFalse(settings.is_admin(IDENTITY_B))
         for change in [
             {'APP_MODE': 'remote'}, {'RENDER': 'true'}, {'VERCEL': '1'},
             {'PUBLIC_API_URL': 'http://0.0.0.0:3001'},
@@ -282,6 +308,7 @@ class RemoteConfigurationTests(unittest.TestCase):
             {'DATABASE_URL': 'postgresql://synthetic@localhost/dev'},
             {'SUPABASE_URL': 'http://synthetic.supabase.co'},
             {'SUPABASE_PUBLISHABLE_KEY': ''},
+            {'ADMIN_USER_IDS': 'a@example.com'},
         ]:
             with self.subTest(change=change), patch.dict(os.environ, {**env, **change}, clear=True):
                 with self.assertRaises(RuntimeError):

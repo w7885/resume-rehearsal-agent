@@ -22,10 +22,11 @@ class ProfileUpdate(InputModel):
         return value
 
 
-def profile_response(identity, display_name):
+def profile_response(identity, display_name, *, is_admin):
     return JSONResponse({
         'id': identity.id, 'email': identity.email,
         'emailVerified': identity.email_verified, 'displayName': display_name,
+        'isAdmin': is_admin,
     }, headers={'Cache-Control': 'no-store'})
 
 
@@ -36,7 +37,7 @@ def get_profile(request: Request):
         return error_response('unauthorized', '请先登录。', 401)
     with database(request.app.state.active_database_path, read_only=True) as connection:
         row = connection.execute('SELECT display_name FROM account_profiles WHERE user_id=?', (identity.id,)).fetchone()
-    return profile_response(identity, row[0] if row else '')
+    return profile_response(identity, row[0] if row else '', is_admin=request.app.state.remote_settings.is_admin(identity))
 
 
 @router.patch('/me')
@@ -48,4 +49,4 @@ def update_profile(request: Request, body: ProfileUpdate):
         connection.execute('''INSERT INTO account_profiles(user_id, display_name) VALUES (?, ?)
             ON CONFLICT (user_id) DO UPDATE SET display_name=excluded.display_name''',
                            (identity.id, body.displayName))
-    return profile_response(identity, body.displayName)
+    return profile_response(identity, body.displayName, is_admin=request.app.state.remote_settings.is_admin(identity))

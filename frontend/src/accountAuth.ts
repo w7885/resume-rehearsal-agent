@@ -1,6 +1,7 @@
 /** Supabase public Auth endpoints. Only the short-lived access token can restore the workspace. */
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export type Recovery = { token: string; expiresAt: number };
+export const signupCodePattern = '[0-9]{6,10}';
 export function consumeAuthCallback(href: string, replace: (url: string) => void, now = Date.now()): { recovery?: Recovery; notice: string } {
   const url = new URL(href), hash = new URLSearchParams(url.hash.slice(1));
   if (!['access_token', 'refresh_token', 'error', 'error_description', 'type'].some(k => hash.has(k))) return { notice:'' };
@@ -46,9 +47,12 @@ export class AccountAuth {
       const code = record(result) ? result.code ?? result.error_code : '';
       if (response.status === 429) throw new Error('请求过于频繁，请稍后再试。');
       if (response.status >= 500) throw new Error('账号服务暂时不可用，请稍后重试。');
-      if (code === 'email_not_confirmed') throw new Error('请先打开验证邮件确认邮箱，再登录。');
+      if (code === 'email_not_confirmed') throw new Error('请先确认邮箱，再登录。');
       if (code === 'email_address_not_authorized' || code === 'over_email_send_rate_limit') throw new Error('验证邮件暂时无法发送，请稍后重试或联系维护者。');
       if (path.startsWith('token')) throw new Error('邮箱或密码不正确，请核对后重试。');
+      if (path === 'verify' && (code === 'otp_expired' || response.status === 403)) {
+        throw new Error('验证码不正确、已使用或已过期。请核对后重试，或重新发送验证码。');
+      }
       if (method === 'PUT') throw new Error('密码未更新，链接可能已失效；请重新申请重置邮件。');
       throw new Error('账号操作未完成，请检查填写内容或稍后重试。');
     }
@@ -63,6 +67,19 @@ export class AccountAuth {
   async signup(email: string, password: string, confirmation: string) {
     validateNewPassword(password, confirmation);
     await this.request('signup?redirect_to=' + encodeURIComponent(this.redirect), { email:email.trim(), password });
+  }
+  async verifySignup(email: string, code: string) {
+    const token = code.trim();
+    if (!new RegExp('^' + signupCodePattern + '$').test(token)) throw new Error('请输入邮件中的数字验证码。');
+    const address = email.trim();
+    const result = await this.request('verify', { email: address, token, type: 'email' });
+    if (!record(result.user) || typeof result.user.email !== 'string' ||
+        result.user.email.toLowerCase() !== address.toLowerCase() || !result.user.email_confirmed_at) {
+      throw new Error('暂时无法确认邮箱验证结果，请尝试登录或重新验证。');
+    }
+  }
+  async resendSignup(email: string) {
+    await this.request('resend?redirect_to=' + encodeURIComponent(this.redirect), { email: email.trim(), type: 'signup' });
   }
   async recover(email: string) {
     await this.request('recover?redirect_to=' + encodeURIComponent(this.redirect), { email:email.trim() });

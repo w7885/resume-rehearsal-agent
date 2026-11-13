@@ -125,8 +125,10 @@ class PostgresProtectionTests(unittest.TestCase):
             with patch.object(postgres_schema, 'POSTGRES_MIGRATIONS', postgres_schema.POSTGRES_MIGRATIONS[:16]):
                 self.assertEqual(db.initialize_database(c)['schemaVersion'], 16)
             c.execute("INSERT INTO sessions(session_id,direction,owner_user_id) VALUES ('legacy','old',?)", (USER_A,))
-            self.assertEqual(db.initialize_database(c)['schemaVersion'], 17)
-            self.assertEqual(db.initialize_database(c)['schemaVersion'], 17)
+            with patch.object(postgres_schema, 'POSTGRES_MIGRATIONS', postgres_schema.POSTGRES_MIGRATIONS[:17]):
+                self.assertEqual(db.initialize_database(c)['schemaVersion'], 17)
+            self.assertEqual(db.initialize_database(c)['schemaVersion'], 18)
+            self.assertEqual(db.initialize_database(c)['schemaVersion'], 18)
             self.assertEqual(c.execute("SELECT owner_user_id FROM sessions WHERE session_id='legacy'").fetchone()[0], USER_A)
 
         async def exercise():
@@ -145,6 +147,139 @@ class PostgresProtectionTests(unittest.TestCase):
                 await request('PATCH', data={'displayName': '第二次'})
                 self.assertEqual((await request('GET'))['displayName'], '第二次')
                 self.assertEqual((await request('GET', identity=IDENTITY_B))['displayName'], '')
+        asyncio.run(exercise())
+
+    def test_feedback_submission_privacy_and_atomic_history(self):
+        from uuid import uuid4
+        from app.main import create_app
+        from test_api import request_asgi
+        from test_auth import IDENTITY_A, IDENTITY_B, SETTINGS
+
+        async def exercise():
+            with patch('app.auth.RemoteSettings.from_environment', return_value=SETTINGS):
+                app = create_app(self.path)
+            async with app.router.lifespan_context(app):
+                async def request(method, path, *, identity=IDENTITY_A, data=None):
+                    with patch('app.auth.verify_user', return_value=identity):
+                        return await request_asgi(app, method, path, headers={
+                            'host': SETTINGS.public_host, 'authorization': 'Bearer synthetic',
+                        }, data=data)
+
+                feedback_id = str(uuid4())
+                item = {'submissionId': feedback_id, 'category': 'bug', 'description': '测试反馈'}
+                listing = '/api/admin/feedback?category=bug&status=pending'
+                path = '/api/admin/feedback/' + feedback_id
+                change = {'status': 'resolved', 'note': '已核对', 'revision': 0}
+                self.assertEqual((await request('POST', '/api/feedback', identity=IDENTITY_B,
+                                                data={**item, 'submitterId': IDENTITY_A.id}))['status'], 422)
+                self.assertEqual((await request('POST', '/api/feedback', identity=IDENTITY_B, data=item))['status'], 201)
+                self.assertEqual((await request('POST', '/api/feedback', identity=IDENTITY_B, data=item))['status'], 201)
+                self.assertEqual((await request('POST', '/api/feedback', data=item))['status'], 409)
+                self.assertEqual((await request('GET', listing, identity=IDENTITY_B))['status'], 403)
+                self.assertEqual((await request('GET', path, identity=IDENTITY_B))['status'], 403)
+                self.assertEqual((await request('PATCH', path, identity=IDENTITY_B, data=change))['status'], 403)
+                rows = (await request('GET', listing))['json']['items']
+                self.assertEqual([row['id'] for row in rows], [feedback_id])
+                self.assertNotIn('submitterEmail', rows[0])
+                self.assertEqual((await request('GET', path))['json']['submitterEmail'], IDENTITY_B.email)
+
+                with db.database(self.path) as c:
+                    c.execute('ALTER TABLE feedback_history ADD CONSTRAINT reject_test_note CHECK (note <> \'已核对\')')
+                try:
+                    self.assertEqual((await request('PATCH', path, data=change))['status'], 503)
+                    after_failure = (await request('GET', path))['json']
+                    self.assertEqual((after_failure['status'], after_failure['note'], after_failure['history']),
+                                     ('pending', '', []))
+                finally:
+                    with db.database(self.path) as c:
+                        c.execute('ALTER TABLE feedback_history DROP CONSTRAINT reject_test_note')
+                saved = (await request('PATCH', path, data=change))['json']
+                self.assertEqual(saved['status'], 'resolved')
+                self.assertEqual(saved['history'][0]['actorId'], IDENTITY_A.id)
+                self.assertTrue(saved['history'][0]['changedAt'])
+                self.assertEqual((await request('PATCH', path, data=change))['status'], 409)
+                self.assertEqual((await request('GET', listing))['json']['items'], [])
+                reopened = await request('PATCH', path, data={**change, 'status': 'pending', 'revision': 1})
+                self.assertEqual(reopened['json']['status'], 'pending')
+
+        asyncio.run(exercise())
+
+    def test_admin_overview_and_account_lookup(self):
+        from datetime import date
+        from uuid import uuid4
+        from app.main import create_app
+        from test_api import request_asgi
+        from test_auth import IDENTITY_A, IDENTITY_B, SETTINGS
+
+        async def exercise():
+            with patch('app.auth.RemoteSettings.from_environment', return_value=SETTINGS):
+                app = create_app(self.path)
+            async with app.router.lifespan_context(app):
+                async def request(method, path, *, identity=IDENTITY_A, data=None):
+                    with patch('app.auth.verify_user', return_value=identity):
+                        return await request_asgi(app, method, path, headers={
+                            'host': SETTINGS.public_host, 'authorization': 'Bearer synthetic',
+                        }, data=data)
+
+                overview = '/api/admin/overview'
+                lookup = '/api/admin/accounts/lookup'
+                self.assertEqual((await request('GET', overview, identity=IDENTITY_B))['status'], 403)
+                self.assertEqual((await request('POST', lookup, identity=IDENTITY_B,
+                                                data={'email': 'verified@example.test'}))['status'], 403)
+                self.assertEqual((await request('POST', lookup, data={'email': 'verified@example.test'}))['status'], 503)
+                with db.database(self.path) as c:
+                    c.execute('CREATE SCHEMA auth')
+                try:
+                    with db.database(self.path) as c:
+                        c.execute('CREATE TABLE auth.users (email TEXT, created_at TIMESTAMPTZ, email_confirmed_at TIMESTAMPTZ)')
+                        for email, created, verified in [
+                            ('older@example.test', '2026-10-29T15:59:59Z', None),
+                            ('previous@example.test', '2026-10-29T16:00:00Z', None),
+                            ('lastprevious@example.test', '2026-11-05T15:59:59Z', None),
+                            ('verified@example.test', '2026-11-05T16:00:00Z', '2026-11-13T00:00:00Z'),
+                            ('unverified@example.test', '2026-11-12T15:59:59Z', None),
+                            ('today@example.test', '2026-11-12T16:00:00Z', None),
+                        ]:
+                            c.execute('INSERT INTO auth.users VALUES (?, ?, ?)', (email, created, verified))
+                    hit = await request('POST', lookup, data={'email': ' VERIFIED@EXAMPLE.TEST '})
+                    self.assertEqual(hit['status'], 200)
+                    self.assertEqual(set(hit['json']), {'email', 'createdAt', 'emailVerified'})
+                    self.assertTrue(hit['json']['emailVerified'])
+                    unverified = await request('POST', lookup, data={'email': 'unverified@example.test'})
+                    self.assertFalse(unverified['json']['emailVerified'])
+                    self.assertEqual((await request('POST', lookup, data={'email': 'missing@example.test'}))['status'], 404)
+                    self.assertEqual((await request('POST', lookup, data={'email': 'verified'}))['status'], 422)
+
+                    item_id = str(uuid4())
+                    with db.database(self.path) as c:
+                        c.execute('''INSERT INTO user_feedback (id, submitter_id, submitter_email, category, description, created_at)
+                                     VALUES (?, ?, ?, 'bug', 'Old feedback', '2026-10-01T00:00:00Z')''',
+                                  (item_id, IDENTITY_B.id, IDENTITY_B.email))
+                    with patch('app.admin.beijing_today', return_value=date(2026, 11, 13)):
+                        payload = (await request('GET', overview))['json']
+                        self.assertEqual(payload['totalRegistrations'], 6)
+                        self.assertEqual(payload['recentRegistrations'], 2)
+                        self.assertEqual(payload['emailVerification'], {'verified': 1, 'unverified': 1})
+                        for name, first in [('recent', '2026-11-06'), ('previous', '2026-10-30')]:
+                            days = payload['registrations'][name]
+                            self.assertEqual(days[0]['date'], first)
+                            self.assertEqual([day['count'] for day in days], [1, 0, 0, 0, 0, 0, 1])
+                        self.assertEqual(payload['feedback'], {'pending': 1, 'in_progress': 0, 'resolved': 0})
+                        self.assertEqual((await request('PATCH', '/api/admin/feedback/' + item_id,
+                                                        data={'status': 'resolved', 'note': '', 'revision': 0}))['status'], 200)
+                        updated = (await request('GET', overview))['json']
+                        self.assertEqual(updated['feedback'], {'pending': 0, 'in_progress': 0, 'resolved': 1})
+                        self.assertEqual((await request('GET', '/api/admin/feedback?status=pending'))['json']['items'], [])
+                    with patch('app.admin.beijing_today', return_value=date(2026, 12, 1)):
+                        payload = (await request('GET', overview))['json']
+                        self.assertEqual(payload['recentRegistrations'], 0)
+                        self.assertEqual(payload['emailVerification'], {'verified': 0, 'unverified': 0})
+                        self.assertEqual(payload['feedback']['resolved'], 1)
+                finally:
+                    with db.database(self.path) as c:
+                        c.execute('DROP TABLE IF EXISTS auth.users')
+                        c.execute('DROP SCHEMA auth')
+
         asyncio.run(exercise())
 
     def test_budget_concurrency_and_idempotent_unknown_settlement(self):

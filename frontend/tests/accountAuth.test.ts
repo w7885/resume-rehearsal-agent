@@ -28,6 +28,29 @@ test('new password mismatch and expired recovery do not send requests', async ()
   assert.equal(calls, 0);
 });
 
+test('signup verification preserves leading zeroes and resends only a signup confirmation', async () => {
+  const calls: { url: string; body: unknown; auth: string | null }[] = [];
+  const client = new AccountAuth(base, 'synthetic-public', app, async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)), auth: new Headers(init?.headers).get('Authorization') });
+    return Response.json({ access_token: 'unused', user: { email: 'a@example.com', email_confirmed_at: '2026-11-13T00:00:00Z' } });
+  });
+  assert.equal(await client.verifySignup(' A@example.com ', ' 01234567 '), undefined);
+  await client.resendSignup(' A@example.com ');
+  assert.deepEqual(calls, [
+    { url: base + '/auth/v1/verify', body: { email: 'A@example.com', token: '01234567', type: 'email' }, auth: null },
+    { url: base + '/auth/v1/resend?redirect_to=' + encodeURIComponent(app + '/'), body: { email: 'A@example.com', type: 'signup' }, auth: null },
+  ]);
+  await assert.rejects(client.verifySignup('other@example.com', '01234567'), /无法确认/);
+  await assert.rejects(client.verifySignup('a@example.com', '01234X'), /数字验证码/);
+  assert.equal(calls.length, 3);
+});
+
+test('signup verification rejects expired or invalid codes with a retry prompt', async () => {
+  const client = new AccountAuth(base, 'synthetic-public', app, async () =>
+    Response.json({ error_code: 'otp_expired' }, { status: 403 }));
+  await assert.rejects(client.verifySignup('a@example.com', '012345'), /重新发送验证码/);
+});
+
 test('recovery callback strips all fragment credentials immediately and keeps reset token only in memory', () => {
   let cleaned = '';
   const result = consumeAuthCallback(app + '/#type=recovery&access_token=synthetic-token&refresh_token=synthetic-refresh&expires_in=3600', url => { cleaned = url; }, 100);

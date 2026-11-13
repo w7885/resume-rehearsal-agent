@@ -269,6 +269,10 @@ GitHub Actions 的 Application checks 包含后端回归、前端测试与构建
 
 保留默认受邀模式。开放注册时，后端设 `AUTH_ACCESS_MODE=open`，Vercel 对实际部署环境设 `VITE_AUTH_ACCESS_MODE=open` 并重新构建。前端出现注册入口；Supabase 验证邮箱后，用户即可登录使用，无需人工审核。只改前端变量不会绕过后端白名单。模式切换不迁移或重新认领旧会话；所有用户共享当前数据库的项目预算，不会因为注册新账号增加额度。
 
+先在开发 Supabase 的 **Authentication → Email Templates → Confirm sign up** 保存当前模板。联调期间可在现有正文中加一行 `<p>你的注册验证码是 <strong>{{ .Token }}</strong>。</p>`，让同一开发项目的旧页面仍可使用邮件链接。随后在前端构建环境设置 `VITE_SIGNUP_VERIFICATION=code` 并重新构建或重启前端。该开关用于开放注册，默认值 `link`。切换正式环境时分别配置对应的邮件模板和前端构建环境。
+
+在开发环境用能收信的测试邮箱验证原页输入、错误或过期验证码、重新发送，以及邮箱验证后用密码登录。完成旧页面切换后，可从注册确认模板移除 `{{ .ConfirmationURL }}`。密码重置使用独立的 **Reset password** 模板。
+
 上线前在 Supabase 配置：
 
 1. Authentication → Sign In / Providers：启用邮箱密码注册，允许新用户注册，保持 **Confirm email 开启**，不开放匿名登录。

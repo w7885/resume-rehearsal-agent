@@ -1,0 +1,9 @@
+.auth-card select, .auth-card textarea { font: inherit; padding: 8px 10px; border: 1px solid #b8c8c0; border-radius: 6px; }
+.auth-card textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.feedback-filters { display: flex; flex-wrap: wrap; gap: 12px; }
+.feedback-list { list-style: none; padding: 0; }
+.feedback-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 8px; padding: 12px 0; border-bottom: 1px solid #e2e9e5; }
+.feedback-list li > div { flex: 1; min-width: min(230px, 100%); overflow-wrap: anywhere; }
+.feedback-list time { display: block; margin-top: 4px; color: #58665f; }
+.feedback-list p { margin: 4px 0; }
+.feedback-text { white-space: pre-wrap; overflow-wrap: anywhere; }
