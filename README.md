@@ -24,7 +24,7 @@
 
 高保真原型包含前台应用与管理后台，共 45 张页面及状态画板，附逐页交互、文本和业务规则说明。
 
-- [高保真原型总览](https://www.figma.com/design/VBD4ohBQOFc0EL7ogTMkyN?node-id=36-248)
+- [高保真原型总览]([https://www.figma.com/design/VBD4ohBQOFc0EL7ogTMkyN?node-id=36-248](https://www.figma.com/proto/VBD4ohBQOFc0EL7ogTMkyN/%E5%8E%86%E5%8E%86%E5%9C%A8%E7%BB%83%EF%BD%9C%E9%AB%98%E4%BF%9D%E7%9C%9F%E5%8E%9F%E5%9E%8B?node-id=36-248&p=f&t=tsNRBY04qjECbwxj-0&scaling=min-zoom&content-scaling=fixed&page-id=36%3A248&starting-point-node-id=37%3A1944&show-proto-sidebar=1))
 - [前台应用：改写建议与确认](https://www.figma.com/design/VBD4ohBQOFc0EL7ogTMkyN?node-id=37-686)
 - [管理后台：概览](https://www.figma.com/design/VBD4ohBQOFc0EL7ogTMkyN?node-id=37-3786)
 
